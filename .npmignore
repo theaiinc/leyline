@@ -1,0 +1,8 @@
+.env
+src
+tests
+tsconfig.json
+jest.config.js
+nodemon.json
+.gitignore
+.DS_Store

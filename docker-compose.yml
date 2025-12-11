@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  router:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - HF_API_KEY=${HF_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+    restart: always
+  # Optional: Run a local Ollama instance
+  # ollama:
+  #   image: ollama/ollama
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama:/root/.ollama
+
+  # volumes:
+  #   ollama:

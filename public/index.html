@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Router Dashboard</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; padding: 20px; background: #f5f5f5; color: #333; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .card { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        h1 { margin-top: 0; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 12px; border-bottom: 1px solid #eee; }
+        th { background: #fafafa; }
+        .status-success { color: green; font-weight: bold; }
+        .status-error { color: red; font-weight: bold; }
+        .status-rate_limited { color: orange; font-weight: bold; }
+        .refresh-btn { float: right; padding: 8px 16px; background: #0070f3; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        .refresh-btn:hover { background: #0051a2; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <h1>Network Status</h1>
+                <div>
+                   <input type="text" id="model-search" placeholder="Search models (name, id, purpose)..." style="padding: 8px; width: 300px; border: 1px solid #ddd; border-radius: 4px; margin-right: 10px;" oninput="applyFilters()">
+                   <button class="refresh-btn" onclick="fetchStats()">Refresh</button>
+                </div>
+            </div>
+            
+            <table id="network-table">
+                <thead>
+                    <tr>
+                        <th>Provider</th>
+                        <th>Default Model</th>
+                        <th>Available Models</th>
+                        <th>RPM (Used / Limit)</th>
+                        <th>Daily (Used / Limit)</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+
+        <div class="card">
+            <h1>Analytics & Leaderboards</h1>
+            <div style="display: flex; gap: 20px; flex-wrap: wrap;">
+                
+                <!-- Most Popular Models -->
+                <div style="flex: 1; min-width: 300px;">
+                    <h3>🏆 Most Popular Models</h3>
+                    <div id="chart-usage"></div>
+                </div>
+
+                <!-- Fastest Models -->
+                <div style="flex: 1; min-width: 300px;">
+                    <h3>⚡ Fastest Models (Avg Latency)</h3>
+                    <div id="chart-latency"></div>
+                </div>
+
+                <!-- Provider Coverage -->
+                <div style="flex: 1; min-width: 300px;">
+                     <h3>📚 Provider Coverage</h3>
+                     <div id="chart-coverage"></div>
+                </div>
+
+                <!-- Quality Leaderboard -->
+                <div style="flex: 1; min-width: 300px;">
+                    <h3>🌟 Model Quality (Elo)</h3>
+                    <div id="chart-quality"></div>
+                </div>
+
+            </div>
+        </div>
+
+        <div class="card">
+            <h1>Recent Request Logs</h1>
+            <table id="logs-table">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Chain</th>
+                        <th>Model</th>
+                        <th>Status</th>
+                        <th>Duration (ms)</th>
+                        <th>Error</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        let globalProviders = []; // Store data for local filtering
+
+        async function fetchStats() {
+            try {
+                const response = await fetch('/dashboard/stats');
+                const data = await response.json();
+                globalProviders = data.providers; // Store for filtering
+                renderNetworkStatus();
+                renderCharts(data.providers, data.logs);
+                renderLogs(data.logs);
+            } catch (e) {
+                console.error('Failed to fetch stats', e);
+            }
+        }
+
+        function renderCharts(providers, logs) {
+            // 1. Usage & Latency Stats
+            const modelStats = {};
+            logs.forEach(l => {
+                if (!l.model) return;
+                if (!modelStats[l.model]) modelStats[l.model] = { count: 0, totalDuration: 0, provider: l.provider };
+                modelStats[l.model].count++;
+                if (l.duration) modelStats[l.model].totalDuration += l.duration;
+            });
+
+            const sortedByUsage = Object.entries(modelStats).sort((a,b) => b[1].count - a[1].count).slice(0, 5);
+            const sortedByLatency = Object.entries(modelStats)
+                .map(([k,v]) => ({ name: k, avg: Math.round(v.totalDuration / v.count), provider: v.provider }))
+                .filter(i => i.avg > 0)
+                .sort((a,b) => a.avg - b.avg)
+                .slice(0, 5);
+
+            // Render Usage Chart
+            const usageContainer = document.getElementById('chart-usage');
+            usageContainer.innerHTML = sortedByUsage.length ? '' : '<div style="color:#999">No data yet</div>';
+            const maxCount = sortedByUsage[0] ? sortedByUsage[0][1].count : 0;
+            
+            sortedByUsage.forEach(([name, stats]) => {
+                const pct = (stats.count / maxCount) * 100;
+                const color = getColorForProvider(stats.provider);
+                usageContainer.innerHTML += `
+                    <div style="margin-bottom: 8px;">
+                        <div style="display:flex; justify-content:space-between; font-size:0.85em; margin-bottom:2px;">
+                            <strong>${name}</strong>
+                            <span>${stats.count} reqs</span>
+                        </div>
+                        <div style="background:#eee; height:8px; border-radius:4px; overflow:hidden;">
+                            <div style="background:${color}; width:${pct}%; height:100%;"></div>
+                        </div>
+                    </div>
+                `;
+            });
+
+            // Render Latency Chart
+            const latencyContainer = document.getElementById('chart-latency');
+            latencyContainer.innerHTML = sortedByLatency.length ? '' : '<div style="color:#999">No data yet</div>';
+            const maxLatency = sortedByLatency[0] ? Math.max(...sortedByLatency.map(i => i.avg)) : 0;
+
+            sortedByLatency.forEach(item => {
+                const pct = (item.avg / maxLatency) * 100;
+                const color = getColorForProvider(item.provider); // Or maybe color code by speed (green=fast)
+                latencyContainer.innerHTML += `
+                    <div style="margin-bottom: 8px;">
+                        <div style="display:flex; justify-content:space-between; font-size:0.85em; margin-bottom:2px;">
+                            <strong>${item.name}</strong>
+                            <span>${item.avg}ms</span>
+                        </div>
+                        <div style="background:#eee; height:8px; border-radius:4px; overflow:hidden;">
+                            <div style="background:${color}; width:${pct}%; height:100%;"></div>
+                        </div>
+                    </div>
+                `;
+            });
+
+            // Render Coverage Chart
+            const coverageContainer = document.getElementById('chart-coverage');
+            coverageContainer.innerHTML = '';
+            const maxModels = Math.max(...providers.map(p => (p.models||[]).length));
+            
+            providers.forEach(p => {
+                const count = (p.models || []).length;
+                const pct = maxModels > 0 ? (count / maxModels) * 100 : 0;
+                const color = getColorForProvider(p.name);
+                 coverageContainer.innerHTML += `
+                    <div style="margin-bottom: 8px;">
+                        <div style="display:flex; justify-content:space-between; font-size:0.85em; margin-bottom:2px;">
+                            <strong>${p.name}</strong>
+                            <span>${count} models</span>
+                        </div>
+                        <div style="background:#eee; height:8px; border-radius:4px; overflow:hidden;">
+                            <div style="background:${color}; width:${pct}%; height:100%;"></div>
+                        </div>
+                    </div>
+                `;
+            });
+
+            // Render Quality Chart
+            const allModelsWithScore = providers.flatMap(p => 
+                (p.models || []).filter(m => m.score).map(m => ({ ...m, provider: p.name }))
+            );
+            // Deduplicate by ID to show unique models
+            const uniqueModels = Array.from(new Map(allModelsWithScore.map(item => [item.id, item])).values());
+            const topQuality = uniqueModels.sort((a,b) => b.score - a.score).slice(0, 5);
+            
+            const qualityContainer = document.getElementById('chart-quality');
+            qualityContainer.innerHTML = topQuality.length ? '' : '<div style="color:#999">No scores available</div>';
+            
+            topQuality.forEach(m => {
+                const pct = (m.score / 1300) * 100; // 1300 is rough max Elo
+                // Color scale from orange to green
+                const color = m.score > 1250 ? '#4CAF50' : (m.score > 1150 ? '#FFC107' : '#FF5722');
+                
+                qualityContainer.innerHTML += `
+                    <div style="margin-bottom: 8px;">
+                        <div style="display:flex; justify-content:space-between; font-size:0.85em; margin-bottom:2px;">
+                            <strong>${m.name || m.id}</strong>
+                            <span>${m.score} Elo</span>
+                        </div>
+                        <div style="background:#eee; height:8px; border-radius:4px; overflow:hidden;">
+                            <div style="background:${color}; width:${pct}%; height:100%;"></div>
+                        </div>
+                    </div>
+                `;
+            });
+        }
+
+        function applyFilters() {
+            renderNetworkStatus();
+        }
+
+        function renderNetworkStatus() {
+            const providers = globalProviders;
+            const searchTerm = document.getElementById('model-search').value.toLowerCase();
+            const tbody = document.querySelector('#network-table tbody');
+            
+            // Check which details are currently open and save their scroll positions
+            const openDetails = new Set();
+            const scrollPositions = {};
+            
+            document.querySelectorAll('#network-table details').forEach(el => {
+                if (el.open && el.id) {
+                    openDetails.add(el.id);
+                    const scrollDiv = el.querySelector('div');
+                    if (scrollDiv) {
+                        scrollPositions[el.id] = scrollDiv.scrollTop;
+                    }
+                }
+            });
+
+            tbody.innerHTML = '';
+            providers.forEach(p => {
+                const row = document.createElement('tr');
+                const quotaMin = p.quota ? p.quota.requestsPerMinute : '∞';
+                const quotaDay = p.quota ? p.quota.requestsPerDay : '∞';
+                
+                let status = '<span class="status-success">Available</span>';
+                if (p.quota && (p.usage.minute >= p.quota.requestsPerMinute || p.usage.day >= p.quota.requestsPerDay)) {
+                    status = '<span class="status-rate_limited">Rate Limited</span>';
+                }
+
+                // Filter and Render models list
+                let modelsHtml = '-';
+                if (p.models && p.models.length > 0) {
+                    // Filter based on search term
+                    const filteredModels = p.models.filter(m => {
+                        if (!searchTerm) return true;
+                        return (m.id && m.id.toLowerCase().includes(searchTerm)) || 
+                               (m.name && m.name.toLowerCase().includes(searchTerm)) ||
+                               (m.description && m.description.toLowerCase().includes(searchTerm));
+                    });
+
+                    const detailsId = `details-${p.name}`;
+                    // If searching, auto-expand to show matches
+                    const isOpen = (searchTerm || openDetails.has(detailsId)) ? 'open' : ''; 
+                    
+                    modelsHtml = `
+                        <details id="${detailsId}" ${isOpen}>
+                            <summary>${filteredModels.length} / ${p.models.length} Models</summary>
+                            <div style="max-height: 150px; overflow-y: auto; font-size: 0.9em; margin-top: 5px;">
+                                ${filteredModels.map(m => `
+                                    <div style="margin-bottom: 4px; border-bottom: 1px solid #eee; padding-bottom: 2px;">
+                                        <strong>${m.name || m.id}</strong><br>
+                                        <span style="color: #666; font-size: 0.85em;">ID: ${m.id}</span>
+                                        ${m.description ? `<br><span style="color: #888; font-style: italic; font-size: 0.8em;">${m.description}</span>` : ''}
+                                    </div>
+                                `).join('')}
+                                ${filteredModels.length === 0 ? '<div style="color: #999;">No matching models</div>' : ''}
+                            </div>
+                        </details>
+                    `;
+                }
+
+                row.innerHTML = `
+                    <td style="font-weight:bold; color:${getColorForProvider(p.name)}">${p.name}</td>
+                    <td><code>${p.defaultModel}</code></td>
+                    <td>${modelsHtml}</td>
+                    <td>${p.usage.minute} / ${quotaMin}</td>
+                    <td>${p.usage.day} / ${quotaDay}</td>
+                    <td>${status}</td>
+                `;
+                tbody.appendChild(row);
+            });
+
+            // Restore scroll positions (only if not searching, as search changes height/content drastically)
+            if (!searchTerm) {
+                Object.keys(scrollPositions).forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) {
+                        const scrollDiv = el.querySelector('div');
+                        if (scrollDiv) {
+                            scrollDiv.scrollTop = scrollPositions[id];
+                        }
+                    }
+                });
+            }
+        }
+
+        function renderLogs(logs) {
+            const tbody = document.querySelector('#logs-table tbody');
+            tbody.innerHTML = '';
+            
+            // Group by requestId
+            const groups = {};
+            logs.forEach(log => {
+                if (!groups[log.requestId]) groups[log.requestId] = [];
+                groups[log.requestId].push(log);
+            });
+
+            // Sort groups by latest timestamp
+            const sortedGroupKeys = Object.keys(groups).sort((a, b) => {
+                const timeA = new Date(groups[a][0].timestamp).getTime();
+                const timeB = new Date(groups[b][0].timestamp).getTime();
+                return timeB - timeA;
+            });
+
+            sortedGroupKeys.forEach(requestId => {
+                const groupLogs = groups[requestId];
+                const firstLog = groupLogs[groupLogs.length - 1]; // Oldest log in group (start)
+                const lastLog = groupLogs[0]; // Newest log in group (end)
+                
+                // Calculate contribution breakdown
+                let totalChars = 0;
+                groupLogs.forEach(l => { if(l.usage?.chars) totalChars += l.usage.chars; });
+                
+                let breakdownHtml = '';
+                if (totalChars > 0) {
+                     breakdownHtml = '<div style="display: flex; height: 10px; width: 100%; background: #eee; border-radius: 4px; overflow: hidden; margin-top: 4px;">';
+                     groupLogs.slice().reverse().forEach(log => {
+                         if (log.usage && log.usage.chars > 0) {
+                             const percent = (log.usage.chars / totalChars) * 100;
+                             const color = getColorForProvider(log.provider);
+                             breakdownHtml += `<div style="width: ${percent}%; background: ${color};" title="${log.provider}: ${log.usage.chars} chars"></div>`;
+                         }
+                     });
+                     breakdownHtml += '</div>';
+                     
+                     // Text details
+                     breakdownHtml += '<div style="font-size: 0.8em; margin-top: 2px;">';
+                     const parts = [];
+                     groupLogs.slice().reverse().forEach(log => {
+                         if (log.usage && log.usage.chars > 0) {
+                             const percent = Math.round((log.usage.chars / totalChars) * 100);
+                             parts.push(`<span style="color:${getColorForProvider(log.provider)}"><strong>${log.provider}</strong>: ${percent}%</span>`);
+                         }
+                     });
+                     breakdownHtml += parts.join(' | ');
+                     breakdownHtml += '</div>';
+                }
+
+
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${new Date(firstLog.timestamp).toLocaleTimeString()}</td>
+                    <td>
+                        <div style="font-weight: bold;">${groupLogs.slice().reverse().map(l => l.provider).join(' &rarr; ')}</div>
+                        ${breakdownHtml}
+                    </td>
+                    <td>${firstLog.model || '-'}</td>
+                    <td class="status-${lastLog.status}">${lastLog.status}</td>
+                    <td>${groupLogs.reduce((acc, l) => acc + (l.duration || 0), 0)}</td>
+                    <td>${groupLogs.filter(l => l.error).map(l => l.error).join(', ') || '-'}</td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+        
+        function getColorForProvider(provider) {
+            const colors = {
+                'gemini': '#4285F4',
+                'huggingface': '#FFD000', // Yellow-ish
+                'openrouter': '#10a37f',
+                'ollama': '#000000'
+            };
+            return colors[provider.toLowerCase()] || '#ccc';
+        }
+
+        // Initial load
+        fetchStats();
+        // Auto refresh every 5s
+        setInterval(fetchStats, 5000);
+    </script>
+</body>
+</html>
