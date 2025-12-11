@@ -4,7 +4,7 @@
 
 Leyline is a resilient, smart AI Router that unifies multiple cost-effective LLM providers (Gemini, HuggingFace, OpenRouter, and local Ollama) into a single, reliable API. It intelligently routes requests, handles failover, manages rate limits, and optimizes costs so you can focus on building agents.
 
-![Dashboard Preview](./dashboard-preview.png)
+![Dashboard Preview](https://raw.githubusercontent.com/theaiinc/leyline/main/dashboard-preview.png)
 
 ## ✨ Key Features
 
