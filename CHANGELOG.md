@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.2] - 2026-06-17
+
+### Fixed
+
+- Changed `vars.DOCKER_HUB_USERNAME` to `secrets.DOCKER_HUB_USERNAME` in publish workflow so the Docker Hub login picks up the secret properly.
+- Removed duplicate `Push Docker Hub README` step from publish workflow.
+
 ## [1.1.1] - 2026-06-17
 
 ### Fixed
