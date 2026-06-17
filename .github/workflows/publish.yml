@@ -3,9 +3,33 @@ name: Publish to npm & Docker
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Skip npm/Docker publish (just build + test)'
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish.yml'
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
   publish:
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
+    needs: [verify]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -15,8 +39,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.release.target_commitish }}
 
       - uses: actions/setup-node@v6
         with:
@@ -71,13 +93,13 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/theaiinc/leyline:${{ github.event.release.tag_name }}
+            ghcr.io/theaiinc/leyline:${{ github.event.release.tag_name || github.ref_name }}
             ghcr.io/theaiinc/leyline:latest
-            theaiinc/leyline:${{ github.event.release.tag_name }}
+            theaiinc/leyline:${{ github.event.release.tag_name || github.ref_name }}
             theaiinc/leyline:latest
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.version=${{ github.event.release.tag_name }}
+            org.opencontainers.image.version=${{ github.event.release.tag_name || github.ref_name }}
 
       - name: Push Docker Hub README
         uses: peter-evans/dockerhub-description@v4

@@ -8,10 +8,10 @@ Leyline unifies multiple LLM providers — cloud (Gemini, HuggingFace, OpenRoute
 
 ```mermaid
 graph TB
-    Client[Your App / Agent Pipeline]
-    Leyline[Leyline Router]
-    Cloud[Cloud LLMs<br/>Gemini · HuggingFace · OpenRouter]
-    Local[Local LLMs<br/>Ollama · LM Studio · vLLM]
+    Client["Your App / Agent Pipeline"]
+    Leyline["Leyline Router"]
+    Cloud["Cloud LLMs - Gemini · HuggingFace · OpenRouter"]
+    Local["Local LLMs - Ollama · LM Studio · vLLM"]
 
     Client -->|/v1/chat/completions| Leyline
     Client -->|/v1/route| Leyline
@@ -19,12 +19,12 @@ graph TB
     Leyline -->|provider failover| Cloud
     Leyline -->|provider failover| Local
 
-    subgraph Leyline[Leyline Router]
-        Router[Router<br/>route / routeStream]
-        Classifier[Classifier<br/>complexity/domain/reasoning]
-        Registry[ModelRegistry<br/>capabilities / billing]
-        Policy[Code Policy<br/>selectModelByRouter]
-        QM[QuotaManager<br/>RPM / RPD limits]
+    subgraph Leyline["Leyline Router"]
+        Router["Router - route / routeStream"]
+        Classifier["Classifier - complexity/domain/reasoning"]
+        Registry["ModelRegistry - capabilities / billing"]
+        Policy["Code Policy - selectModelByRouter"]
+        QM["QuotaManager - RPM / RPD limits"]
     end
 
     Router --> QM
@@ -168,10 +168,10 @@ for await (const chunk of failoverRouter.routeStream({
 sequenceDiagram
     participant App as Your App
     participant Leyline
-    participant Classifier as Classifier<br/>(tiny LLM)
-    participant Policy as Code Policy
+    participant Classifier as "Classifier (tiny LLM)"
+    participant Policy as "Code Policy"
     participant Registry as ModelRegistry
-    participant Provider as LLM Provider
+    participant Provider as "LLM Provider"
 
     App->>Leyline: POST /v1/route { userMessage }
     Leyline->>Classifier: classifyRequest()
@@ -221,26 +221,26 @@ graph LR
 ```mermaid
 graph TD
     subgraph src
-        index[<b>index.ts</b><br/>(exports + bootstrap)]
-        config[<b>config.ts</b><br/>(env + LeylineConfig type)]
-        server[<b>server.ts</b><br/>(Express: /v1/chat + /v1/route)]
+        index["index.ts (exports + bootstrap)"]
+        config["config.ts (env + LeylineConfig type)"]
+        server["server.ts (Express: /v1/chat + /v1/route)"]
 
         subgraph core
-            types[<b>types.ts</b><br/>(all interfaces)]
-            router[<b>router.ts</b><br/>(route/routeStream/resolveRoute)]
-            modelRegistry[<b>model-registry.ts</b><br/>(ModelRegistry class)]
-            classifier[<b>classifier.ts</b><br/>(Classifier + ROUTER_PROMPT)]
-            quotaManager[<b>quota-manager.ts</b><br/>(rate-limit tracking)]
-            logger[<b>logger.ts</b><br/>(structured logging)]
-            leaderboard[<b>leaderboard-data.ts</b><br/>(Elo scores)]
+            types["types.ts (all interfaces)"]
+            router["router.ts (route/routeStream/resolveRoute)"]
+            modelRegistry["model-registry.ts (ModelRegistry class)"]
+            classifier["classifier.ts (Classifier + ROUTER_PROMPT)"]
+            quotaManager["quota-manager.ts (rate-limit tracking)"]
+            logger["logger.ts (structured logging)"]
+            leaderboard["leaderboard-data.ts (Elo scores)"]
         end
 
         subgraph providers
-            gemini[<b>gemini.ts</b>]
-            huggingface[<b>huggingface.ts</b>]
-            openrouter[<b>openrouter.ts</b>]
-            ollama[<b>ollama.ts</b>]
-            lmstudio[<b>lmstudio.ts</b>]
+            gemini["gemini.ts"]
+            huggingface["huggingface.ts"]
+            openrouter["openrouter.ts"]
+            ollama["ollama.ts"]
+            lmstudio["lmstudio.ts"]
         end
     end
 
