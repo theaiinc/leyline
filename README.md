@@ -293,9 +293,9 @@ Access the dashboard at `http://localhost:3000/dashboard` to view:
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `LEYLINE_MODEL_2B` / `OASIS_MODEL_2B` | — | Model name for the 2B tier (utility) |
-| `LEYLINE_MODEL_4B` / `OASIS_MODEL_4B` | — | Model name for the 4B tier (operational) |
-| `LEYLINE_MODEL_12B` / `OASIS_MODEL_12B` | — | Model name for the 12B tier (cognitive) |
+| `LEYLINE_MODEL_2B` | — | Model name for the 2B tier (utility) |
+| `LEYLINE_MODEL_4B` | — | Model name for the 4B tier (operational) |
+| `LEYLINE_MODEL_12B` | — | Model name for the 12B tier (cognitive) |
 
 ### Custom Variants
 

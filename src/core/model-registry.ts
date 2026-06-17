@@ -4,7 +4,7 @@ import { ModelVariant, BillingClass, ResourceClass } from './types';
  * Configurable model variant registry.
  *
  * Callers provide their own variant list at construction time so model
- * definitions live in the *consumer's* config (e.g. oasis .env), not
+ * definitions live in the *consumer's* config, not
  * inside leyline itself.
  *
  * Leyline provides a small set of sensible defaults for the built-in

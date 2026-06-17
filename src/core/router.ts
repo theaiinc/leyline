@@ -248,7 +248,7 @@ export class Router {
    * 3. Resolve the tier → actual model name from TierConfig.
    * 4. Look up the model's provider from the ModelRegistry.
    *
-   * This is the method that agent pipelines (like oasis) call to
+   * This is the method that agent pipelines call to
    * decide *which model* to use before dispatching a request.
    */
   async resolveRoute(request: ClassifyRequest): Promise<RouteResult> {
@@ -279,8 +279,6 @@ export class Router {
    * Resolve effective model for a given route and optional semantic structure,
    * using service-level tier defaults and optionally overriding with the
    * router classification code policy.
-   *
-   * This mirrors the oasis `resolveEffectiveModel` + `selectModelByRouter` flow.
    *
    * @param route - the semantic route (casual, tool_use, complex, teaching)
    * @param classification - optional router classification for policy override

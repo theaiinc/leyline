@@ -4,7 +4,7 @@
 
 ### Added
 
-- **Semantic Router**: New `Classifier` module that uses a lightweight LLM to classify requests by `complexity`, `domain`, and `reasoning`, ported from the Oasis router pipeline.
+- **Semantic Router**: New `Classifier` module that uses a lightweight LLM to classify requests by `complexity`, `domain`, and `reasoning`.
 - **Model Registry**: New `ModelRegistry` class providing a configurable catalog of `ModelVariant` entries with support for custom variant definitions via `LEYLINE_CUSTOM_VARIANTS`.
 - **Code Policy**: Exported `selectModelByRouter` function — a deterministic code-policy that maps router classifications to model tiers (`2b`, `4b`, `12b`).
 - **`resolveRoute` endpoint**: `POST /v1/route` accepts `user_message` and `chat_history`, returns a structured routing decision (`classification`, `selectedTier`, `selectedModel`, `selectedProvider`).
@@ -18,7 +18,7 @@
 ### Changed
 
 - **Router class extended**: Backward-compatible constructor now accepts either a `QuotaManager` (existing usage) or `RouterOptions` (new features). Added `resolveRoute`, `resolveEffectiveModel`, `setTierConfig`, `setClassifier`, `setCodePolicy`, `setServiceTiers`.
-- **Configuration**: New environment variables for router model (`LEYLINE_ROUTER_MODEL`, `LEYLINE_OPENAI_BASE_URL`), tier models (`LEYLINE_MODEL_2B`, `LEYLINE_MODEL_4B`, `LEYLINE_MODEL_12B`), and custom variants (`LEYLINE_CUSTOM_VARIANTS`) with backward-compatible Oasis aliases.
+- **Configuration**: New environment variables for router model (`LEYLINE_ROUTER_MODEL`, `LEYLINE_OPENAI_BASE_URL`), tier models (`LEYLINE_MODEL_2B`, `LEYLINE_MODEL_4B`, `LEYLINE_MODEL_12B`), and custom variants (`LEYLINE_CUSTOM_VARIANTS`).
 - **License**: Changed from `UNLICENSED` to `MIT`.
 - **README**: Replaced ASCII diagrams with Mermaid charts (Architecture, Routing Flow, Classifier Prompt, Code Policy). Updated all documentation, configuration tables, and usage examples.
 - **Dashboard**: Logo image added to `public/index.html` header.

@@ -75,15 +75,15 @@ export const config: LeylineConfig = {
       OLLAMA: process.env.OLLAMA_DEFAULT_MODEL || 'llama2',
   },
   routerModel: {
-    model: process.env.LEYLINE_ROUTER_MODEL || process.env.OASIS_ROUTER_MODEL || '',
-    baseUrl: process.env.LEYLINE_OPENAI_BASE_URL || process.env.OASIS_OPENAI_BASE_URL || 'http://localhost:1234/v1',
+    model: process.env.LEYLINE_ROUTER_MODEL || '',
+    baseUrl: process.env.LEYLINE_OPENAI_BASE_URL || 'http://localhost:1234/v1',
     maxTokens: parseInt(process.env.LEYLINE_ROUTER_MAX_TOKENS || '64', 10),
     temperature: parseFloat(process.env.LEYLINE_ROUTER_TEMPERATURE || '0'),
   },
   tierModels: {
-    '2b': process.env.LEYLINE_MODEL_2B || process.env.OASIS_MODEL_2B || '',
-    '4b': process.env.LEYLINE_MODEL_4B || process.env.OASIS_MODEL_4B || '',
-    '12b': process.env.LEYLINE_MODEL_12B || process.env.OASIS_MODEL_12B || '',
+    '2b': process.env.LEYLINE_MODEL_2B || '',
+    '4b': process.env.LEYLINE_MODEL_4B || '',
+    '12b': process.env.LEYLINE_MODEL_12B || '',
   },
   customVariants: process.env.LEYLINE_CUSTOM_VARIANTS || '',
 };
