@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1] - 2026-06-17
+
+### Fixed
+
+- npm publish provenance failure: added missing `repository.url` to `package.json`.
+- Removed Oasis-specific env var aliases (`OASIS_MODEL_*`, `OASIS_ROUTER_MODEL`, `OASIS_OPENAI_BASE_URL`) from config.ts, `.env.example`, README, and CHANGELOG — Leyline must be a standalone package with no external dependencies.
+
 ## [1.1.0] - 2026-06-17
 
 ### Added
