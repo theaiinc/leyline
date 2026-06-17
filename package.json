@@ -22,6 +22,11 @@
   "author": "The AI Inc",
   "license": "MIT",
   "description": "The ultimate cost-optimizing LLM load balancer & gateway.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/theaiinc/leyline"
+  },
+  "homepage": "https://github.com/theaiinc/leyline",
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
     "@huggingface/inference": "^4.13.5",
