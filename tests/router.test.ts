@@ -1,6 +1,7 @@
 import { Router } from '../src/core/router';
 import { QuotaManager } from '../src/core/quota-manager';
 import { Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail } from '../src/core/types';
+import { logger } from '../src/core/logger';
 
 // Mock Provider
 class MockProvider implements Provider {
@@ -63,6 +64,7 @@ describe('Router', () => {
     let p2: MockProvider;
 
     beforeEach(() => {
+        logger.clear();
         quotaManager = new QuotaManager();
         router = new Router(quotaManager);
         p1 = new MockProvider('p1');
@@ -183,5 +185,34 @@ describe('Router', () => {
         expect(chunks.join('')).toContain('p2');
         expect(p1Spy).not.toHaveBeenCalled();
         expect(p2Spy).toHaveBeenCalledWith({ model: 'fixed-stream-model', messages: [] });
+    });
+
+    it('logs token usage from streaming chunks when available', async () => {
+        router = new Router({
+            quotaManager,
+            singleModel: { enabled: true, provider: 'p2', model: 'fixed-stream-model' },
+        });
+        router.addProvider(p2);
+        jest.spyOn(p2, 'completeStream').mockImplementation(async function* () {
+            yield {
+                id: 'p2', object: 'chunk', created: 2, model: 'test',
+                choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: null }]
+            };
+            yield {
+                id: 'p2', object: 'chunk', created: 2, model: 'test',
+                choices: [],
+                usage: { prompt_tokens: 1200, completion_tokens: 3, total_tokens: 1203 },
+            };
+        });
+
+        for await (const _chunk of router.routeStream({ model: 'ignored-model', messages: [] })) {
+            // drain stream
+        }
+
+        expect(logger.getLogs()[0].usage).toEqual({
+            prompt_tokens: 1200,
+            completion_tokens: 3,
+            total_tokens: 1203,
+        });
     });
 });

@@ -87,7 +87,7 @@ describe('dashboard response normalization', () => {
     expect(statusTone('rate_limited')).toBe('warning');
     expect(formatLogTime('')).toBe('-');
     expect(formatLogUsage({ total_tokens: 5 })).toBe('5 tokens');
-    expect(formatLogUsage({ chars: 42 })).toBe('42 chars');
+    expect(formatLogUsage({ chars: 42 })).toBe('42 output chars');
     expect(formatLogUsage(undefined)).toBe('-');
   });
 

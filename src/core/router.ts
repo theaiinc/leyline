@@ -16,6 +16,25 @@ import { maybeCompress } from './compress';
 import { formatProviderError, hydrateAxiosError } from './api-errors';
 import { ensureMessageArray } from './normalize-request';
 
+type UsageSnapshot = {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+};
+
+function usageFromStreamChunk(chunk: StreamChunk): UsageSnapshot | undefined {
+  if (!chunk.usage) return undefined;
+  const { prompt_tokens, completion_tokens, total_tokens } = chunk.usage;
+  if (prompt_tokens === undefined && completion_tokens === undefined && total_tokens === undefined) {
+    return undefined;
+  }
+  return { prompt_tokens, completion_tokens, total_tokens };
+}
+
+function streamLogUsage(providerUsage: UsageSnapshot | undefined, chars: number): UsageSnapshot | { chars: number } {
+  return providerUsage ?? { chars };
+}
+
 interface RequestAwareProvider extends Provider {
   canHandle?(request: CompletionRequest): Promise<boolean>;
 }
@@ -273,6 +292,7 @@ export class Router {
     if (fixedRoute) {
       const { provider, model } = fixedRoute;
       let providerChars = 0;
+      let providerUsage: UsageSnapshot | undefined;
 
       if (!this.quotaManager.checkQuota(provider.name)) {
         logger.log({ requestId, provider: provider.name, model, status: 'rate_limited', error: 'Quota exceeded' });
@@ -292,6 +312,7 @@ export class Router {
         for await (const chunk of stream) {
           const content = chunk.choices[0]?.delta?.content || '';
           providerChars += content.length;
+          providerUsage = usageFromStreamChunk(chunk) ?? providerUsage;
           yield chunk;
         }
 
@@ -301,7 +322,7 @@ export class Router {
           model,
           status: 'success',
           duration: Date.now() - start,
-          usage: { chars: providerChars },
+          usage: streamLogUsage(providerUsage, providerChars),
         });
         return;
       } catch (error: any) {
@@ -312,7 +333,7 @@ export class Router {
           status: 'error',
           error: error.message,
           duration: Date.now() - start,
-          usage: { chars: providerChars },
+          usage: streamLogUsage(providerUsage, providerChars),
         });
         const hydrated = await hydrateAxiosError(error);
         console.error(`[Router] Stream error with fixed provider ${provider.name}:`, formatProviderError(hydrated));
@@ -336,6 +357,7 @@ export class Router {
         }
 
         let providerChars = 0;
+        let providerUsage: UsageSnapshot | undefined;
         let effectiveModel = request.model;
         try {
             effectiveModel = request.model === 'auto' ? provider.defaultModel : request.model;
@@ -348,7 +370,7 @@ export class Router {
                   status: 'error',
                   error: `${provider.name} reported unavailable`,
                   duration: Date.now() - start,
-                  usage: { chars: providerChars },
+                  usage: streamLogUsage(providerUsage, providerChars),
                 });
                 console.warn(`[Router] ${provider.name} reported unavailable.`);
                 continue;
@@ -363,7 +385,7 @@ export class Router {
                 status: 'error',
                 error: `${provider.name} does not support model ${effectiveModel}`,
                 duration: Date.now() - start,
-                usage: { chars: providerChars },
+                usage: streamLogUsage(providerUsage, providerChars),
               });
               console.warn(`[Router] Skipping ${provider.name} — model ${effectiveModel} not supported`);
               continue;
@@ -378,6 +400,7 @@ export class Router {
               const content = chunk.choices[0]?.delta?.content || '';
               accumulatedContent += content;
               providerChars += content.length;
+              providerUsage = usageFromStreamChunk(chunk) ?? providerUsage;
               yield chunk;
           }
 
@@ -387,7 +410,7 @@ export class Router {
               model: effectiveModel,
               status: 'success',
               duration: Date.now() - start,
-              usage: { chars: providerChars },
+              usage: streamLogUsage(providerUsage, providerChars),
             });
           return;
         } catch (error: any) {
@@ -398,7 +421,7 @@ export class Router {
               status: 'error',
               error: error.message,
               duration: Date.now() - start,
-              usage: { chars: providerChars },
+              usage: streamLogUsage(providerUsage, providerChars),
           });
           console.error(`[Router] Stream Error with ${provider.name}:`, error);
         }

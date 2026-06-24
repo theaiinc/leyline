@@ -347,7 +347,7 @@ export function formatLogUsage(usage: LogEntry['usage']): string {
   if (usage.prompt_tokens !== undefined || usage.completion_tokens !== undefined) {
     return `${usage.prompt_tokens || 0}/${usage.completion_tokens || 0} tokens`;
   }
-  if (usage.chars !== undefined) return `${usage.chars} chars`;
+  if (usage.chars !== undefined) return `${usage.chars} output chars`;
   return '-';
 }
 

@@ -56,6 +56,11 @@ export interface StreamChunk {
     delta: { role?: string; content?: string };
     finish_reason: string | null;
   }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
 }
 
 export interface ModelDetail {

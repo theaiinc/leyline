@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.3.3] - 2026-06-25
+
+### Added
+
+- LiteLLM payload audit logging for safe inbound/outbound metadata comparison without logging prompt contents.
+- LiteLLM Azure launcher now writes model context metadata, disables LiteLLM cache, and enables pre-call checks.
+
+### Fixed
+
+- LiteLLM streaming parser now buffers SSE lines across transport chunks so Cursor tool-call deltas and usage chunks are not dropped when JSON events are split.
+- Stream usage logging now records provider token usage when LiteLLM returns it, with dashboard fallback text clarified as output characters.
+- Cursor flat function/custom tool definitions are normalized before forwarding to LiteLLM's Azure Responses transformer.
+
 ## [1.3.2] - 2026-06-24
 
 ### Fixed
