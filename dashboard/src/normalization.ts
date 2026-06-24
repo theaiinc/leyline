@@ -78,6 +78,7 @@ export type StatsResponse = {
   providers: ProviderStats[];
   logs: LogEntry[];
   tunnel?: TunnelInfo;
+  clientAuth?: ClientAuthInfo;
 };
 
 export type TunnelState = 'disabled' | 'starting' | 'ready' | 'error';
@@ -89,6 +90,12 @@ export type TunnelInfo = {
   publicBaseUrl?: string;
   localUrl?: string;
   error?: string;
+};
+
+export type ClientAuthInfo = {
+  enabled: boolean;
+  apiKey?: string;
+  generated: boolean;
 };
 
 export type BadgeTone = 'neutral' | 'success' | 'warning' | 'danger';
@@ -270,6 +277,16 @@ function normalizeTunnel(value: unknown): TunnelInfo | undefined {
   };
 }
 
+function normalizeClientAuth(value: unknown): ClientAuthInfo | undefined {
+  if (!isRecord(value)) return undefined;
+
+  return {
+    enabled: Boolean(value.enabled),
+    apiKey: optionalString(value.apiKey),
+    generated: Boolean(value.generated),
+  };
+}
+
 function normalizeLog(value: unknown): LogEntry {
   const raw = isRecord(value) ? value : {};
   const status = optionalString(raw.status)?.toLowerCase() || 'unknown';
@@ -369,5 +386,6 @@ export function normalizeStatsResponse(value: unknown): StatsResponse {
     providers: Array.isArray(raw.providers) ? raw.providers.map(normalizeProviderStats) : [],
     logs: Array.isArray(raw.logs) ? raw.logs.map(normalizeLog) : [],
     tunnel: normalizeTunnel(raw.tunnel),
+    clientAuth: normalizeClientAuth(raw.clientAuth),
   };
 }

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [1.3.0] - 2026-06-24
 
 ### Added
 
@@ -11,18 +11,26 @@
 - React dashboard with provider cards, runtime API key persistence controls, Azure runtime settings, network status, analytics, and recent logs.
 - Optional Apple Keychain persistence for dashboard-saved API keys via the macOS `security` CLI, with server memory fallback and browser `localStorage` fallback from the dashboard.
 - OpenAI-compatible Azure `/openai/v1` endpoint support via `AZURE_OPENAI_BASE_URL`, matching Azure OpenAI SDK usage with only URL, key, and model.
-
-### Fixed
-
-- Dashboard Keychain status now treats missing saved provider keys as normal unconfigured keys and reserves fallback warnings for actual `security` CLI or Keychain access failures.
-
-## [1.3.0] - 2026-06-17
+- LiteLLM provider and `npm run litellm:azure` launcher for Cursor Agent / Azure Responses compatibility.
+- Cloudflare tunnel sessions now generate a fresh random `ll-...` client API key when `LEYLINE_CLIENT_API_KEY` is unset.
+- Dashboard tunnel banner now shows masked connection details with Show/Hide and Copy controls for the public base URL and session API key.
 
 ### Changed
 
 - **Prompt Compression migrated from `headroom-ai` npm package to `@theaiinc/headroom-ai` Python library**: Forked `chopratejas/headroom` to `github.com/theaiinc/headroom-ai`, stripped it to library-only (kept: transforms, memory, ccr, cache, relevance, shared_context). Added `headroom.json_cli` JSON stdin/stdout bridge. Leyline spawns it as a subprocess via `headroom-compress` CLI entry point (falls back to `python3 -m headroom.json_cli`). Install: `pip install headroom-ai`.
 - Removed `headroom-ai` optional peer dependency from `package.json`.
 - Removed `HEADROOM_BASE_URL` env var (no longer needed — calls Python library directly, not HTTP proxy).
+- Recommended Cursor + Azure path now routes Leyline through LiteLLM (`LEYLINE_FIXED_PROVIDER=LiteLLM`) instead of hand-rolled Azure request shims.
+
+### Fixed
+
+- Dashboard Keychain status now treats missing saved provider keys as normal unconfigured keys and reserves fallback warnings for actual `security` CLI or Keychain access failures.
+- Ollama is opt-in and rejects cloud model names that are not installed local tags, preventing accidental localhost failover for Azure/OpenAI model IDs.
+- Azure request normalization preserves tool call messages and avoids dropping conversations with empty/Responses-style payloads.
+
+### Security
+
+- Dashboard routes and dashboard management APIs are restricted to direct localhost access; public tunnel/proxy requests are blocked.
 
 ## [1.2.0] - 2026-06-17
 

@@ -21,6 +21,7 @@ export { OpenAIProvider } from './providers/openai';
 export { OpenRouterProvider } from './providers/openrouter';
 export { OllamaProvider } from './providers/ollama';
 export { LMStudioProvider } from './providers/lmstudio';
+export { LiteLLMProvider } from './providers/litellm';
 export { AzureOpenAIProvider } from './providers/azure-openai';
 export { createServer } from './server';
 export type { CreateServerOptions } from './server';
@@ -54,6 +55,7 @@ import { OpenAIProvider } from './providers/openai';
 import { OpenRouterProvider } from './providers/openrouter';
 import { OllamaProvider } from './providers/ollama';
 import { LMStudioProvider } from './providers/lmstudio';
+import { LiteLLMProvider } from './providers/litellm';
 import { AzureOpenAIProvider } from './providers/azure-openai';
 import { config, DEFAULT_LEYLINE_CLIENT_API_KEY } from './config';
 import type { ModelVariant } from './core/types';
@@ -130,6 +132,9 @@ async function bootstrap() {
   router.addProvider(new HuggingFaceProvider());
   router.addProvider(new OpenAIProvider());
   router.addProvider(new OpenRouterProvider());
+  if (process.env.LITELLM_ENABLED === 'true' || process.env.LITELLM_BASE_URL || process.env.LITELLM_MODEL) {
+    router.addProvider(new LiteLLMProvider());
+  }
   router.addProvider(new AzureOpenAIProvider());
   if (process.env.OLLAMA_ENABLED === 'true') {
     router.addProvider(new OllamaProvider());
@@ -157,6 +162,15 @@ async function bootstrap() {
     console.log(`[Leyline] AI Router listening on port ${config.port}`);
     console.log(`[Leyline] Local URL: ${localUrl}`);
     console.log(`[Leyline] Max request body: ${config.bodyLimit}`);
+    if (process.env.LEYLINE_CLIENT_AUTH_ENABLED === 'false') {
+      console.warn('[Leyline] Client API auth disabled (LEYLINE_CLIENT_AUTH_ENABLED=false)');
+    } else if (process.env.LEYLINE_CLIENT_API_KEY !== undefined) {
+      console.log('[Leyline] Client API key loaded from LEYLINE_CLIENT_API_KEY');
+    } else if (config.tunnel.enabled) {
+      console.log('[Leyline] Generated random client API key for this tunnel session');
+    } else {
+      console.log('[Leyline] Client API key uses local default; set LEYLINE_CLIENT_API_KEY before exposing publicly');
+    }
     if (config.quotas.enabled) {
       console.log('[Leyline] Provider quotas enabled (LEYLINE_QUOTAS_ENABLED=true)');
     } else {

@@ -128,6 +128,17 @@ describe('dashboard API key overrides', () => {
     logger.clear();
   });
 
+  it('blocks dashboard access through public proxy headers', async () => {
+    const router = new Router();
+    router.addProvider(new ConfigurableProvider());
+    const app = createServer(router, new QuotaManager(), { apiKeyStore: new TestSecretStore() });
+
+    await request(app)
+      .get('/dashboard/api-keys')
+      .set('cf-connecting-ip', '203.0.113.10')
+      .expect(403);
+  });
+
   it('should list configurable provider key status without exposing keys', async () => {
     const router = new Router();
     router.addProvider(new ConfigurableProvider());

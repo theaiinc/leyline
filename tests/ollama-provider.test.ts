@@ -10,6 +10,17 @@ describe('OllamaProvider', () => {
     jest.resetAllMocks();
   });
 
+  it('does not handle registry cloud models even when a similarly named tag exists locally', async () => {
+    mockedAxios.get.mockResolvedValue({
+      data: {
+        models: [{ name: 'gpt-5.5:latest' }],
+      },
+    });
+
+    const provider = new OllamaProvider('http://localhost:11434', 'llama3.2:latest');
+    await expect(provider.canHandle({ model: 'gpt-5.5', messages: [] })).resolves.toBe(false);
+  });
+
   it('does not handle cloud model names that are not installed locally', async () => {
     mockedAxios.get.mockResolvedValue({
       data: {

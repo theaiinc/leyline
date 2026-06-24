@@ -1,17 +1,24 @@
 import axios from 'axios';
 import { Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail } from '../core/types';
 import { config } from '../config';
+import { ModelRegistry } from '../core/model-registry';
 
 export class OllamaProvider implements Provider {
   name = 'Ollama';
   defaultModel: string;
   private baseUrl: string;
   private model: string;
+  private registry: ModelRegistry;
 
-  constructor(baseUrl: string = process.env.OLLAMA_BASE_URL || 'http://localhost:11434', model: string = config.DEFAULT_MODELS.OLLAMA) {
+  constructor(
+    baseUrl: string = process.env.OLLAMA_BASE_URL || 'http://localhost:11434',
+    model: string = config.DEFAULT_MODELS.OLLAMA,
+    registry: ModelRegistry = new ModelRegistry(),
+  ) {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.model = model;
     this.defaultModel = model;
+    this.registry = registry;
   }
 
   async isAvailable(): Promise<boolean> {
@@ -27,6 +34,10 @@ export class OllamaProvider implements Provider {
     try {
       if (!(await this.isServerAvailable())) return false;
       const requested = request.model === 'auto' ? this.model : request.model;
+      const variant = this.registry.lookupVariant(null, requested);
+      if (variant && variant.provider !== 'ollama') {
+        return false;
+      }
       return Boolean(await this.resolveInstalledModel(requested));
     } catch {
       return false;

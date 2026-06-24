@@ -1,9 +1,10 @@
-import type { ChatMessage } from '../core/types';
+import type { ChatMessage, CompletionRequest } from '../core/types';
 import { ensureMessageArray } from '../core/normalize-request';
 
-const AZURE_ALLOWED_FIELDS = new Set([
+const AZURE_CHAT_COMPLETION_FIELDS = new Set([
   'tools',
   'tool_choice',
+  'parallel_tool_calls',
   'temperature',
   'top_p',
   'max_tokens',
@@ -18,7 +19,27 @@ const AZURE_ALLOWED_FIELDS = new Set([
   'logprobs',
   'top_logprobs',
   'n',
+  'stream_options',
 ]);
+
+/** Responses API / Cursor-only fields that Azure Chat Completions rejects. */
+const CURSOR_RESPONSES_ONLY_FIELDS = new Set([
+  'include',
+  'input',
+  'instructions',
+  'previous_response_id',
+  'truncation',
+  'reasoning',
+  'modalities',
+  'audio',
+  'text',
+  'metadata',
+  'store',
+  'prompt',
+  'prompt_cache_key',
+]);
+
+const AZURE_ALLOWED_FIELDS = AZURE_CHAT_COMPLETION_FIELDS;
 
 export function sanitizeAzureMessages(messages: ChatMessage[] | unknown): ChatMessage[] {
   const source = ensureMessageArray(messages);
@@ -65,9 +86,66 @@ export function sanitizeAzureMessages(messages: ChatMessage[] | unknown): ChatMe
 
 type ToolRecord = Record<string, unknown>;
 
+function isNonEmptyObject(value: unknown): value is ToolRecord {
+  return typeof value === 'object' && value !== null && Object.keys(value).length > 0;
+}
+
+function sanitizeAzureCustomFormat(format: unknown): ToolRecord | undefined {
+  if (!format || typeof format !== 'object') return undefined;
+  const record = format as ToolRecord;
+
+  if (record.type === 'text') {
+    return { type: 'text' };
+  }
+
+  if (record.type === 'grammar') {
+    if (isNonEmptyObject(record.grammar)) {
+      return { type: 'grammar', grammar: record.grammar };
+    }
+    // Cursor often sends { type: "grammar" } without grammar.syntax/definition.
+    // Azure rejects that; text format keeps the custom tool usable.
+    return { type: 'text' };
+  }
+
+  return record;
+}
+
+function sanitizeAzureCustomTool(record: ToolRecord): ToolRecord | null {
+  const nested = record.custom;
+  if (nested && typeof nested === 'object') {
+    const custom = nested as ToolRecord;
+    if (typeof custom.name !== 'string' || !custom.name) return null;
+    const format = sanitizeAzureCustomFormat(custom.format);
+    return {
+      type: 'custom',
+      custom: {
+        name: custom.name,
+        ...(typeof custom.description === 'string' ? { description: custom.description } : {}),
+        ...(format ? { format } : {}),
+      },
+    };
+  }
+
+  // Cursor flat custom shape: { type: "custom", name: "apply_patch", description: "...", format: {...} }
+  if (typeof record.name !== 'string' || !record.name) return null;
+  const format = sanitizeAzureCustomFormat(record.format);
+  return {
+    type: 'custom',
+    custom: {
+      name: record.name,
+      ...(typeof record.description === 'string' ? { description: record.description } : {}),
+      ...(format ? { format } : {}),
+    },
+  };
+}
+
 function sanitizeAzureTool(tool: unknown): ToolRecord | null {
   if (!tool || typeof tool !== 'object') return null;
   const record = tool as ToolRecord;
+
+  if (record.type === 'custom') {
+    return sanitizeAzureCustomTool(record);
+  }
 
   if (record.type !== 'function') return null;
 
@@ -111,6 +189,40 @@ export function sanitizeAzureTools(tools: unknown): ToolRecord[] | undefined {
   return sanitized.length > 0 ? sanitized : undefined;
 }
 
+export function prepareAzureChatParams(
+  request: CompletionRequest,
+  stream: boolean,
+  model: string,
+  useOpenAICompatibleEndpoint: boolean,
+): Record<string, unknown> {
+  const { model: _model, messages, stream: _stream, tools, input: _input, ...rest } = request;
+
+  const params: Record<string, unknown> = { stream };
+  params.messages = sanitizeAzureMessages(messages);
+
+  for (const [key, value] of Object.entries(rest)) {
+    if (value === undefined) continue;
+    if (CURSOR_RESPONSES_ONLY_FIELDS.has(key)) continue;
+    if (!AZURE_CHAT_COMPLETION_FIELDS.has(key)) continue;
+    params[key] = value;
+  }
+
+  if (tools !== undefined) {
+    params.tools = sanitizeAzureTools(tools);
+    if (!params.tools) {
+      delete params.tool_choice;
+      delete params.parallel_tool_calls;
+    }
+  }
+
+  if (useOpenAICompatibleEndpoint) {
+    params.model = model;
+  }
+
+  return params;
+}
+
+/** @deprecated Use prepareAzureChatParams — kept for tests migrating off field whitelists. */
 export function sanitizeAzureRequestFields(request: Record<string, unknown>): Record<string, unknown> {
   const sanitized: Record<string, unknown> = {};
 

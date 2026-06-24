@@ -57,6 +57,11 @@ describe('dashboard response normalization', () => {
         publicUrl: 'https://example.trycloudflare.com',
         publicBaseUrl: 'https://example.trycloudflare.com/v1',
       },
+      clientAuth: {
+        enabled: true,
+        apiKey: 'll-session-key',
+        generated: true,
+      },
     });
 
     expect(stats.tunnel).toEqual({
@@ -66,6 +71,11 @@ describe('dashboard response normalization', () => {
       publicBaseUrl: 'https://example.trycloudflare.com/v1',
       localUrl: undefined,
       error: undefined,
+    });
+    expect(stats.clientAuth).toEqual({
+      enabled: true,
+      apiKey: 'll-session-key',
+      generated: true,
     });
   });
 

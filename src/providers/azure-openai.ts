@@ -1,15 +1,35 @@
-import axios from 'axios';
+import OpenAI from 'openai';
+import { AzureOpenAI } from 'openai/azure';
 import { Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail } from '../core/types';
 import { config } from '../config';
-import { hydrateAxiosError } from '../core/api-errors';
-import { sanitizeAzureMessages, sanitizeAzureRequestFields } from './azure-request';
+import { prepareAzureChatParams } from './azure-request';
+
+function toProviderError(error: unknown): unknown {
+  const candidate = error as {
+    status?: number;
+    message?: string;
+    error?: unknown;
+  };
+
+  if (typeof candidate?.status === 'number') {
+    return {
+      message: candidate.message || 'Request failed',
+      response: {
+        status: candidate.status,
+        data: candidate.error ?? { error: { message: candidate.message } },
+      },
+    };
+  }
+
+  return error;
+}
 
 /**
  * Azure OpenAI chat completions provider.
  *
- * Supports both Azure URL shapes:
- *   - OpenAI-compatible v1: https://...services.ai.azure.com/openai/v1
- *   - Legacy deployment path: https://...openai.azure.com
+ * Uses the official `openai` SDK (`OpenAI` for v1-compatible endpoints,
+ * `AzureOpenAI` for legacy deployment URLs) so streaming, tool calls,
+ * and Cursor passthrough fields are handled by the library — not raw axios.
  */
 export class AzureOpenAIProvider implements Provider {
   name = 'AzureOpenAI';
@@ -19,6 +39,7 @@ export class AzureOpenAIProvider implements Provider {
   private apiVersion: string;
   private deployment: string;
   private useOpenAICompatibleEndpoint: boolean;
+  private client: OpenAI | null = null;
 
   constructor(
     apiKey: string = process.env.AZURE_OPENAI_API_KEY || '',
@@ -41,6 +62,7 @@ export class AzureOpenAIProvider implements Provider {
 
   setApiKey(apiKey: string): void {
     this.apiKey = apiKey;
+    this.client = null;
   }
 
   hasApiKey(): boolean {
@@ -56,15 +78,16 @@ export class AzureOpenAIProvider implements Provider {
     };
   }
 
-  setRuntimeConfig(config: Record<string, string | undefined>): void {
-    if (typeof config.baseUrl === 'string') {
-      this.endpoint = config.baseUrl.trim().replace(/\/+$/, '');
+  setRuntimeConfig(runtime: Record<string, string | undefined>): void {
+    if (typeof runtime.baseUrl === 'string') {
+      this.endpoint = runtime.baseUrl.trim().replace(/\/+$/, '');
       this.useOpenAICompatibleEndpoint = /\/openai\/v1\/?$/.test(this.endpoint);
     }
-    if (typeof config.model === 'string') {
-      this.deployment = config.model.trim();
+    if (typeof runtime.model === 'string') {
+      this.deployment = runtime.model.trim();
       this.defaultModel = this.deployment;
     }
+    this.client = null;
   }
 
   async getModels(): Promise<ModelDetail[]> {
@@ -75,109 +98,63 @@ export class AzureOpenAIProvider implements Provider {
 
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
     try {
-      const response = await axios.post(
-        this.chatCompletionsUrl(request.model),
-        this.payload(request, false),
-        {
-          headers: this.headers(),
-          timeout: 300000,
-        },
+      const client = this.getClient();
+      const params = prepareAzureChatParams(
+        request,
+        false,
+        this.deployment || request.model,
+        this.useOpenAICompatibleEndpoint,
       );
-
-      return response.data;
+      const response = await client.chat.completions.create(
+        params as unknown as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
+      );
+      return response as unknown as CompletionResponse;
     } catch (error) {
-      throw await hydrateAxiosError(error);
+      throw toProviderError(error);
     }
   }
 
   async *completeStream(request: CompletionRequest): AsyncGenerator<StreamChunk, void, unknown> {
-    let response;
     try {
-      response = await axios.post(
-        this.chatCompletionsUrl(request.model),
-        this.payload(request, true),
-        {
-          headers: this.headers(),
-          responseType: 'stream',
-          timeout: 300000,
-          validateStatus: (status) => status < 500,
-        },
+      const client = this.getClient();
+      const params = prepareAzureChatParams(
+        request,
+        true,
+        this.deployment || request.model,
+        this.useOpenAICompatibleEndpoint,
       );
-    } catch (error) {
-      throw await hydrateAxiosError(error);
-    }
+      const stream = await client.chat.completions.create(
+        params as unknown as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming,
+      );
 
-    if (response.status >= 400) {
-      const hydrated = await hydrateAxiosError({
-        isAxiosError: true,
-        message: `Request failed with status code ${response.status}`,
-        response: {
-          status: response.status,
-          statusText: response.statusText,
-          data: response.data,
-          headers: response.headers,
-        },
-      });
-      throw hydrated;
-    }
-
-    const stream: any = response.data;
-    for await (const chunk of stream) {
-      const lines = chunk
-        .toString()
-        .split('\n')
-        .filter((line: string) => line.trim() !== '');
-
-      for (const line of lines) {
-        if (line.includes('[DONE]')) return;
-        if (line.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(line.replace('data: ', ''));
-            yield data;
-          } catch {
-            // skip partial chunks
-          }
-        }
+      for await (const chunk of stream) {
+        yield chunk as unknown as StreamChunk;
       }
+    } catch (error) {
+      throw toProviderError(error);
     }
   }
 
-  private chatCompletionsUrl(model?: string): string {
-    if (this.useOpenAICompatibleEndpoint) {
-      return `${this.endpoint}/chat/completions`;
+  private getClient(): OpenAI {
+    if (!this.client) {
+      this.client = this.createClient();
     }
-
-    const deployment = encodeURIComponent(model || this.deployment);
-    const apiVersion = encodeURIComponent(this.apiVersion);
-    return `${this.endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`;
+    return this.client;
   }
 
-  private payload(request: CompletionRequest, stream: boolean): Record<string, unknown> {
-    const deploymentModel = this.deployment || request.model;
-    const payload: Record<string, unknown> = {
-      messages: sanitizeAzureMessages(request.messages),
-      stream,
-      ...sanitizeAzureRequestFields(request),
-    };
-
+  private createClient(): OpenAI {
     if (this.useOpenAICompatibleEndpoint) {
-      payload.model = deploymentModel;
+      return new OpenAI({
+        baseURL: this.endpoint,
+        apiKey: this.apiKey,
+      });
     }
 
-    return payload;
-  }
-
-  private headers(): Record<string, string> {
-    if (this.useOpenAICompatibleEndpoint) {
-      return {
-        'Authorization': `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-      };
-    }
-
-    return {
-      'api-key': this.apiKey,
-      'Content-Type': 'application/json',
-    };
+    return new AzureOpenAI({
+      endpoint: this.endpoint,
+      apiKey: this.apiKey,
+      deployment: this.deployment,
+      apiVersion: this.apiVersion,
+    });
   }
 }

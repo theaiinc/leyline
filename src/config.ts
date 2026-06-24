@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import { randomBytes } from 'crypto';
 
 dotenv.config();
 
@@ -58,6 +59,13 @@ export interface TunnelConfig {
 
 /** Default Bearer token clients send when calling Leyline's OpenAI-compatible API. */
 export const DEFAULT_LEYLINE_CLIENT_API_KEY = 'leyline';
+
+export function resolveClientApiKey(): string {
+  if (process.env.LEYLINE_CLIENT_AUTH_ENABLED === 'false') return '';
+  if (process.env.LEYLINE_CLIENT_API_KEY !== undefined) return process.env.LEYLINE_CLIENT_API_KEY;
+  if (process.env.LEYLINE_TUNNEL_ENABLED !== 'false') return `ll-${randomBytes(32).toString('base64url')}`;
+  return DEFAULT_LEYLINE_CLIENT_API_KEY;
+}
 
 export interface LeylineConfig {
   port: number;
@@ -150,11 +158,7 @@ export const config: LeylineConfig = {
     provider: process.env.LEYLINE_FIXED_PROVIDER || '',
     model: process.env.LEYLINE_FIXED_MODEL || '',
   },
-  clientApiKey: (() => {
-    if (process.env.LEYLINE_CLIENT_AUTH_ENABLED === 'false') return '';
-    if (process.env.LEYLINE_CLIENT_API_KEY !== undefined) return process.env.LEYLINE_CLIENT_API_KEY;
-    return DEFAULT_LEYLINE_CLIENT_API_KEY;
-  })(),
+  clientApiKey: resolveClientApiKey(),
   tunnel: {
     enabled: process.env.LEYLINE_TUNNEL_ENABLED !== 'false',
     binary: process.env.LEYLINE_TUNNEL_BINARY || 'cloudflared',

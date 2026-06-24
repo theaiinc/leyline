@@ -1,4 +1,3 @@
-import axios from 'axios';
 import request from 'supertest';
 import { createServer } from '../src/server';
 import { Router } from '../src/core/router';
@@ -8,9 +7,26 @@ import { AzureOpenAIProvider } from '../src/providers/azure-openai';
 import { SecretStore, SecretStoreStatus } from '../src/core/secret-store';
 import { LEYLINE_CLIENT_AUTH_HEADER } from './client-auth-header';
 
-jest.mock('axios');
+const mockCreate = jest.fn();
 
-const mockedAxios = axios as jest.Mocked<typeof axios>;
+jest.mock('openai', () => {
+  class MockOpenAI {
+    chat = {
+      completions: {
+        create: mockCreate,
+      },
+    };
+  }
+
+  return {
+    __esModule: true,
+    default: MockOpenAI,
+  };
+});
+
+jest.mock('openai/azure', () => ({
+  AzureOpenAI: jest.requireMock('openai').default,
+}));
 
 class TestSecretStore implements SecretStore {
   values = new Map<string, string>();
@@ -56,15 +72,13 @@ describe('AzureOpenAI dashboard logging', () => {
   });
 
   it('logs successful AzureOpenAI requests after browser localStorage key rehydration', async () => {
-    mockedAxios.post.mockResolvedValueOnce({
-      data: {
-        id: 'azure-success',
-        object: 'chat.completion',
-        created: 1,
-        model: 'gpt-5.5',
-        choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
-        usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 },
-      },
+    mockCreate.mockResolvedValueOnce({
+      id: 'azure-success',
+      object: 'chat.completion',
+      created: 1,
+      model: 'gpt-5.5',
+      choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 },
     });
     const provider = new AzureOpenAIProvider(
       '',
@@ -85,19 +99,11 @@ describe('AzureOpenAI dashboard logging', () => {
 
     const response = await request(app).get('/dashboard/stats').expect(200);
 
-    expect(mockedAxios.post).toHaveBeenCalledWith(
-      'https://example.services.ai.azure.com/openai/v1/chat/completions',
-      {
-        model: 'gpt-5.5',
-        messages: [{ role: 'user', content: 'hello' }],
-        stream: false,
-      },
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: 'Bearer browser-key',
-        }),
-      }),
-    );
+    expect(mockCreate).toHaveBeenCalledWith({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'hello' }],
+      stream: false,
+    });
     expect(response.body.providers[0]).toMatchObject({
       name: 'AzureOpenAI',
       apiKeyConfigured: true,
@@ -132,7 +138,11 @@ describe('AzureOpenAI dashboard logging', () => {
   });
 
   it('logs AzureOpenAI auth failures with provider, model, status, and error', async () => {
-    mockedAxios.post.mockRejectedValueOnce(new Error('Request failed with status code 401'));
+    mockCreate.mockRejectedValueOnce({
+      status: 401,
+      message: '401 Incorrect API key provided',
+      error: { message: '401 Incorrect API key provided' },
+    });
     const app = createAzureApp(new AzureOpenAIProvider(
       'test-key',
       'https://example.services.ai.azure.com/openai/v1',
@@ -143,7 +153,7 @@ describe('AzureOpenAI dashboard logging', () => {
       .post('/v1/chat/completions')
       .set(LEYLINE_CLIENT_AUTH_HEADER)
       .send({ model: 'auto', messages: [{ role: 'user', content: 'hello' }] })
-      .expect(503);
+      .expect(401);
 
     const response = await request(app).get('/dashboard/stats').expect(200);
 
@@ -152,7 +162,7 @@ describe('AzureOpenAI dashboard logging', () => {
       provider: 'AzureOpenAI',
       model: 'gpt-5.5',
       status: 'error',
-      error: 'Request failed with status code 401',
+      error: '401 Incorrect API key provided',
     });
   });
 });

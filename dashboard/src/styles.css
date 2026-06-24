@@ -393,6 +393,36 @@ th {
   white-space: nowrap;
 }
 
+.secret-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.secret-row {
+  display: grid;
+  grid-template-columns: 9rem minmax(0, 1fr) auto;
+  gap: 0.6rem;
+  align-items: center;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 0.75rem;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 0.55rem;
+}
+
+.secret-row span {
+  font-weight: 800;
+}
+
+.secret-row code {
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.secret-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
 .status-list {
   display: grid;
   gap: 0.6rem;
@@ -466,5 +496,13 @@ th {
   .hero,
   .section-heading {
     flex-direction: column;
+  }
+
+  .secret-row {
+    grid-template-columns: 1fr;
+  }
+
+  .secret-actions {
+    justify-content: flex-start;
   }
 }

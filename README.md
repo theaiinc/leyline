@@ -44,6 +44,8 @@ graph TB
 - **📊 React Dashboard**: Monitor network status, rate limits, request logs, and API key persistence at `/dashboard`.
 - **📈 Agent Analytics**: Insights into "Most Popular", "Fastest", and "Highest Quality" (Elo-rated) models.
 - **🔍 Model Discovery**: Search and filter through thousands of available models from connected providers.
+- **🔁 LiteLLM Azure Adapter**: Route Cursor Agent / OpenAI-compatible calls through LiteLLM for Azure Responses API compatibility.
+- **🔐 Tunnel-Safe Auth**: Generate a fresh client API key per Cloudflare tunnel session and keep the dashboard localhost-only.
 - **🔌 OpenAI Compatible**: Drop-in replacement for OpenAI SDKs (`/v1/chat/completions`).
 
 ## 📦 Installation
@@ -78,11 +80,14 @@ LEYLINE_KEYCHAIN_SERVICE=@theaiinc/leyline
 LEYLINE_ROUTER_MODEL=
 LEYLINE_OPENAI_BASE_URL=http://localhost:1234/v1
 
-# ── Single Model Mode (optional) ───────────────────────────
-# Disable dynamic routing/failover and force one model
-LEYLINE_ROUTER_ENABLED=true
-LEYLINE_FIXED_PROVIDER=
-LEYLINE_FIXED_MODEL=
+# ── Cursor + Azure via LiteLLM (recommended) ───────────────
+LITELLM_ENABLED=true
+LITELLM_BASE_URL=http://127.0.0.1:4000/v1
+LITELLM_MODEL=gpt-5.5
+LITELLM_API_KEY=not-needed
+LEYLINE_ROUTER_ENABLED=false
+LEYLINE_FIXED_PROVIDER=LiteLLM
+LEYLINE_FIXED_MODEL=gpt-5.5
 
 # ── Model Tier Resolution (optional) ───────────────────────
 # Maps tier labels to actual model names
@@ -95,7 +100,13 @@ LEYLINE_MODEL_12B=google/gemma-4-12b
 LEYLINE_CUSTOM_VARIANTS=
 ```
 
-Run the router:
+Start the LiteLLM Azure adapter in one terminal:
+
+```bash
+npm run litellm:azure
+```
+
+Run the router in another terminal:
 
 ```bash
 npx @theaiinc/leyline
@@ -107,7 +118,7 @@ Set `LEYLINE_TUNNEL_ENABLED=false` if you do not want the tunnel, or install [cl
 
 #### Client API keys (calling Leyline)
 
-Leyline validates incoming `Authorization` headers on `/v1/chat/completions` and `/v1/route`. The default client API key is **`leyline`** — this is separate from provider credentials (Azure OpenAI, OpenAI, Gemini, etc.), which are configured in Leyline itself via `.env` or the `/dashboard` API key panel.
+Leyline validates incoming `Authorization` headers on `/v1/chat/completions` and `/v1/route`. When the Cloudflare tunnel is enabled and `LEYLINE_CLIENT_API_KEY` is unset, Leyline generates a fresh random `ll-...` client key for that server process and prints it next to the public base URL. This key is separate from provider credentials (Azure OpenAI, OpenAI, Gemini, etc.), which are configured in Leyline itself via `.env` or the local `/dashboard` API key panel.
 
 When using the OpenAI SDK against Leyline at `http://localhost:3000/v1`:
 
@@ -124,7 +135,7 @@ Or pass the header directly:
 curl -H "Authorization: Bearer leyline" ...
 ```
 
-Set `LEYLINE_CLIENT_API_KEY` to change the expected key, or `LEYLINE_CLIENT_AUTH_ENABLED=false` to disable client auth (legacy behavior).
+Set `LEYLINE_CLIENT_API_KEY` to pin a stable expected key, or `LEYLINE_CLIENT_AUTH_ENABLED=false` to disable client auth (legacy behavior). The dashboard shows the current public base URL and generated client key masked by default with Show/Copy controls.
 
 Do **not** pass your Azure or OpenAI provider key to Leyline clients. Configure `AZURE_OPENAI_API_KEY` (or save it in `/dashboard` under `AzureOpenAI`) on the Leyline server instead.
 
@@ -312,6 +323,8 @@ Access the dashboard at `http://localhost:3000/dashboard` to view:
   - **⚡ Latency**: Fastest response times.
   - **🌟 Quality**: Models ranked by LMSYS Elo ratings (GPT-4o, Claude 3.5, etc.).
 
+The dashboard and dashboard APIs are intentionally **localhost-only**. Cloudflare/proxy requests to `/dashboard/*` are blocked so the public tunnel exposes only the OpenAI-compatible `/v1/*` API surface. Use the local dashboard to copy the current tunnel base URL and generated client key.
+
 Dashboard key behavior:
 
 - `.env` keys are treated as explicit startup configuration and take precedence over Keychain during startup.
@@ -340,9 +353,13 @@ Dashboard key behavior:
 | `AZURE_OPENAI_DEFAULT_MODEL` | `gpt-5.5` | Default model for OpenAI-compatible Azure endpoints |
 | `AZURE_OPENAI_ENDPOINT` | — | Legacy Azure resource endpoint, e.g. `https://your-resource.openai.azure.com` |
 | `AZURE_OPENAI_DEPLOYMENT` | — | Legacy Azure deployment name used as the default model |
-| `AZURE_OPENAI_API_VERSION` | `2024-10-21` | Azure OpenAI chat completions API version |
+| `AZURE_OPENAI_API_VERSION` | `2024-10-21` | Azure OpenAI API version for direct Azure provider usage |
+| `LITELLM_ENABLED` | — | Register the LiteLLM proxy provider |
+| `LITELLM_BASE_URL` | `http://127.0.0.1:4000/v1` | LiteLLM proxy OpenAI-compatible base URL |
+| `LITELLM_MODEL` | `gpt-5.5` | Model/deployment name exposed through LiteLLM |
+| `LITELLM_API_KEY` | `not-needed` | Bearer key Leyline sends to the local LiteLLM proxy |
 | `PORT` | `3000` | HTTP server port |
-| `LEYLINE_CLIENT_API_KEY` | `leyline` | Expected Bearer token for `/v1/chat/completions` and `/v1/route` |
+| `LEYLINE_CLIENT_API_KEY` | random when tunnel enabled, otherwise `leyline` | Expected Bearer token for `/v1/chat/completions` and `/v1/route` |
 | `LEYLINE_CLIENT_AUTH_ENABLED` | `true` | Set to `false` to disable client auth validation |
 | `LEYLINE_TUNNEL_ENABLED` | `true` | Start a Cloudflare quick tunnel on boot and expose a public URL |
 | `LEYLINE_TUNNEL_BINARY` | `cloudflared` | Path to the cloudflared binary |
@@ -360,17 +377,21 @@ Dashboard key behavior:
 
 Cloud provider API keys can also be set from `/dashboard`. Raw keys are accepted only in save/rehydration requests and are never returned by dashboard APIs.
 
-For the Azure OpenAI-compatible endpoint shape used by the OpenAI SDK, configure:
+For Cursor Agent + Azure, use LiteLLM as the Azure adapter:
 
 ```bash
 AZURE_OPENAI_BASE_URL=https://otlrs-dev-agents-resource.services.ai.azure.com/openai/v1
 AZURE_OPENAI_DEFAULT_MODEL=gpt-5.5
+LITELLM_ENABLED=true
+LITELLM_BASE_URL=http://127.0.0.1:4000/v1
+LITELLM_MODEL=gpt-5.5
+LITELLM_API_KEY=not-needed
 LEYLINE_ROUTER_ENABLED=false
-LEYLINE_FIXED_PROVIDER=AzureOpenAI
+LEYLINE_FIXED_PROVIDER=LiteLLM
 LEYLINE_FIXED_MODEL=gpt-5.5
 ```
 
-Then paste the Azure API key into `/dashboard` under `AzureOpenAI`, or set `AZURE_OPENAI_API_KEY` in `.env`.
+Then paste the Azure API key into the local `/dashboard` under `AzureOpenAI`, or set `AZURE_OPENAI_API_KEY` in `.env`, start `npm run litellm:azure`, and run `npm start`.
 
 ### Router / Classifier
 

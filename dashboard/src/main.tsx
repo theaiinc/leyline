@@ -16,6 +16,7 @@ import {
   sourceLabel,
   StatsResponse,
   statusTone,
+  ClientAuthInfo,
   TunnelInfo,
 } from './normalization';
 
@@ -69,6 +70,41 @@ function truncateLogError(error?: string): string {
   if (!error) return '-';
   if (error.length <= LOG_ERROR_MAX_LENGTH) return error;
   return `${error.slice(0, LOG_ERROR_MAX_LENGTH - 3)}...`;
+}
+
+function maskValue(value: string, visible = 8): string {
+  if (value.length <= visible) return '•'.repeat(Math.max(value.length, 8));
+  return `${value.slice(0, visible)}${'•'.repeat(18)}${value.slice(-4)}`;
+}
+
+function SecretValue({ label, value, secret = false }: { label: string; value?: string; secret?: boolean }) {
+  const [visible, setVisible] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const displayValue = value ? (secret && !visible ? maskValue(value) : value) : 'Not available';
+
+  async function copyValue() {
+    if (!value) return;
+    await navigator.clipboard.writeText(value);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  }
+
+  return (
+    <div className="secret-row">
+      <span>{label}</span>
+      <code title={secret && !visible ? 'Hidden' : value}>{displayValue}</code>
+      <div className="secret-actions">
+        {secret && value ? (
+          <Button type="button" variant="ghost" onClick={() => setVisible(current => !current)}>
+            {visible ? 'Hide' : 'Show'}
+          </Button>
+        ) : null}
+        <Button type="button" variant="secondary" onClick={copyValue} disabled={!value}>
+          {copied ? 'Copied' : 'Copy'}
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 function App() {
@@ -332,7 +368,7 @@ function App() {
 
       {message ? <div className="notice" role="status" aria-live="polite">{message}</div> : null}
 
-      <TunnelBanner tunnel={stats.tunnel} clientApiKey="leyline" />
+      <TunnelBanner tunnel={stats.tunnel} clientAuth={stats.clientAuth} />
 
       {status?.routing?.fixedProvider ? (
         <div className="notice">
@@ -487,7 +523,7 @@ function App() {
 
       <NetworkPanel providers={stats.providers} search={modelSearch} setSearch={setModelSearch} />
       <AnalyticsPanel providers={stats.providers} logs={stats.logs} />
-      <LogsPanel logs={stats.logs} tunnel={stats.tunnel} />
+      <LogsPanel logs={stats.logs} tunnel={stats.tunnel} clientAuth={stats.clientAuth} />
     </main>
   );
 }
@@ -606,7 +642,7 @@ function MetricCard({ title, empty, rows }: { title: string; empty: string; rows
   );
 }
 
-function TunnelBanner({ tunnel, clientApiKey }: { tunnel?: TunnelInfo; clientApiKey: string }) {
+function TunnelBanner({ tunnel, clientAuth }: { tunnel?: TunnelInfo; clientAuth?: ClientAuthInfo }) {
   if (!tunnel?.enabled) return null;
 
   if (tunnel.state === 'starting') {
@@ -634,18 +670,22 @@ function TunnelBanner({ tunnel, clientApiKey }: { tunnel?: TunnelInfo; clientApi
     <div className="notice tunnel-banner tunnel-banner-ready">
       <strong>Public endpoint ready</strong>
       <span>Use this URL for cloud clients (Cursor, remote agents) that block private networks.</span>
-      <code className="empty-state-command">OpenAI baseURL: {tunnel.publicBaseUrl}</code>
-      <code className="empty-state-command">API key: {clientApiKey}</code>
+      <div className="secret-list">
+        <SecretValue label="OpenAI baseURL" value={tunnel.publicBaseUrl} />
+        <SecretValue label="API key" value={clientAuth?.apiKey} secret />
+      </div>
+      {clientAuth?.generated ? <small>Generated for this server session. Restarting Leyline rotates it.</small> : null}
       {tunnel.publicUrl ? <code className="empty-state-command">Dashboard: {tunnel.publicUrl}/dashboard</code> : null}
     </div>
   );
 }
 
-function LogsPanel({ logs, tunnel }: { logs: LogEntry[]; tunnel?: TunnelInfo }) {
+function LogsPanel({ logs, tunnel, clientAuth }: { logs: LogEntry[]; tunnel?: TunnelInfo; clientAuth?: ClientAuthInfo }) {
   const sortedLogs = [...logs].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).slice(0, 50);
   const hasLogs = sortedLogs.length > 0;
   const endpointBase = tunnel?.publicBaseUrl || 'http://localhost:3000/v1';
-  const exampleCurl = `curl -X POST ${endpointBase}/chat/completions -H 'Authorization: Bearer leyline' -H 'Content-Type: application/json' -d '{"model":"auto","messages":[{"role":"user","content":"Hello Leyline"}]}'`;
+  const authToken = clientAuth?.apiKey || 'leyline';
+  const exampleCurl = `curl -X POST ${endpointBase}/chat/completions -H 'Authorization: Bearer ${authToken}' -H 'Content-Type: application/json' -d '{"model":"auto","messages":[{"role":"user","content":"Hello Leyline"}]}'`;
 
   return (
     <Card>

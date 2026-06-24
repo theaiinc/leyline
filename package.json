@@ -16,6 +16,7 @@
     "build": "tsc && vite build && node -e \"require('fs').copyFileSync('dashboard/public/logo.png','public/logo.png')\"",
     "prestart": "tsc",
     "start": "node dist/index.js",
+    "litellm:azure": "npm run build && node scripts/start-litellm-azure.mjs",
     "dev": "nodemon src/index.ts",
     "test": "jest"
   },

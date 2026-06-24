@@ -1,4 +1,5 @@
 import express from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import path from 'path';
 import { Router } from './core/router';
@@ -58,6 +59,39 @@ function dashboardRoutingStatus() {
   };
 }
 
+function isLoopbackAddress(address?: string): boolean {
+  return !address
+    || address === '::1'
+    || address === '127.0.0.1'
+    || address === '::ffff:127.0.0.1';
+}
+
+function hasPublicProxyHeaders(req: Request): boolean {
+  return Boolean(
+    req.headers['cf-connecting-ip']
+    || req.headers['cf-ray']
+    || req.headers['cf-visitor']
+    || req.headers['x-forwarded-for']
+    || req.headers['x-real-ip'],
+  );
+}
+
+function requireLocalDashboardAccess(req: Request, res: Response, next: NextFunction): void {
+  const remoteAddress = req.socket.remoteAddress || req.ip;
+  if (isLoopbackAddress(remoteAddress) && !hasPublicProxyHeaders(req)) {
+    next();
+    return;
+  }
+
+  res.status(403).json({
+    error: {
+      message: 'Dashboard is only available from localhost.',
+      type: 'access_denied',
+      code: 'local_dashboard_only',
+    },
+  });
+}
+
 export const createServer = (router: Router, quotaManager: QuotaManager, options: CreateServerOptions = {}) => {
   const app = express();
   const apiKeyStore = options.apiKeyStore || createDefaultSecretStore();
@@ -66,6 +100,8 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
 
   app.use(cors());
   app.use(express.json({ limit: config.bodyLimit }));
+
+  app.use('/dashboard', requireLocalDashboardAccess);
 
   // Serve dashboard static files
   app.use('/dashboard', express.static(path.join(__dirname, '../public')));
@@ -211,6 +247,11 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
         providers,
         logs: logger.getLogs(),
         tunnel: getTunnelInfo?.() ?? { enabled: false, state: 'disabled' },
+        clientAuth: {
+          enabled: Boolean(config.clientApiKey),
+          apiKey: config.clientApiKey || null,
+          generated: config.tunnel.enabled && process.env.LEYLINE_CLIENT_API_KEY === undefined && process.env.LEYLINE_CLIENT_AUTH_ENABLED !== 'false',
+        },
     });
   });
 
