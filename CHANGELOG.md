@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.2] - 2026-06-24
+
+### Fixed
+
+- Docker Hub README sync is non-blocking in the release workflow so npm and image publishing are not marked failed when Docker Hub denies description updates.
+
 ## [1.3.1] - 2026-06-24
 
 ### Fixed
