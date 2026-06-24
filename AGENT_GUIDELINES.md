@@ -17,6 +17,7 @@
 - Leyline validates client `Authorization` headers on `/v1/*` with default key `leyline` (`LEYLINE_CLIENT_API_KEY` / `LEYLINE_CLIENT_AUTH_ENABLED=false` to override). Provider keys live in Leyline env/dashboard.
 - When Cloudflare tunnel is enabled and `LEYLINE_CLIENT_API_KEY` is unset, Leyline generates a fresh random `ll-...` client API key per server process and prints it with the public URL.
 - Dashboard and dashboard APIs are localhost-only; block requests with Cloudflare/proxy headers (`cf-connecting-ip`, `cf-ray`, `x-forwarded-for`) so the public tunnel only exposes `/v1/*`.
+- Docker image builds need Node 22+ (`node:22-alpine`) because current Vite requires Node `20.19+` / `22.12+`; Node 18 fails with `CustomEvent is not defined`.
 - On boot, Leyline auto-starts `cloudflared tunnel --url http://127.0.0.1:$PORT` unless `LEYLINE_TUNNEL_ENABLED=false`. Public URL is logged and returned in `/dashboard/stats` + `/dashboard/tunnel` for cloud clients that cannot reach localhost.
 - JSON body limit defaults to `100mb` (`LEYLINE_BODY_LIMIT`); Express default is 100kb and causes `PayloadTooLargeError` on large chat/tool payloads. Run `npm start` (includes `prestart` tsc) so `dist/` matches source.
 - Normalize `/v1/chat/completions` payloads at the server boundary (`normalizeCompletionRequest`) — Cursor may send multimodal `content` arrays or non-array `messages`; streaming failover uses `ensureMessageArray` to avoid `compressed.messages is not iterable`.

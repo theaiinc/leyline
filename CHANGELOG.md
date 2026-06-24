@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.1] - 2026-06-24
+
+### Fixed
+
+- Docker image builds now use Node 22 so Vite 8 can run during `npm run build`.
+
 ## [1.3.0] - 2026-06-24
 
 ### Added
