@@ -12,6 +12,23 @@ import { QuotaManager } from './quota-manager';
 import { ModelRegistry } from './model-registry';
 import { Classifier } from './classifier';
 import { logger } from './logger';
+import { maybeCompress } from './compress';
+import { formatProviderError, hydrateAxiosError } from './api-errors';
+import { ensureMessageArray } from './normalize-request';
+
+interface RequestAwareProvider extends Provider {
+  canHandle?(request: CompletionRequest): Promise<boolean>;
+}
+
+async function providerCanHandle(
+  provider: Provider,
+  request: CompletionRequest,
+  effectiveModel: string,
+): Promise<boolean> {
+  const candidate = provider as RequestAwareProvider;
+  if (typeof candidate.canHandle !== 'function') return true;
+  return candidate.canHandle({ ...request, model: effectiveModel });
+}
 
 // ── Router options (backward-compatible: all optional) ─────────────
 
@@ -20,6 +37,7 @@ export interface RouterOptions {
   modelRegistry?: ModelRegistry;
   classifier?: Classifier;
   tierConfig?: TierConfig;
+  singleModel?: SingleModelRouterConfig;
   /**
    * Code policy function: maps a RouterClassification to a tier label.
    * Defaults to the built-in `selectModelByRouter` policy.
@@ -30,6 +48,12 @@ export interface RouterOptions {
    * Keys are service names, values are tier labels (e.g. '2b', '4b', '12b').
    */
   serviceTiers?: Record<string, string>;
+}
+
+export interface SingleModelRouterConfig {
+  enabled: boolean;
+  provider?: string | null;
+  model?: string | null;
 }
 
 // ── Service type detection ─────────────────────────────────────────
@@ -97,6 +121,7 @@ export class Router {
   private tierConfig: TierConfig;
   private codePolicy: (classification: RouterClassification | null) => string;
   private serviceTiers: Record<string, string>;
+  private singleModel?: SingleModelRouterConfig;
 
   constructor(quotaManagerOrOptions?: QuotaManager | RouterOptions) {
     // Backward-compatible constructor: accept QuotaManager directly or RouterOptions
@@ -106,6 +131,7 @@ export class Router {
       this.tierConfig = {};
       this.codePolicy = selectModelByRouter;
       this.serviceTiers = { ...DEFAULT_SERVICE_TIERS };
+      this.singleModel = undefined;
     } else {
       const opts = quotaManagerOrOptions ?? {};
       this.quotaManager = opts.quotaManager ?? new QuotaManager();
@@ -114,6 +140,7 @@ export class Router {
       this.tierConfig = opts.tierConfig ?? {};
       this.codePolicy = opts.codePolicy ?? selectModelByRouter;
       this.serviceTiers = opts.serviceTiers ?? { ...DEFAULT_SERVICE_TIERS };
+      this.singleModel = opts.singleModel;
     }
   }
 
@@ -129,9 +156,50 @@ export class Router {
 
   // ── Route execution (existing) ──────────────────────────────────
 
+  private async prepareRoutedRequest(request: CompletionRequest): Promise<CompletionRequest> {
+    const compressed = await maybeCompress(request);
+    const messages = ensureMessageArray(compressed.messages);
+    return { ...compressed, messages };
+  }
+
   async route(request: CompletionRequest): Promise<CompletionResponse> {
     const start = Date.now();
     const requestId = Math.random().toString(36).substring(7);
+
+    const routedRequest = await this.prepareRoutedRequest(request);
+    const fixedRoute = this.getSingleModelRoute();
+    if (fixedRoute) {
+      const { provider, model } = fixedRoute;
+      if (!this.quotaManager.checkQuota(provider.name)) {
+        logger.log({ requestId, provider: provider.name, model, status: 'rate_limited', error: 'Quota exceeded' });
+        throw new Error(`Fixed provider ${provider.name} is rate-limited.`);
+      }
+
+      try {
+        const isAvailable = await provider.isAvailable();
+        if (!isAvailable) {
+          throw new Error(`Fixed provider ${provider.name} reported unavailable.`);
+        }
+
+        console.log(`[Router] Single-model mode: routing to ${provider.name} with model: ${model}`);
+        const response = await provider.complete({ ...routedRequest, model });
+        this.quotaManager.incrementUsage(provider.name);
+        logger.log({
+          requestId,
+          provider: provider.name,
+          model,
+          status: 'success',
+          duration: Date.now() - start,
+          usage: response.usage,
+        });
+        return response;
+      } catch (error: any) {
+        logger.log({ requestId, provider: provider.name, model, status: 'error', error: error.message, duration: Date.now() - start });
+        const hydrated = await hydrateAxiosError(error);
+        console.error(`[Router] Error with fixed provider ${provider.name}:`, formatProviderError(hydrated));
+        throw hydrated;
+      }
+    }
 
     for (const provider of this.providers) {
       if (!this.quotaManager.checkQuota(provider.name)) {
@@ -141,17 +209,40 @@ export class Router {
       }
 
       console.log(`[Router] Attempting to route to ${provider.name}...`);
+      let effectiveModel = request.model;
       try {
+        effectiveModel = request.model === 'auto' ? provider.defaultModel : request.model;
         const isAvailable = await provider.isAvailable();
         if (!isAvailable) {
+            logger.log({
+                requestId,
+                provider: provider.name,
+                model: effectiveModel,
+                status: 'error',
+                error: `${provider.name} reported unavailable`,
+                duration: Date.now() - start,
+            });
             console.warn(`[Router] ${provider.name} reported unavailable.`);
             continue;
         }
 
-        const effectiveModel = request.model === 'auto' ? provider.defaultModel : request.model;
+        const canHandle = await providerCanHandle(provider, routedRequest, effectiveModel);
+        if (!canHandle) {
+          logger.log({
+            requestId,
+            provider: provider.name,
+            model: effectiveModel,
+            status: 'error',
+            error: `${provider.name} does not support model ${effectiveModel}`,
+            duration: Date.now() - start,
+          });
+          console.warn(`[Router] Skipping ${provider.name} — model ${effectiveModel} not supported`);
+          continue;
+        }
+
         console.log(`[Router] Routing to ${provider.name} with model: ${effectiveModel}`);
 
-        const response = await provider.complete({ ...request, model: effectiveModel });
+        const response = await provider.complete({ ...routedRequest, model: effectiveModel });
         this.quotaManager.incrementUsage(provider.name);
         logger.log({
             requestId,
@@ -159,11 +250,12 @@ export class Router {
             model: effectiveModel,
             status: 'success',
             duration: Date.now() - start,
+            usage: response.usage,
         });
         console.log(`[Router] Successfully routed to ${provider.name}.`);
         return response;
       } catch (error: any) {
-        logger.log({ requestId, provider: provider.name, model: request.model, status: 'error', error: error.message, duration: Date.now() - start });
+        logger.log({ requestId, provider: provider.name, model: effectiveModel, status: 'error', error: error.message, duration: Date.now() - start });
         console.error(`[Router] Error with ${provider.name}:`, error.message);
       }
     }
@@ -174,7 +266,59 @@ export class Router {
     const start = Date.now();
     const requestId = Math.random().toString(36).substring(7);
     let accumulatedContent = '';
-    const originalMessages = [...request.messages];
+
+    const routedRequest = await this.prepareRoutedRequest(request);
+    const originalMessages = routedRequest.messages;
+    const fixedRoute = this.getSingleModelRoute();
+    if (fixedRoute) {
+      const { provider, model } = fixedRoute;
+      let providerChars = 0;
+
+      if (!this.quotaManager.checkQuota(provider.name)) {
+        logger.log({ requestId, provider: provider.name, model, status: 'rate_limited', error: 'Quota exceeded' });
+        throw new Error(`Fixed provider ${provider.name} is rate-limited.`);
+      }
+
+      try {
+        const isAvailable = await provider.isAvailable();
+        if (!isAvailable) {
+          throw new Error(`Fixed provider ${provider.name} reported unavailable.`);
+        }
+
+        console.log(`[Router] Single-model mode: routing stream to ${provider.name} with model: ${model}`);
+        const stream = provider.completeStream({ ...routedRequest, model });
+        this.quotaManager.incrementUsage(provider.name);
+
+        for await (const chunk of stream) {
+          const content = chunk.choices[0]?.delta?.content || '';
+          providerChars += content.length;
+          yield chunk;
+        }
+
+        logger.log({
+          requestId,
+          provider: provider.name,
+          model,
+          status: 'success',
+          duration: Date.now() - start,
+          usage: { chars: providerChars },
+        });
+        return;
+      } catch (error: any) {
+        logger.log({
+          requestId,
+          provider: provider.name,
+          model,
+          status: 'error',
+          error: error.message,
+          duration: Date.now() - start,
+          usage: { chars: providerChars },
+        });
+        const hydrated = await hydrateAxiosError(error);
+        console.error(`[Router] Stream error with fixed provider ${provider.name}:`, formatProviderError(hydrated));
+        throw hydrated;
+      }
+    }
 
     for (const provider of this.providers) {
         if (!this.quotaManager.checkQuota(provider.name)) {
@@ -192,17 +336,42 @@ export class Router {
         }
 
         let providerChars = 0;
+        let effectiveModel = request.model;
         try {
+            effectiveModel = request.model === 'auto' ? provider.defaultModel : request.model;
             const isAvailable = await provider.isAvailable();
             if (!isAvailable) {
+                logger.log({
+                  requestId,
+                  provider: provider.name,
+                  model: effectiveModel,
+                  status: 'error',
+                  error: `${provider.name} reported unavailable`,
+                  duration: Date.now() - start,
+                  usage: { chars: providerChars },
+                });
                 console.warn(`[Router] ${provider.name} reported unavailable.`);
                 continue;
             }
 
-          const effectiveModel = request.model === 'auto' ? provider.defaultModel : request.model;
+            const canHandle = await providerCanHandle(provider, { ...request, messages: currentMessages }, effectiveModel);
+            if (!canHandle) {
+              logger.log({
+                requestId,
+                provider: provider.name,
+                model: effectiveModel,
+                status: 'error',
+                error: `${provider.name} does not support model ${effectiveModel}`,
+                duration: Date.now() - start,
+                usage: { chars: providerChars },
+              });
+              console.warn(`[Router] Skipping ${provider.name} — model ${effectiveModel} not supported`);
+              continue;
+            }
+
           console.log(`[Router] Routing stream to ${provider.name} with model: ${effectiveModel}`);
 
-          const stream = provider.completeStream({ ...request, messages: currentMessages, model: effectiveModel });
+          const stream = provider.completeStream({ ...routedRequest, messages: currentMessages, model: effectiveModel });
           this.quotaManager.incrementUsage(provider.name);
 
           for await (const chunk of stream) {
@@ -225,7 +394,7 @@ export class Router {
           logger.log({
               requestId,
               provider: provider.name,
-              model: request.model,
+              model: effectiveModel,
               status: 'error',
               error: error.message,
               duration: Date.now() - start,
@@ -252,6 +421,16 @@ export class Router {
    * decide *which model* to use before dispatching a request.
    */
   async resolveRoute(request: ClassifyRequest): Promise<RouteResult> {
+    const fixedRoute = this.getSingleModelDecision();
+    if (fixedRoute) {
+      return {
+        classification: null,
+        selectedTier: 'fixed',
+        selectedModel: fixedRoute.model,
+        selectedProvider: fixedRoute.provider,
+      };
+    }
+
     const classification = this.classifier
       ? await this.classifier.classifyRequest(request)
       : null;
@@ -288,6 +467,15 @@ export class Router {
     route: string,
     classification?: RouterClassification | null,
   ): { model: string | null; provider: string | null; routing: string } {
+    const fixedRoute = this.getSingleModelDecision();
+    if (fixedRoute) {
+      return {
+        model: fixedRoute.model,
+        provider: fixedRoute.provider,
+        routing: 'fixed',
+      };
+    }
+
     const defaultTier = this.serviceTiers[route] || '4b';
     const model = resolveTierModel(defaultTier, this.tierConfig);
 
@@ -333,4 +521,44 @@ export class Router {
   setServiceTiers(tiers: Record<string, string>) {
     this.serviceTiers = { ...tiers };
   }
+
+  /** Enable, disable, or update single-model mode at runtime. */
+  setSingleModel(config?: SingleModelRouterConfig) {
+    this.singleModel = config;
+  }
+
+  private getSingleModelRoute(): { provider: Provider; model: string } | null {
+    const decision = this.getSingleModelDecision();
+    if (!decision) return null;
+
+    const provider = this.providers.find(p => normalizeProviderName(p.name) === normalizeProviderName(decision.provider));
+    if (!provider) {
+      throw new Error(`Fixed provider "${decision.provider}" is not registered.`);
+    }
+
+    return { provider, model: decision.model };
+  }
+
+  private getSingleModelDecision(): { provider: string; model: string } | null {
+    if (!this.singleModel?.enabled) return null;
+
+    const model = (this.singleModel.model || '').trim();
+    if (!model) {
+      throw new Error('Single-model mode requires LEYLINE_FIXED_MODEL.');
+    }
+
+    const provider = (this.singleModel.provider || '').trim()
+      || this.modelRegistry.lookupVariant(null, model)?.provider
+      || '';
+
+    if (!provider) {
+      throw new Error(`Single-model mode could not infer a provider for "${model}". Set LEYLINE_FIXED_PROVIDER.`);
+    }
+
+    return { provider, model };
+  }
+}
+
+function normalizeProviderName(provider: string): string {
+  return provider.toLowerCase().replace(/[^a-z0-9]/g, '');
 }

@@ -9,21 +9,32 @@ dotenv.config();
 export class GeminiProvider implements Provider {
   name = 'Gemini';
   defaultModel: string;
+  private apiKey: string;
   private client: GoogleGenerativeAI;
   private model: string;
 
   constructor(apiKey: string = process.env.GEMINI_API_KEY || '', model: string = config.DEFAULT_MODELS.GEMINI) {
+    this.apiKey = apiKey;
     this.client = new GoogleGenerativeAI(apiKey);
     this.model = model;
     this.defaultModel = model;
   }
 
   async isAvailable(): Promise<boolean> {
-    return true; // Simplified check
+    return Boolean(this.apiKey);
+  }
+
+  setApiKey(apiKey: string): void {
+    this.apiKey = apiKey;
+    this.client = new GoogleGenerativeAI(apiKey);
+  }
+
+  hasApiKey(): boolean {
+    return Boolean(this.apiKey);
   }
 
   async getModels(): Promise<ModelDetail[]> {
-      const apiKey = process.env.GEMINI_API_KEY;
+      const apiKey = this.apiKey;
       if (!apiKey) return [];
       try {
           const response = await axios.get(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);

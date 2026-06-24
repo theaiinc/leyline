@@ -91,8 +91,20 @@ describe('ModelRegistry', () => {
     const variants = defaultRegistry.listVariants();
     expect(variants.some(v => v.provider === 'gemini')).toBe(true);
     expect(variants.some(v => v.provider === 'huggingface')).toBe(true);
+    expect(variants.some(v => v.provider === 'openai')).toBe(true);
     expect(variants.some(v => v.provider === 'openrouter')).toBe(true);
+    expect(variants.some(v => v.provider === 'azureopenai')).toBe(true);
     expect(variants.some(v => v.provider === 'ollama')).toBe(true);
+  });
+
+  it('should include gpt-5.5 as a default OpenAI variant', () => {
+    const defaultRegistry = new ModelRegistry();
+    const variant = defaultRegistry.lookupVariant('openai', 'gpt-5.5');
+
+    expect(variant).not.toBeNull();
+    expect(variant!.provider).toBe('openai');
+    expect(variant!.billing_class).toBe('paid_api');
+    expect(defaultRegistry.resolveCapabilities('openai', 'gpt-5.5').tier).toBe('cognitive');
   });
 
   it('should replace variants at runtime via setVariants', () => {

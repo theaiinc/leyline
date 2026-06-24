@@ -1,9 +1,32 @@
 // ── Existing request/response types ──────────────────────────────────
 
+export interface ChatMessage {
+  role: string;
+  content?: string | null;
+  tool_calls?: unknown[];
+  tool_call_id?: string;
+  name?: string;
+}
+
 export interface CompletionRequest {
   model: string;
-  messages: Array<{ role: string; content: string }>;
+  messages: ChatMessage[];
   stream?: boolean;
+  tools?: unknown;
+  tool_choice?: unknown;
+  temperature?: number;
+  top_p?: number;
+  max_tokens?: number;
+  max_completion_tokens?: number;
+  presence_penalty?: number;
+  frequency_penalty?: number;
+  response_format?: unknown;
+  seed?: number;
+  stop?: string | string[];
+  user?: string;
+  parallel_tool_calls?: boolean;
+  reasoning_effort?: string;
+  [key: string]: unknown;
 }
 
 export interface CompletionResponse {
@@ -49,6 +72,16 @@ export interface Provider {
   getModels(): Promise<ModelDetail[]>;
   complete(request: CompletionRequest): Promise<CompletionResponse>;
   completeStream(request: CompletionRequest): AsyncGenerator<StreamChunk, void, unknown>;
+}
+
+export interface ApiKeyConfigurableProvider extends Provider {
+  setApiKey(apiKey: string): void;
+  hasApiKey(): boolean;
+}
+
+export interface RuntimeConfigurableProvider extends Provider {
+  getRuntimeConfig(): Record<string, string | boolean | undefined>;
+  setRuntimeConfig(config: Record<string, string | undefined>): void;
 }
 
 export interface Quota {

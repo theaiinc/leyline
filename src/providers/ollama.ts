@@ -8,24 +8,34 @@ export class OllamaProvider implements Provider {
   private baseUrl: string;
   private model: string;
 
-  constructor(baseUrl: string = 'http://localhost:11434', model: string = config.DEFAULT_MODELS.OLLAMA) {
-    this.baseUrl = baseUrl;
+  constructor(baseUrl: string = process.env.OLLAMA_BASE_URL || 'http://localhost:11434', model: string = config.DEFAULT_MODELS.OLLAMA) {
+    this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.model = model;
     this.defaultModel = model;
   }
 
   async isAvailable(): Promise<boolean> {
     try {
-        await axios.get('http://localhost:11434/api/tags');
-        return true;
+      if (!(await this.isServerAvailable())) return false;
+      return Boolean(await this.resolveInstalledModel(this.model));
     } catch {
-        return false;
+      return false;
+    }
+  }
+
+  async canHandle(request: CompletionRequest): Promise<boolean> {
+    try {
+      if (!(await this.isServerAvailable())) return false;
+      const requested = request.model === 'auto' ? this.model : request.model;
+      return Boolean(await this.resolveInstalledModel(requested));
+    } catch {
+      return false;
     }
   }
 
   async getModels(): Promise<ModelDetail[]> {
       try {
-          const response = await axios.get('http://localhost:11434/api/tags');
+          const response = await axios.get(`${this.baseUrl}/api/tags`, { timeout: 5000 });
           return response.data.models.map((m: any) => ({
               id: m.name,
               name: m.name,
@@ -38,8 +48,9 @@ export class OllamaProvider implements Provider {
   }
 
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
+    const model = await this.requireInstalledModel(request.model === 'auto' ? this.model : request.model);
     const response = await axios.post(`${this.baseUrl}/api/chat`, {
-        model: request.model || this.model,
+        model,
         messages: request.messages,
         stream: false
     });
@@ -48,7 +59,7 @@ export class OllamaProvider implements Provider {
         id: 'ollama-' + Date.now(),
         object: 'chat.completion',
         created: Math.floor(Date.now() / 1000),
-        model: this.model,
+        model,
         choices: [{
             index: 0,
             message: response.data.message,
@@ -63,8 +74,9 @@ export class OllamaProvider implements Provider {
   }
 
    async *completeStream(request: CompletionRequest): AsyncGenerator<StreamChunk, void, unknown> {
+    const model = await this.requireInstalledModel(request.model === 'auto' ? this.model : request.model);
     const response = await axios.post(`${this.baseUrl}/api/chat`, {
-        model: request.model || this.model,
+        model,
         messages: request.messages,
         stream: true
     }, {
@@ -81,17 +93,47 @@ export class OllamaProvider implements Provider {
                     id: 'ollama-' + Date.now(),
                     object: 'chat.completion.chunk',
                     created: Math.floor(Date.now() / 1000),
-                    model: this.model,
+                    model,
                     choices: [{
                         index: 0,
                         delta: { content: data.message?.content },
                         finish_reason: data.done ? 'stop' : null
                     }]
                 };
-             } catch (e) {
-                 // ignore
+             } catch {
+                 // ignore partial chunks
              }
         }
     }
+  }
+
+  private async isServerAvailable(): Promise<boolean> {
+    try {
+      await axios.get(`${this.baseUrl}/api/tags`, { timeout: 3000 });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async resolveInstalledModel(requested: string): Promise<string | undefined> {
+    const response = await axios.get(`${this.baseUrl}/api/tags`, { timeout: 5000 });
+    const models = Array.isArray(response.data?.models) ? response.data.models : [];
+    const normalized = requested.toLowerCase();
+
+    const match = models.find((entry: { name?: string }) => {
+      const name = String(entry.name || '').toLowerCase();
+      return name === normalized || name.startsWith(`${normalized}:`);
+    });
+
+    return match?.name;
+  }
+
+  private async requireInstalledModel(requested: string): Promise<string> {
+    const model = await this.resolveInstalledModel(requested);
+    if (!model) {
+      throw new Error(`Ollama model not found: ${requested}`);
+    }
+    return model;
   }
 }

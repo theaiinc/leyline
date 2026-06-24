@@ -1,0 +1,27 @@
+# Agent Guidelines
+
+## Development Notes
+
+- Azure OpenAI supports both `AZURE_OPENAI_BASE_URL` (`.../openai/v1`, OpenAI-compatible with bearer auth and model in payload) and legacy `AZURE_OPENAI_ENDPOINT` + deployment URLs.
+- Direct OpenAI support uses `OPENAI_API_KEY` and defaults to `gpt-5.5`; keep Azure deployment names separate from OpenAI model ids in registry decisions.
+- Single model mode is controlled by `LEYLINE_ROUTER_ENABLED=false` plus `LEYLINE_FIXED_MODEL`; `LEYLINE_FIXED_PROVIDER` is optional when `ModelRegistry` can infer the provider.
+- Dashboard API key overrides call provider `setApiKey()` hooks and can use Apple Keychain (`security` CLI), browser `localStorage`, or server memory; never return raw keys from dashboard APIs.
+- `.env` API keys are explicit startup config and take precedence over Keychain-loaded keys; dashboard saves still update the running provider immediately.
+- Azure runtime URL/model settings persist in Apple Keychain under `runtime-config:<ProviderName>` (same service as API keys); `.env` base URLs still take precedence on startup.
+- For dashboard Keychain reads, `security find-generic-password` can exit nonzero when an item is simply missing; treat that as an unconfigured provider key, not Keychain unavailability.
+- Normalize dashboard API payloads at the frontend boundary before rendering; provider/model/status fields can be absent in stats, logs, or runtime config responses.
+- Dashboard request logs come from the singleton router logger via `/dashboard/stats`; log unavailable provider attempts too, preserve non-stream `response.usage`, keep logger tests isolated with `logger.clear()`, and make empty log states explicit in the UI.
+- Logs panel empty states should replace the table entirely, not render alongside an empty table or placeholder rows; keep row error truncation display-only with full text available on hover.
+- `/v1/chat/completions` must wait for dashboard/provider API key initialization before routing; browser `localStorage` keys only reach providers after the dashboard rehydrates them back through `/dashboard/api-keys`.
+- `/v1/route` is always registered. Startup logs distinguish fixed model mode (`LEYLINE_ROUTER_ENABLED=false` + `LEYLINE_FIXED_MODEL`), classifier mode (`LEYLINE_ROUTER_MODEL` + `LEYLINE_OPENAI_BASE_URL`), and tier-default mode (no classifier). Dashboard Azure deployment selection does not enable fixed model mode — that requires env vars.
+- Leyline validates client `Authorization` headers on `/v1/*` with default key `leyline` (`LEYLINE_CLIENT_API_KEY` / `LEYLINE_CLIENT_AUTH_ENABLED=false` to override). Provider keys live in Leyline env/dashboard.
+- On boot, Leyline auto-starts `cloudflared tunnel --url http://127.0.0.1:$PORT` unless `LEYLINE_TUNNEL_ENABLED=false`. Public URL is logged and returned in `/dashboard/stats` + `/dashboard/tunnel` for cloud clients that cannot reach localhost.
+- JSON body limit defaults to `100mb` (`LEYLINE_BODY_LIMIT`); Express default is 100kb and causes `PayloadTooLargeError` on large chat/tool payloads. Run `npm start` (includes `prestart` tsc) so `dist/` matches source.
+- Normalize `/v1/chat/completions` payloads at the server boundary (`normalizeCompletionRequest`) — Cursor may send multimodal `content` arrays or non-array `messages`; streaming failover uses `ensureMessageArray` to avoid `compressed.messages is not iterable`.
+- Ollama is opt-in (`OLLAMA_ENABLED=true`) and skips cloud model names via `canHandle`; otherwise Leyline can fall through to localhost:11434 with `gpt-5.5` and get a 404.
+- For Cursor + Azure, pin routing with `LEYLINE_ROUTER_ENABLED=false`, `LEYLINE_FIXED_PROVIDER=AzureOpenAI`, `LEYLINE_FIXED_MODEL=gpt-5.5`.
+- Preserve Cursor/OpenAI passthrough fields (`tools`, `tool_choice`, `max_completion_tokens`, etc.) and message `tool_calls` when forwarding to Azure; stripping them causes Azure 400s on agent/tool requests.
+- Azure 400 with payload `messages:[]` means normalization/sanitization dropped the conversation — router now runs `ensureMessageArray` before every provider call and rejects empty message arrays early; `normalizeCompletionRequest` also accepts Responses-style `input`.
+- Cursor Agent sends flat tools (`tools[i].name`) and custom tools like `apply_patch`; Azure Chat Completions needs nested `tools[i].function.name`. `sanitizeAzureTools` rewrites flat function tools and drops unsupported custom tool types before forwarding.
+- Leyline provider quotas (`LEYLINE_QUOTAS_ENABLED`) are **off by default**. When enabled, Azure defaults to 60 RPM which Cursor bursts exceed quickly — Cursor shows that as "User API Key Rate limit exceeded".
+- `gpt-5.5` in the default registry maps to `openai`; Azure fixed-model setups need `LEYLINE_FIXED_PROVIDER=AzureOpenAI` when the deployment name matches an OpenAI model id.

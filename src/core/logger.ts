@@ -31,7 +31,11 @@ export class Logger {
   }
 
   getLogs(): LogEntry[] {
-    return this.logs;
+    return [...this.logs];
+  }
+
+  clear() {
+    this.logs = [];
   }
 }
 

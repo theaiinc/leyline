@@ -100,6 +100,41 @@ describe('Router (extended methods)', () => {
     });
   });
 
+  it('should resolveRoute to fixed model when single-model mode is enabled', async () => {
+    const fixedRouter = new Router({
+      modelRegistry: registry,
+      singleModel: { enabled: true, model: 'big-model' },
+    });
+
+    const result = await fixedRouter.resolveRoute({ userMessage: 'hello' });
+
+    expect(result).toEqual<RouteResult>({
+      classification: null,
+      selectedTier: 'fixed',
+      selectedModel: 'big-model',
+      selectedProvider: 'openai',
+    });
+  });
+
+  it('should resolveEffectiveModel to fixed model when single-model mode is enabled', () => {
+    const fixedRouter = new Router({
+      modelRegistry: registry,
+      singleModel: { enabled: true, provider: 'OpenAI', model: 'big-model' },
+    });
+
+    const result = fixedRouter.resolveEffectiveModel('complex', {
+      complexity: 'simple',
+      domain: 'chat',
+      reasoning: false,
+    });
+
+    expect(result).toEqual({
+      model: 'big-model',
+      provider: 'OpenAI',
+      routing: 'fixed',
+    });
+  });
+
   it('should resolveRoute with classifier', async () => {
     const mockClassify = jest.fn().mockResolvedValue('COMPLEXITY: complex\nDOMAIN: coding\nREASONING: true');
     const classifier = new Classifier(mockClassify);

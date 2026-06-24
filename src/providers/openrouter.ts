@@ -18,7 +18,15 @@ export class OpenRouterProvider implements Provider {
   }
 
   async isAvailable(): Promise<boolean> {
-     return !!process.env.OPENROUTER_API_KEY;
+     return Boolean(this.apiKey);
+  }
+
+  setApiKey(apiKey: string): void {
+    this.apiKey = apiKey;
+  }
+
+  hasApiKey(): boolean {
+    return Boolean(this.apiKey);
   }
 
   async getModels(): Promise<ModelDetail[]> {

@@ -1,24 +1,42 @@
 import { HfInference } from '@huggingface/inference';
-import { Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail } from '../core/types';
+import { ChatMessage, Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail } from '../core/types';
 import dotenv from 'dotenv';
 import { config } from '../config';
 
 dotenv.config();
 
+function toHuggingFaceMessages(messages: ChatMessage[]) {
+  return messages.map((message) => ({
+    role: message.role,
+    content: message.content ?? '',
+  }));
+}
+
 export class HuggingFaceProvider implements Provider {
   name = 'HuggingFace';
   defaultModel: string;
+  private apiKey: string;
   private client: HfInference;
   private model: string; 
 
   constructor(apiKey: string = process.env.HF_API_KEY || '', model: string = config.DEFAULT_MODELS.HF) {
+    this.apiKey = apiKey;
     this.client = new HfInference(apiKey);
     this.model = model;
     this.defaultModel = model;
   }
 
   async isAvailable(): Promise<boolean> {
-    return true;
+    return Boolean(this.apiKey);
+  }
+
+  setApiKey(apiKey: string): void {
+    this.apiKey = apiKey;
+    this.client = new HfInference(apiKey);
+  }
+
+  hasApiKey(): boolean {
+    return Boolean(this.apiKey);
   }
 
   async getModels(): Promise<ModelDetail[]> {
@@ -32,11 +50,9 @@ export class HuggingFaceProvider implements Provider {
   }
 
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
-    // HF Inference often prefers 'text-generation' or 'chat-completion' depending on the task
-    // Using chatCompletion if available or textGeneration with formatting
     const result = await this.client.chatCompletion({
         model: request.model || this.model,
-        messages: request.messages,
+        messages: toHuggingFaceMessages(request.messages),
         max_tokens: 1024
     });
 
@@ -57,7 +73,7 @@ export class HuggingFaceProvider implements Provider {
   async *completeStream(request: CompletionRequest): AsyncGenerator<StreamChunk, void, unknown> {
     const stream = this.client.chatCompletionStream({
         model: request.model || this.model,
-        messages: request.messages,
+        messages: toHuggingFaceMessages(request.messages),
         max_tokens: 1024
     });
 

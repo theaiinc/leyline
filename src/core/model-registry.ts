@@ -225,6 +225,34 @@ function getDefaultVariants(): ModelVariant[] {
       billing_class: 'paid_api',
       resource_class: 'standard',
     },
+    // OpenAI
+    {
+      id: 'gpt-5.5',
+      name: 'GPT-5.5',
+      family: 'gpt-5',
+      provider: 'openai',
+      source: 'openai',
+      parameter_size_b: 0,
+      quantization: 'unknown',
+      context_length: 128_000,
+      capabilities: { tools: true, thinking: true, vision: true, code: true, embedding: false },
+      billing_class: 'paid_api',
+      resource_class: 'standard',
+    },
+    // Azure OpenAI deployment defaults
+    {
+      id: 'gpt-4o-mini',
+      name: 'GPT-4o mini (Azure OpenAI)',
+      family: 'gpt-4o',
+      provider: 'azureopenai',
+      source: 'azure-openai',
+      parameter_size_b: 0,
+      quantization: 'unknown',
+      context_length: 128_000,
+      capabilities: { tools: true, thinking: true, vision: true, code: true, embedding: false },
+      billing_class: 'paid_api',
+      resource_class: 'standard',
+    },
     // Ollama default
     {
       id: 'llama2',

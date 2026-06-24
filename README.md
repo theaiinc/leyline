@@ -4,13 +4,13 @@
 
 **The ultimate cost-optimizing LLM load balancer, semantic router & gateway.**
 
-Leyline unifies multiple LLM providers — cloud (Gemini, HuggingFace, OpenRouter), local (Ollama, LM Studio), and custom — into a single API. It handles failover, rate-limit management, and now includes a **semantic router** that classifies requests by complexity/domain and selects the optimal model tier.
+Leyline unifies multiple LLM providers — cloud (Gemini, HuggingFace, OpenAI, OpenRouter, Azure OpenAI), local (Ollama, LM Studio), and custom — into a single API. It handles failover, rate-limit management, and now includes a **semantic router** that classifies requests by complexity/domain and selects the optimal model tier.
 
 ```mermaid
 graph TB
     Client["Your App / Agent Pipeline"]
     Leyline["Leyline Router"]
-    Cloud["Cloud LLMs - Gemini · HuggingFace · OpenRouter"]
+    Cloud["Cloud LLMs - Gemini · HuggingFace · OpenAI · OpenRouter · Azure OpenAI"]
     Local["Local LLMs - Ollama · LM Studio · vLLM"]
 
     Client -->|/v1/chat/completions| Leyline
@@ -41,7 +41,7 @@ graph TB
 - **🎯 Tiered Model Selection**: Applies a deterministic code policy to map classification → model tier (2B/4B/12B), so routing policy can evolve without retraining the classifier.
 - **📦 Configurable Model Registry**: Bring your own model variants via JSON — define capabilities, billing class, resource class, provider, and context length externally.
 - **🏠 Local Model Support**: Built-in provider for LM Studio / any OpenAI-compatible local endpoint.
-- **📊 Real-time Dashboard**: Monitor network status, rate limits, and request logs at `/dashboard`.
+- **📊 React Dashboard**: Monitor network status, rate limits, request logs, and API key persistence at `/dashboard`.
 - **📈 Agent Analytics**: Insights into "Most Popular", "Fastest", and "Highest Quality" (Elo-rated) models.
 - **🔍 Model Discovery**: Search and filter through thousands of available models from connected providers.
 - **🔌 OpenAI Compatible**: Drop-in replacement for OpenAI SDKs (`/v1/chat/completions`).
@@ -62,12 +62,27 @@ Create a `.env` file:
 # ── Cloud Providers ────────────────────────────────────────
 GEMINI_API_KEY=your_key
 HF_API_KEY=your_key
+OPENAI_API_KEY=your_key
+OPENAI_DEFAULT_MODEL=gpt-5.5
 OPENROUTER_API_KEY=your_key
+AZURE_OPENAI_API_KEY=your_key
+AZURE_OPENAI_BASE_URL=https://your-resource.services.ai.azure.com/openai/v1
+AZURE_OPENAI_DEFAULT_MODEL=gpt-5.5
+
+# Optional dashboard persistence for runtime API keys
+LEYLINE_KEYCHAIN_ENABLED=true
+LEYLINE_KEYCHAIN_SERVICE=@theaiinc/leyline
 
 # ── Router / Classifier Model (optional) ───────────────────
 # A lightweight model like arch-router-1.5b.gguf
 LEYLINE_ROUTER_MODEL=
 LEYLINE_OPENAI_BASE_URL=http://localhost:1234/v1
+
+# ── Single Model Mode (optional) ───────────────────────────
+# Disable dynamic routing/failover and force one model
+LEYLINE_ROUTER_ENABLED=true
+LEYLINE_FIXED_PROVIDER=
+LEYLINE_FIXED_MODEL=
 
 # ── Model Tier Resolution (optional) ───────────────────────
 # Maps tier labels to actual model names
@@ -86,14 +101,39 @@ Run the router:
 npx @theaiinc/leyline
 ```
 
-The API will be available at `http://localhost:3000`.
+The API will be available at `http://localhost:3000`. On startup Leyline also launches a **Cloudflare quick tunnel** (via `cloudflared`) and prints a public `trycloudflare.com` URL — use that when cloud clients block private networks (e.g. "Access to private networks is forbidden").
+
+Set `LEYLINE_TUNNEL_ENABLED=false` if you do not want the tunnel, or install [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) if it is missing.
+
+#### Client API keys (calling Leyline)
+
+Leyline validates incoming `Authorization` headers on `/v1/chat/completions` and `/v1/route`. The default client API key is **`leyline`** — this is separate from provider credentials (Azure OpenAI, OpenAI, Gemini, etc.), which are configured in Leyline itself via `.env` or the `/dashboard` API key panel.
+
+When using the OpenAI SDK against Leyline at `http://localhost:3000/v1`:
+
+```typescript
+const client = new OpenAI({
+  baseURL: 'http://localhost:3000/v1',
+  apiKey: 'leyline',
+});
+```
+
+Or pass the header directly:
+
+```bash
+curl -H "Authorization: Bearer leyline" ...
+```
+
+Set `LEYLINE_CLIENT_API_KEY` to change the expected key, or `LEYLINE_CLIENT_AUTH_ENABLED=false` to disable client auth (legacy behavior).
+
+Do **not** pass your Azure or OpenAI provider key to Leyline clients. Configure `AZURE_OPENAI_API_KEY` (or save it in `/dashboard` under `AzureOpenAI`) on the Leyline server instead.
 
 ### 2. Usage as a Library
 
 ```typescript
 import {
   Router, ModelRegistry, Classifier,
-  GeminiProvider, LMStudioProvider, QuotaManager,
+  GeminiProvider, OpenAIProvider, AzureOpenAIProvider, LMStudioProvider, QuotaManager,
 } from '@theaiinc/leyline';
 
 // ── Tiered routing with classifier ────────────────────────
@@ -143,6 +183,8 @@ qm.setQuota('Gemini', { requestsPerMinute: 10, requestsPerDay: 1000 });
 
 const failoverRouter = new Router({ quotaManager: qm });
 failoverRouter.addProvider(new GeminiProvider(process.env.GEMINI_API_KEY));
+failoverRouter.addProvider(new OpenAIProvider(process.env.OPENAI_API_KEY));
+failoverRouter.addProvider(new AzureOpenAIProvider());
 failoverRouter.addProvider(new LMStudioProvider('http://localhost:1234/v1'));
 
 const response = await failoverRouter.route({
@@ -238,7 +280,9 @@ graph TD
         subgraph providers
             gemini["gemini.ts"]
             huggingface["huggingface.ts"]
+            openai["openai.ts"]
             openrouter["openrouter.ts"]
+            azure["azure-openai.ts"]
             ollama["ollama.ts"]
             lmstudio["lmstudio.ts"]
         end
@@ -259,11 +303,24 @@ graph TD
 Access the dashboard at `http://localhost:3000/dashboard` to view:
 
 - **Network Status**: Real-time quota usage and provider health.
+- **Runtime API Keys**: Set or clear cloud provider API keys without editing `.env`.
+- **Key Persistence**: Choose Apple Keychain, browser `localStorage`, or server memory per provider.
+- **Azure Runtime Settings**: Edit Azure OpenAI base URL and model/deployment for the current server process.
 - **Model Explorer**: Searchable list of all available models with descriptions and specs.
 - **Leaderboards**:
   - **🏆 Usage**: Your most frequent models.
   - **⚡ Latency**: Fastest response times.
   - **🌟 Quality**: Models ranked by LMSYS Elo ratings (GPT-4o, Claude 3.5, etc.).
+
+Dashboard key behavior:
+
+- `.env` keys are treated as explicit startup configuration and take precedence over Keychain during startup.
+- If a provider has no `.env` key, Leyline attempts to load a saved dashboard key from Apple Keychain when Keychain is enabled and available.
+- A missing Keychain item is normal for providers that have not been saved yet; it should show as **Missing key**, not as a Keychain failure.
+- Saving a key from the dashboard updates the running provider immediately. Keychain saves persist across server restarts; memory saves last only for the current server process.
+- Browser `localStorage` is optional and browser-local. The dashboard stores the key in that browser and re-sends it to the server when the dashboard loads, but the server never returns raw key values.
+- If the dashboard says Apple Keychain lookup/save/delete failed, check macOS Keychain permissions or set `LEYLINE_KEYCHAIN_ENABLED=false` to run in memory-only mode. Memory and `localStorage` remain optional fallbacks.
+- Blank key fields never clear a key. Use the explicit **Clear Key** action, which keeps runtime URL/model settings intact.
 
 ## 🛠️ Configuration
 
@@ -274,11 +331,46 @@ Access the dashboard at `http://localhost:3000/dashboard` to view:
 | `PORT` | `3000` | HTTP listen port |
 | `GEMINI_API_KEY` | — | Google AI Studio API key |
 | `HF_API_KEY` | — | Hugging Face access token |
+| `OPENAI_API_KEY` | — | OpenAI API key |
+| `OPENAI_DEFAULT_MODEL` | `gpt-5.5` | Default model for the OpenAI provider |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible base URL for the OpenAI provider |
 | `OPENROUTER_API_KEY` | — | OpenRouter API key |
+| `AZURE_OPENAI_API_KEY` | — | Azure OpenAI API key |
+| `AZURE_OPENAI_BASE_URL` | — | OpenAI-compatible Azure base URL, e.g. `https://your-resource.services.ai.azure.com/openai/v1` |
+| `AZURE_OPENAI_DEFAULT_MODEL` | `gpt-5.5` | Default model for OpenAI-compatible Azure endpoints |
+| `AZURE_OPENAI_ENDPOINT` | — | Legacy Azure resource endpoint, e.g. `https://your-resource.openai.azure.com` |
+| `AZURE_OPENAI_DEPLOYMENT` | — | Legacy Azure deployment name used as the default model |
+| `AZURE_OPENAI_API_VERSION` | `2024-10-21` | Azure OpenAI chat completions API version |
+| `PORT` | `3000` | HTTP server port |
+| `LEYLINE_CLIENT_API_KEY` | `leyline` | Expected Bearer token for `/v1/chat/completions` and `/v1/route` |
+| `LEYLINE_CLIENT_AUTH_ENABLED` | `true` | Set to `false` to disable client auth validation |
+| `LEYLINE_TUNNEL_ENABLED` | `true` | Start a Cloudflare quick tunnel on boot and expose a public URL |
+| `LEYLINE_TUNNEL_BINARY` | `cloudflared` | Path to the cloudflared binary |
+| `LEYLINE_TUNNEL_TIMEOUT_MS` | `45000` | Max wait for the public tunnel URL on startup |
+| `LEYLINE_KEYCHAIN_ENABLED` | `true` | Enable Apple Keychain persistence for dashboard-saved API keys on macOS |
+| `LEYLINE_KEYCHAIN_SERVICE` | `@theaiinc/leyline` | Apple Keychain service name used for saved provider API keys |
 | `GEMINI_QUOTA_RPM` | `10` | Gemini requests per minute limit |
 | `GEMINI_QUOTA_RPD` | `1000` | Gemini requests per day limit |
 | `HF_QUOTA_RPM` | `100` | HuggingFace RPM limit |
+| `OPENAI_QUOTA_RPM` | `60` | OpenAI RPM limit |
+| `OPENAI_QUOTA_RPD` | `1000` | OpenAI daily request limit |
 | `OPENROUTER_QUOTA_RPM` | `20` | OpenRouter RPM limit |
+| `AZURE_OPENAI_QUOTA_RPM` | `60` | Azure OpenAI RPM limit |
+| `AZURE_OPENAI_QUOTA_RPD` | `1000` | Azure OpenAI daily request limit |
+
+Cloud provider API keys can also be set from `/dashboard`. Raw keys are accepted only in save/rehydration requests and are never returned by dashboard APIs.
+
+For the Azure OpenAI-compatible endpoint shape used by the OpenAI SDK, configure:
+
+```bash
+AZURE_OPENAI_BASE_URL=https://otlrs-dev-agents-resource.services.ai.azure.com/openai/v1
+AZURE_OPENAI_DEFAULT_MODEL=gpt-5.5
+LEYLINE_ROUTER_ENABLED=false
+LEYLINE_FIXED_PROVIDER=AzureOpenAI
+LEYLINE_FIXED_MODEL=gpt-5.5
+```
+
+Then paste the Azure API key into `/dashboard` under `AzureOpenAI`, or set `AZURE_OPENAI_API_KEY` in `.env`.
 
 ### Router / Classifier
 
@@ -288,6 +380,19 @@ Access the dashboard at `http://localhost:3000/dashboard` to view:
 | `LEYLINE_OPENAI_BASE_URL` | `http://localhost:1234/v1` | Base URL for the router model's LLM endpoint |
 | `LEYLINE_ROUTER_MAX_TOKENS` | `64` | Max output tokens (router output is 3 lines) |
 | `LEYLINE_ROUTER_TEMPERATURE` | `0` | Router model temperature (0 = deterministic) |
+| `LEYLINE_ROUTER_ENABLED` | `true` | Set to `false` to disable dynamic routing/failover and use one fixed model |
+| `LEYLINE_FIXED_PROVIDER` | — | Provider for fixed model mode, e.g. `OpenAI`, `AzureOpenAI`, `Ollama`; optional when the model exists in the registry |
+| `LEYLINE_FIXED_MODEL` | — | Model/deployment used for every chat completion when router is disabled |
+
+To force one model, set:
+
+```bash
+LEYLINE_ROUTER_ENABLED=false
+LEYLINE_FIXED_PROVIDER=OpenAI
+LEYLINE_FIXED_MODEL=gpt-5.5
+```
+
+When fixed model mode is enabled, `/v1/chat/completions` ignores the request `model` and sends every request to the configured provider/model. `/v1/route` returns a fixed routing decision instead of calling the classifier.
 
 ### Tier → Model Resolution
 
@@ -310,14 +415,32 @@ Access the dashboard at `http://localhost:3000/dashboard` to view:
 | `LMSTUDIO_BASE_URL` | `http://localhost:1234/v1` | Base URL for LM Studio / OpenAI-compatible endpoint |
 | `LMSTUDIO_MODEL` | — | Default model for the LM Studio provider |
 
+### Prompt Compression (optional)
+
+Leyline can optionally compress prompts and context before sending to LLM providers using [`@theaiinc/headroom-ai`](https://github.com/theaiinc/headroom-ai) — a library-only fork of [chopratejas/headroom](https://github.com/chopratejas/headroom) (Apache-2.0, original author credited).
+
+Compression is **off by default** and requires the Python package:
+
+```bash
+pip install headroom-ai
+```
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `LEYLINE_COMPRESSION_ENABLED` | `false` | Set to `true` to enable prompt compression |
+| `LEYLINE_COMPRESSION_MODEL` | — | Model hint sent to headroom-ai for compression routing |
+| `LEYLINE_COMPRESSION_TOKEN_BUDGET` | — | Optional token budget — compress to fit within this limit |
+
+When enabled, `Router.route()` and `Router.routeStream()` automatically compress messages before sending to providers. The compressor spawns `headroom-compress` (the Python CLI), passing messages as JSON on stdin and receiving compressed messages as JSON on stdout.
+
 ### Exported Types
 
 ```typescript
 import type {
-  ModelVariant, BillingClass, ResourceClass,
+  ModelVariant, BillingClass, ResourceClass, ApiKeyConfigurableProvider,
   RouterClassification, ClassifyRequest, RouteResult, TierConfig,
-  LeylineConfig, RouterModelConfig, QuotaConfig,
-  RouterOptions, ClassifyFn,
+  LeylineConfig, RouterModelConfig, QuotaConfig, SingleModelConfig,
+  RouterOptions, SingleModelRouterConfig, ClassifyFn,
   Provider, CompletionRequest, CompletionResponse, StreamChunk,
 } from '@theaiinc/leyline';
 ```
