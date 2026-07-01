@@ -380,7 +380,7 @@ Cloud provider API keys can also be set from `/dashboard`. Raw keys are accepted
 For Cursor Agent + Azure, use LiteLLM as the Azure adapter:
 
 ```bash
-AZURE_OPENAI_BASE_URL=https://otlrs-dev-agents-resource.services.ai.azure.com/openai/v1
+AZURE_OPENAI_BASE_URL=https://your-resource.services.ai.azure.com/openai/v1
 AZURE_OPENAI_DEFAULT_MODEL=gpt-5.5
 LITELLM_ENABLED=true
 LITELLM_BASE_URL=http://127.0.0.1:4000/v1
