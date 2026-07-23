@@ -1,16 +1,21 @@
 import http from 'http';
 import { JanusTunnel } from '../src/core/janus-tunnel';
 
-function startJanusStub(service: unknown) {
+function startJanusStub(endpoint: unknown) {
   const server = http.createServer((req, res) => {
     if (req.url === '/api/status') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end('{}');
       return;
     }
-    if (req.url === '/api/services/leyline') {
+    if (req.method === 'PUT' && req.url === '/api/namespaces/leyline/aliases/api') {
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end('{}');
+      return;
+    }
+    if (req.url === '/api/namespaces/leyline/aliases/api/endpoint') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(service));
+      res.end(JSON.stringify(endpoint));
       return;
     }
     res.writeHead(404);
@@ -25,7 +30,7 @@ function startJanusStub(service: unknown) {
   });
 }
 
-function startAuthenticatedJanusStub(service: unknown) {
+function startAuthenticatedJanusStub(endpoint: unknown) {
   const headers: string[] = [];
   const server = http.createServer((req, res) => {
     headers.push(req.headers.authorization || '');
@@ -39,9 +44,9 @@ function startAuthenticatedJanusStub(service: unknown) {
       res.end('{}');
       return;
     }
-    if (req.url === '/api/services/leyline') {
+    if (req.url === '/api/namespaces/leyline/aliases/api/endpoint') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(service));
+      res.end(JSON.stringify(endpoint));
       return;
     }
     res.writeHead(404);
@@ -58,16 +63,14 @@ function startAuthenticatedJanusStub(service: unknown) {
 
 describe('JanusTunnel', () => {
   it('publishes the active registered Janus tunnel URL', async () => {
-    const stub = await startJanusStub({
-      id: 'leyline',
-      activeTunnel: 'primary',
-      tunnels: [{ id: 'primary', url: 'https://leyline.example.com', status: 'healthy' }],
-    });
+    const stub = await startJanusStub({ url: 'https://leyline.example.com', status: 'healthy' });
     const tunnel = new JanusTunnel({
       enabled: true,
       command: 'janus',
       baseUrl: stub.baseUrl,
       serviceId: 'leyline',
+      namespace: 'leyline',
+      alias: 'api',
       startupTimeoutMs: 100,
       autoStart: false,
     });
@@ -81,12 +84,14 @@ describe('JanusTunnel', () => {
   });
 
   it('reports an error when Janus has no active tunnel URL', async () => {
-    const stub = await startJanusStub({ id: 'leyline', tunnels: [] });
+    const stub = await startJanusStub({ status: 'offline' });
     const tunnel = new JanusTunnel({
       enabled: true,
       command: 'janus',
       baseUrl: stub.baseUrl,
       serviceId: 'leyline',
+      namespace: 'leyline',
+      alias: 'api',
       startupTimeoutMs: 100,
       autoStart: false,
     });
@@ -98,16 +103,14 @@ describe('JanusTunnel', () => {
   });
 
   it('uses a stored Janus API key for authenticated discovery', async () => {
-    const stub = await startAuthenticatedJanusStub({
-      id: 'leyline',
-      activeTunnel: 'primary',
-      tunnels: [{ id: 'primary', url: 'https://leyline.example.com', status: 'healthy' }],
-    });
+    const stub = await startAuthenticatedJanusStub({ url: 'https://leyline.example.com', status: 'healthy' });
     const tunnel = new JanusTunnel({
       enabled: true,
       command: 'janus',
       baseUrl: stub.baseUrl,
       serviceId: 'leyline',
+      namespace: 'leyline',
+      alias: 'api',
       startupTimeoutMs: 100,
       autoStart: false,
       apiKey: 'stored-key',

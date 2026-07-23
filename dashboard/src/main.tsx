@@ -24,6 +24,11 @@ const LOCAL_KEY_PREFIX = 'leyline.apiKey.';
 const LOCAL_MODE_PREFIX = 'leyline.persistence.';
 const LOCAL_RUNTIME_PREFIX = 'leyline.runtime.';
 const LOG_ERROR_MAX_LENGTH = 60;
+const API_BASE = (import.meta.env.VITE_LEYLINE_API_BASE_URL || window.location.origin).replace(/\/$/, '');
+
+function apiUrl(path: string): string {
+  return `${API_BASE}${path}`;
+}
 
 function cn(...classes: Array<string | false | null | undefined>): string {
   return classes.filter(Boolean).join(' ');
@@ -136,7 +141,7 @@ function App() {
   }, []);
 
   async function fetchApiKeyStatus() {
-    const response = await fetch('/dashboard/api-keys');
+    const response = await fetch(apiUrl('/dashboard/api-keys'));
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Failed to fetch API key status');
     const normalized = normalizeApiKeyStatusResponse(data);
@@ -151,7 +156,7 @@ function App() {
   }
 
   async function fetchStats() {
-    const response = await fetch('/dashboard/stats');
+    const response = await fetch(apiUrl('/dashboard/stats'));
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Failed to fetch dashboard stats');
     setStats(normalizeStatsResponse(data));
@@ -165,7 +170,7 @@ function App() {
       const storedKey = window.localStorage.getItem(localKey(provider.name));
       if (!storedKey) return;
 
-      const response = await fetch('/dashboard/api-keys', {
+      const response = await fetch(apiUrl('/dashboard/api-keys'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -196,7 +201,7 @@ function App() {
         return;
       }
 
-      const response = await fetch('/dashboard/api-keys', {
+      const response = await fetch(apiUrl('/dashboard/api-keys'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -273,7 +278,7 @@ function App() {
     }
 
     setMessage('Saving API key...');
-    const response = await fetch('/dashboard/api-keys', {
+    const response = await fetch(apiUrl('/dashboard/api-keys'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -307,7 +312,7 @@ function App() {
     if (!activeProvider) return;
 
     setMessage('Saving runtime settings...');
-    const response = await fetch('/dashboard/api-keys', {
+    const response = await fetch(apiUrl('/dashboard/api-keys'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -336,7 +341,7 @@ function App() {
     if (!confirmed) return;
 
     setMessage('Clearing API key...');
-    const response = await fetch(`/dashboard/api-keys/${encodeURIComponent(activeProvider.name)}`, {
+    const response = await fetch(apiUrl(`/dashboard/api-keys/${encodeURIComponent(activeProvider.name)}`), {
       method: 'DELETE',
     });
     const data = await response.json();

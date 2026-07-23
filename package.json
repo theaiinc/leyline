@@ -18,7 +18,12 @@
     "start": "node dist/index.js",
     "litellm:azure": "npm run build && node scripts/start-litellm-azure.mjs",
     "dev": "nodemon src/index.ts",
-    "test": "jest"
+    "test": "jest",
+    "dev:dashboard": "vite --host 127.0.0.1 --port 1420",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "build:desktop": "tsc && VITE_TAURI=true VITE_LEYLINE_API_BASE_URL=http://127.0.0.1:3000 vite build && node -e \"require('fs').copyFileSync('dashboard/public/logo.png','public/logo.png')\"",
+    "tauri:build": "npm run build:desktop && tauri build"
   },
   "keywords": [],
   "author": "The AI Inc",
@@ -41,6 +46,7 @@
     "react-dom": "^19.2.7"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/jest": "^30.0.0",

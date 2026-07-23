@@ -4,3 +4,6 @@ dist
 .venv-litellm
 .DS_Store
 coverage
+src-tauri/target
+src-tauri/gen
+src-tauri/icons/icon.iconset

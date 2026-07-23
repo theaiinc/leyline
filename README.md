@@ -45,7 +45,7 @@ graph TB
 - **📈 Agent Analytics**: Insights into "Most Popular", "Fastest", and "Highest Quality" (Elo-rated) models.
 - **🔍 Model Discovery**: Search and filter through thousands of available models from connected providers.
 - **🔁 LiteLLM Azure Adapter**: Route Cursor Agent / OpenAI-compatible calls through LiteLLM for Azure Responses API compatibility.
-- **🔐 Tunnel-Safe Auth**: Generate a fresh client API key per Cloudflare tunnel session and keep the dashboard localhost-only.
+- **🔐 Tunnel-Safe Auth**: Generate a fresh client API key per Janus-supervised tunnel session and keep the dashboard localhost-only.
 - **🔌 OpenAI Compatible**: Drop-in replacement for OpenAI SDKs (`/v1/chat/completions`).
 
 ## 📦 Installation
@@ -112,13 +112,37 @@ Run the router in another terminal:
 npx @theaiinc/leyline
 ```
 
-The API will be available at `http://localhost:3000`. On startup Leyline also launches a **Cloudflare quick tunnel** (via `cloudflared`) and prints a public `trycloudflare.com` URL — use that when cloud clients block private networks (e.g. "Access to private networks is forbidden").
+The API will be available at `http://localhost:3000`. On startup Leyline can start or connect to **Janus**, which supervises the configured external tunnel and publishes the registered public service URL — use that URL when cloud clients block private networks.
 
-Set `LEYLINE_TUNNEL_ENABLED=false` if you do not want the tunnel, or install [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) if it is missing.
+Set `LEYLINE_TUNNEL_ENABLED=false` if you do not want an external URL. Configure Janus with `LEYLINE_JANUS_BASE_URL`, `LEYLINE_JANUS_NAMESPACE`, `LEYLINE_JANUS_ALIAS`, and optionally `LEYLINE_JANUS_PUBLIC_URL`; Leyline no longer starts `cloudflared` directly.
+
+Janus must supervise the tunnel and register the public endpoint. Leyline registers/resolves the stable `namespace/alias` identity:
+
+```yaml
+services:
+  - service:
+      name: leyline
+    local:
+      url: http://127.0.0.1:3000
+    public:
+      hostname: api.example.com
+    health:
+      path: /healthz
+    tunnels:
+      - id: primary
+        url: https://api.example.com
+```
+
+The default identity is `leyline/api`. Leyline registers it through:
+
+```text
+PUT /api/namespaces/leyline/aliases/api
+GET /api/namespaces/leyline/aliases/api/endpoint
+```
 
 #### Client API keys (calling Leyline)
 
-Leyline validates incoming `Authorization` headers on `/v1/chat/completions` and `/v1/route`. When the Cloudflare tunnel is enabled and `LEYLINE_CLIENT_API_KEY` is unset, Leyline generates a fresh random `ll-...` client key for that server process and prints it next to the public base URL. This key is separate from provider credentials (Azure OpenAI, OpenAI, Gemini, etc.), which are configured in Leyline itself via `.env` or the local `/dashboard` API key panel.
+Leyline validates incoming `Authorization` headers on `/v1/chat/completions`, `/v1/route`, and `/mcp`. When the Janus external URL is enabled and `LEYLINE_CLIENT_API_KEY` is unset, Leyline generates a fresh random `ll-...` client key for that server process and prints it next to the public base URL. This key is separate from provider credentials (Azure OpenAI, OpenAI, Gemini, etc.), which are configured in Leyline itself via `.env` or the local `/dashboard` API key panel.
 
 When using the OpenAI SDK against Leyline at `http://localhost:3000/v1`:
 
@@ -212,6 +236,32 @@ for await (const chunk of failoverRouter.routeStream({
   process.stdout.write(chunk.choices[0].delta.content || '');
 }
 ```
+
+### 3. Tauri Desktop App
+
+Leyline can run as a Tauri desktop application. Tauri starts the Node sidecar only when the internal API is not already reachable on `127.0.0.1:3000`, waits for readiness, and terminates a sidecar it started when the desktop app exits.
+
+```bash
+npm run tauri:dev
+```
+
+The internal Express API is loopback-only. The dashboard uses that internal API directly; the external tunnel/proxy surface is restricted to authenticated `POST /v1/chat/completions`, `POST /v1/route`, and authenticated MCP Streamable HTTP at `POST /mcp`. Dashboard, static assets, health/readiness endpoints, and unknown routes are not externally exposed.
+
+MCP clients must initialize a session first, keep the returned `Mcp-Session-Id`, and then call the `leyline_chat` tool:
+
+```text
+POST /mcp
+Authorization: Bearer <LEYLINE_CLIENT_API_KEY>
+Content-Type: application/json
+```
+
+For a release bundle, build the desktop frontend and Tauri app with:
+
+```bash
+npm run tauri:build
+```
+
+The current sidecar strategy expects Node to be available on the host. Set `LEYLINE_SIDECAR_COMMAND` and `LEYLINE_SIDECAR_ENTRYPOINT` when a deployment uses a bundled Node runtime or a custom sidecar executable.
 
 ## 🧠 Architecture
 
@@ -323,7 +373,7 @@ Access the dashboard at `http://localhost:3000/dashboard` to view:
   - **⚡ Latency**: Fastest response times.
   - **🌟 Quality**: Models ranked by LMSYS Elo ratings (GPT-4o, Claude 3.5, etc.).
 
-The dashboard and dashboard APIs are intentionally **localhost-only**. Cloudflare/proxy requests to `/dashboard/*` are blocked so the public tunnel exposes only the OpenAI-compatible `/v1/*` API surface. Use the local dashboard to copy the current tunnel base URL and generated client key.
+The dashboard and dashboard APIs are intentionally **localhost-only**. Janus tunnel/proxy requests to `/dashboard/*` are blocked so the public URL exposes only the authenticated `/v1/*` and `/mcp` API surface. Use the local dashboard to copy the current tunnel base URL and generated client key.
 
 Dashboard key behavior:
 
@@ -361,8 +411,15 @@ Dashboard key behavior:
 | `PORT` | `3000` | HTTP server port |
 | `LEYLINE_CLIENT_API_KEY` | random when tunnel enabled, otherwise `leyline` | Expected Bearer token for `/v1/chat/completions` and `/v1/route` |
 | `LEYLINE_CLIENT_AUTH_ENABLED` | `true` | Set to `false` to disable client auth validation |
-| `LEYLINE_TUNNEL_ENABLED` | `true` | Start a Cloudflare quick tunnel on boot and expose a public URL |
-| `LEYLINE_TUNNEL_BINARY` | `cloudflared` | Path to the cloudflared binary |
+| `LEYLINE_TUNNEL_ENABLED` | `true` | Use Janus on boot and expose its registered public URL |
+| `LEYLINE_JANUS_COMMAND` | `janus` | Path to the Janus executable |
+| `LEYLINE_JANUS_CONFIG` | — | Janus YAML config path passed to `janus run` |
+| `LEYLINE_JANUS_BASE_URL` | `http://127.0.0.1:8088` | Janus local API URL |
+| `LEYLINE_JANUS_SERVICE_ID` | `leyline` | Janus registered service id |
+| `LEYLINE_JANUS_NAMESPACE` | `leyline` | Stable Janus namespace |
+| `LEYLINE_JANUS_ALIAS` | `api` | Stable Janus alias |
+| `LEYLINE_JANUS_PUBLIC_URL` | — | Optional public tunnel URL to register with Janus |
+| `LEYLINE_JANUS_AUTOSTART` | `true` | Start Janus if its local API is unavailable |
 | `LEYLINE_TUNNEL_TIMEOUT_MS` | `45000` | Max wait for the public tunnel URL on startup |
 | `LEYLINE_KEYCHAIN_ENABLED` | `true` | Enable Apple Keychain persistence for dashboard-saved API keys on macOS |
 | `LEYLINE_KEYCHAIN_SERVICE` | `@theaiinc/leyline` | Apple Keychain service name used for saved provider API keys |

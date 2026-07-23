@@ -1,5 +1,6 @@
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
+import type { Server as HttpServer } from 'http';
 import cors from 'cors';
 import path from 'path';
 import { Router } from './core/router';
@@ -11,6 +12,7 @@ import { config } from './config';
 import { requireClientApiKey } from './core/client-auth';
 import { chatCompletionErrorResponse, formatProviderError, hydrateAxiosError } from './core/api-errors';
 import { normalizeCompletionRequest } from './core/normalize-request';
+import { createMcpHttpHandler } from './mcp/http';
 import type { TunnelInfo } from './core/cloudflared-tunnel';
 import {
   ApiKeyPersistenceMode,
@@ -36,6 +38,10 @@ function isRuntimeConfigurableProvider(provider: Provider): provider is RuntimeC
 export interface CreateServerOptions {
   apiKeyStore?: SecretStore;
   getTunnelInfo?: () => TunnelInfo;
+  /** Bind address used by the standalone process. Defaults to loopback. */
+  host?: string;
+  /** Enable the public-proxy route allowlist. Defaults to true. */
+  enforceExternalSurface?: boolean;
 }
 
 type ProviderKeyMetadata = {
@@ -92,14 +98,44 @@ function requireLocalDashboardAccess(req: Request, res: Response, next: NextFunc
   });
 }
 
+const EXTERNAL_ROUTES = new Set(['/v1/chat/completions', '/v1/route', '/mcp']);
+
+function requireExternalSurfaceAllowlist(req: Request, res: Response, next: NextFunction): void {
+  if (
+    !hasPublicProxyHeaders(req)
+    || EXTERNAL_ROUTES.has(req.path)
+    || req.path === '/dashboard'
+    || req.path.startsWith('/dashboard/')
+  ) {
+    next();
+    return;
+  }
+
+  res.status(404).json({
+    error: {
+      message: 'Endpoint is not available through the external API surface.',
+      type: 'not_found',
+      code: 'external_endpoint_not_exposed',
+    },
+  });
+}
+
 export const createServer = (router: Router, quotaManager: QuotaManager, options: CreateServerOptions = {}) => {
   const app = express();
   const apiKeyStore = options.apiKeyStore || createDefaultSecretStore();
   const getTunnelInfo = options.getTunnelInfo;
   const keyMetadata = new Map<string, ProviderKeyMetadata>();
 
-  app.use(cors());
+  app.use(cors({ exposedHeaders: ['Mcp-Session-Id'] }));
   app.use(express.json({ limit: config.bodyLimit }));
+
+  if (options.enforceExternalSurface !== false) {
+    app.use(requireExternalSurfaceAllowlist);
+  }
+
+  app.get('/healthz', (_req, res) => {
+    res.json({ status: 'ok', service: 'leyline' });
+  });
 
   app.use('/dashboard', requireLocalDashboardAccess);
 
@@ -159,6 +195,21 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   };
 
   const apiKeyInitialization = initializeApiKeys();
+
+  app.get('/readyz', async (_req, res) => {
+    await apiKeyInitialization;
+    res.json({ status: 'ready', service: 'leyline' });
+  });
+
+  const mcpHandler = createMcpHttpHandler(router);
+  app.post('/mcp', requireClientApiKey, async (req, res, next) => {
+    await apiKeyInitialization;
+    return mcpHandler(req, res, next);
+  });
+  app.delete('/mcp', requireClientApiKey, async (req, res, next) => {
+    await apiKeyInitialization;
+    return mcpHandler(req, res, next);
+  });
 
   const providerKeyStatus = (provider: ApiKeyConfigurableProvider) => {
     const source = keyMetadata.get(provider.name)?.source || (provider.hasApiKey() ? 'env' : 'none');
@@ -446,3 +497,22 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
 
   return app;
 };
+
+export interface StartServerOptions extends CreateServerOptions {
+  port?: number;
+}
+
+export function startServer(
+  router: Router,
+  quotaManager: QuotaManager,
+  options: StartServerOptions = {},
+): Promise<HttpServer> {
+  const app = createServer(router, quotaManager, options);
+  const port = options.port ?? config.port;
+  const host = options.host ?? '127.0.0.1';
+
+  return new Promise((resolve, reject) => {
+    const server = app.listen(port, host, () => resolve(server));
+    server.once('error', reject);
+  });
+}

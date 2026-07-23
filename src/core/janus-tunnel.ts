@@ -8,6 +8,8 @@ export interface JanusTunnelOptions {
   configPath?: string;
   baseUrl: string;
   serviceId: string;
+  namespace: string;
+  alias: string;
   publicUrl?: string;
   startupTimeoutMs: number;
   autoStart: boolean;
@@ -15,13 +17,6 @@ export interface JanusTunnelOptions {
   pairingCode?: string;
   secretStore?: { get(account: string): Promise<string | undefined>; set(account: string, secret: string): Promise<void> };
   credentialAccount?: string;
-}
-
-interface JanusService {
-  id: string;
-  localUrl?: string;
-  activeTunnel?: string;
-  tunnels?: Array<{ id: string; url: string; status?: string }>;
 }
 
 export class JanusTunnel {
@@ -73,14 +68,13 @@ export class JanusTunnel {
       await this.ensureCredential();
 
       if (this.options.publicUrl) {
-        await this.registerService(localUrl, this.options.publicUrl);
+        await this.registerAlias(localUrl, this.options.publicUrl);
       }
 
-      const service = await this.waitForService();
-      const publicUrl = this.activeTunnelUrl(service);
+      const publicUrl = await this.waitForAliasEndpoint();
       if (!publicUrl) {
         throw new Error(
-          `Janus service "${this.options.serviceId}" has no active healthy tunnel URL. Configure LEYLINE_JANUS_PUBLIC_URL or register the service in Janus.`,
+          `Janus alias "${this.options.namespace}/${this.options.alias}" has no active healthy endpoint. Configure LEYLINE_JANUS_PUBLIC_URL or register the alias in Janus.`,
         );
       }
 
@@ -185,44 +179,38 @@ export class JanusTunnel {
     return this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {};
   }
 
-  private async registerService(localUrl: string, publicUrl: string): Promise<void> {
+  private async registerAlias(localUrl: string, publicUrl: string): Promise<void> {
     const baseUrl = this.options.baseUrl.replace(/\/+$/, '');
-    try {
-      await axios.post(`${baseUrl}/api/services`, {
+    await axios.put(
+      `${baseUrl}/api/namespaces/${encodeURIComponent(this.options.namespace)}/aliases/${encodeURIComponent(this.options.alias)}`,
+      {
+        namespace: this.options.namespace,
+        alias: this.options.alias,
         id: this.options.serviceId,
         name: this.options.serviceId,
         hostname: new URL(publicUrl).host,
         localUrl,
         healthPath: '/healthz',
         tunnels: [{ id: 'primary', url: publicUrl }],
-      }, {
-        timeout: 2_000,
-        headers: this.authHeaders(),
-      });
-    } catch (error: any) {
-      if (error?.response?.status === 409) {
-        await axios.post(`${baseUrl}/api/services/${encodeURIComponent(this.options.serviceId)}/refresh`, undefined, {
-          timeout: 2_000,
-          headers: this.authHeaders(),
-        });
-        return;
-      }
-      throw error;
-    }
+      },
+      { timeout: 2_000, headers: this.authHeaders() },
+    );
   }
 
-  private async waitForService(): Promise<JanusService> {
+  private async waitForAliasEndpoint(): Promise<string | undefined> {
     const deadline = Date.now() + this.options.startupTimeoutMs;
-    const url = `${this.options.baseUrl.replace(/\/+$/, '')}/api/services/${encodeURIComponent(this.options.serviceId)}`;
-    let lastError = 'Janus service is not ready';
+    const url = `${this.options.baseUrl.replace(/\/+$/, '')}/api/namespaces/${encodeURIComponent(this.options.namespace)}/aliases/${encodeURIComponent(this.options.alias)}/endpoint`;
+    let lastError = 'Janus alias endpoint is not ready';
 
     while (Date.now() < deadline) {
       try {
-      const response = await axios.get<JanusService>(url, {
-        timeout: 1_000,
-        headers: this.authHeaders(),
-      });
-        if (response.status === 200) return response.data;
+        const response = await axios.get<{ url?: string; status?: string }>(url, {
+          timeout: 1_000,
+          headers: this.authHeaders(),
+        });
+        if (response.status === 200 && response.data.url && response.data.status === 'healthy') {
+          return response.data.url;
+        }
         lastError = `Janus returned HTTP ${response.status}`;
       } catch (error: any) {
         lastError = error?.message || lastError;
@@ -230,16 +218,7 @@ export class JanusTunnel {
       await new Promise(resolve => setTimeout(resolve, 250));
     }
 
-    throw new Error(`Timed out waiting for Janus service "${this.options.serviceId}": ${lastError}`);
-  }
-
-  private activeTunnelUrl(service: JanusService): string | undefined {
-    const active = service.tunnels?.find(
-      tunnel => tunnel.id === service.activeTunnel && tunnel.url && tunnel.status === 'healthy',
-    );
-    return active?.url || service.tunnels?.find(
-      tunnel => tunnel.url && (tunnel.status === 'healthy' || !tunnel.status),
-    )?.url;
+    throw new Error(`Timed out waiting for Janus alias "${this.options.namespace}/${this.options.alias}": ${lastError}`);
   }
 }
 
