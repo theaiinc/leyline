@@ -7,6 +7,16 @@ export { ModelRegistry } from './core/model-registry';
 export { Classifier } from './core/classifier';
 export type { ClassifyFn } from './core/classifier';
 export { QuotaManager } from './core/quota-manager';
+export { ProviderRateLimiter, RateLimitExceededError } from './core/rate-limiter';
+export type {
+  ProviderRateLimit,
+  RateLimitRequest,
+  RateLimitDelayReason,
+  RateLimitDelayEvent,
+  RateLimitLease,
+  RateLimiterClock,
+  RateLimitLogger,
+} from './core/rate-limiter';
 export type {
   Provider,
   ApiKeyConfigurableProvider,
@@ -23,12 +33,14 @@ export { OllamaProvider } from './providers/ollama';
 export { LMStudioProvider } from './providers/lmstudio';
 export { LiteLLMProvider } from './providers/litellm';
 export { AzureOpenAIProvider } from './providers/azure-openai';
-export { createServer } from './server';
-export type { CreateServerOptions } from './server';
+export { createServer, startServer } from './server';
+export type { CreateServerOptions, StartServerOptions } from './server';
 export { config, DEFAULT_LEYLINE_CLIENT_API_KEY } from './config';
 export type { LeylineConfig, QuotaConfig, RouterModelConfig, DefaultModelsConfig, CompressionConfig, SingleModelConfig, TunnelConfig } from './config';
 export { CloudflaredTunnel, parseCloudflaredPublicUrl } from './core/cloudflared-tunnel';
 export type { TunnelInfo, TunnelState, CloudflaredTunnelOptions } from './core/cloudflared-tunnel';
+export { JanusTunnel } from './core/janus-tunnel';
+export type { JanusTunnelOptions } from './core/janus-tunnel';
 export { maybeCompress, isCompressionAvailable } from './core/compress';
 export {
   DEFAULT_KEYCHAIN_SERVICE,
@@ -44,7 +56,7 @@ export {
 export type { ApiKeyPersistenceMode, ApiKeySource, SecretStore, SecretStoreStatus, PersistedRuntimeConfig } from './core/secret-store';
 
 // ── Internal imports (for bootstrap) ─────────────────────────────────
-import { createServer } from './server';
+import { startServer } from './server';
 import { Router } from './core/router';
 import { ModelRegistry } from './core/model-registry';
 import { Classifier } from './core/classifier';
@@ -61,10 +73,12 @@ import { config, DEFAULT_LEYLINE_CLIENT_API_KEY } from './config';
 import type { ModelVariant } from './core/types';
 import { isCompressionAvailable } from './core/compress';
 import { CloudflaredTunnel } from './core/cloudflared-tunnel';
+import { JanusTunnel } from './core/janus-tunnel';
+import { createDefaultSecretStore } from './core/secret-store';
 
 // ── Standalone server bootstrap ──────────────────────────────────────
 
-async function bootstrap() {
+export async function bootstrap() {
   const quotaManager = new QuotaManager();
 
   // Configure optional Leyline-side quotas (off by default — Cursor bursts exceed low RPM caps)
@@ -144,21 +158,25 @@ async function bootstrap() {
     router.addProvider(new LMStudioProvider());
   }
 
-  const tunnel = new CloudflaredTunnel(config.tunnel);
+  const tunnel = new JanusTunnel({
+    ...config.tunnel,
+    secretStore: createDefaultSecretStore(),
+  });
   const localUrl = `http://127.0.0.1:${config.port}`;
 
-  const app = createServer(router, quotaManager, {
+  const app = await startServer(router, quotaManager, {
     getTunnelInfo: () => tunnel.getInfo(),
+    host: process.env.LEYLINE_HOST || '127.0.0.1',
   });
 
   const shutdown = () => {
     tunnel.stop();
-    process.exit(0);
+    app.close(() => process.exit(0));
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  app.listen(config.port, async () => {
+  void (async () => {
     console.log(`[Leyline] AI Router listening on port ${config.port}`);
     console.log(`[Leyline] Local URL: ${localUrl}`);
     console.log(`[Leyline] Max request body: ${config.bodyLimit}`);
@@ -210,7 +228,7 @@ async function bootstrap() {
     }
 
     if (config.tunnel.enabled) {
-      console.log('[Leyline] Starting Cloudflare quick tunnel (cloudflared)...');
+      console.log(`[Leyline] Starting Janus external URL supervisor (${config.tunnel.baseUrl})...`);
       void tunnel.start(localUrl).then((info) => {
         if (info.state === 'ready' && info.publicUrl) {
           console.log(`[Leyline] Public tunnel URL: ${info.publicUrl}`);
@@ -218,12 +236,14 @@ async function bootstrap() {
           console.log(`[Leyline] Client API key: ${config.clientApiKey || DEFAULT_LEYLINE_CLIENT_API_KEY}`);
           console.log('[Leyline] Use the public URL for cloud clients that cannot reach localhost.');
         } else if (info.error) {
-          console.warn(`[Leyline] Cloudflare tunnel failed: ${info.error}`);
-          console.warn('[Leyline] Local-only access remains available; install cloudflared or set LEYLINE_TUNNEL_ENABLED=false');
+          console.warn(`[Leyline] Janus external URL failed: ${info.error}`);
+          console.warn('[Leyline] Local-only access remains available; start Janus or set LEYLINE_TUNNEL_ENABLED=false');
         }
       });
     }
-  });
+  })();
 }
 
-bootstrap();
+if (require.main === module) {
+  void bootstrap();
+}

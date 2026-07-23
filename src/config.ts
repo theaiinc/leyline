@@ -49,12 +49,26 @@ export interface SingleModelConfig {
 }
 
 export interface TunnelConfig {
-  /** Start a Cloudflare quick tunnel so cloud clients can reach Leyline. */
+  /** Use Janus to supervise the external tunnel so cloud clients can reach Leyline. */
   enabled: boolean;
-  /** cloudflared binary name or path. */
-  binary: string;
-  /** Max time to wait for trycloudflare.com URL on startup. */
+  /** Janus executable name or path. */
+  command: string;
+  /** Janus YAML config path. */
+  configPath: string;
+  /** Janus local API base URL. */
+  baseUrl: string;
+  /** Registered Janus service id. */
+  serviceId: string;
+  /** Optional public tunnel URL used when registering the Leyline service. */
+  publicUrl: string;
+  /** Start Janus when its API is not already reachable. */
+  autoStart: boolean;
+  /** Max time to wait for the Janus service URL on startup. */
   startupTimeoutMs: number;
+  /** Optional stored Janus credential; pairing is preferred for first-run onboarding. */
+  apiKey: string;
+  /** Optional one-time pairing code for an already-running authenticated Janus daemon. */
+  pairingCode: string;
 }
 
 /** Default Bearer token clients send when calling Leyline's OpenAI-compatible API. */
@@ -161,8 +175,15 @@ export const config: LeylineConfig = {
   clientApiKey: resolveClientApiKey(),
   tunnel: {
     enabled: process.env.LEYLINE_TUNNEL_ENABLED !== 'false',
-    binary: process.env.LEYLINE_TUNNEL_BINARY || 'cloudflared',
+    command: process.env.LEYLINE_JANUS_COMMAND || 'janus',
+    configPath: process.env.LEYLINE_JANUS_CONFIG || '',
+    baseUrl: process.env.LEYLINE_JANUS_BASE_URL || 'http://127.0.0.1:8088',
+    serviceId: process.env.LEYLINE_JANUS_SERVICE_ID || 'leyline',
+    publicUrl: process.env.LEYLINE_JANUS_PUBLIC_URL || '',
+    autoStart: process.env.LEYLINE_JANUS_AUTOSTART !== 'false',
     startupTimeoutMs: parseInt(process.env.LEYLINE_TUNNEL_TIMEOUT_MS || '45000', 10),
+    apiKey: process.env.LEYLINE_JANUS_API_KEY || '',
+    pairingCode: process.env.LEYLINE_JANUS_PAIRING_CODE || '',
   },
   bodyLimit: process.env.LEYLINE_BODY_LIMIT || '100mb',
 };
