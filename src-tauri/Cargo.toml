@@ -9,7 +9,8 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+png = "0.18.1"
+tauri = { version = "2", features = ["tray-icon"] }
 
 [features]
 default = ["custom-protocol"]

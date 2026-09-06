@@ -6,6 +6,7 @@ import {
   ClassifyRequest,
   RouterClassification,
   RouteResult,
+  RouteOptions,
   TierConfig,
 } from './types';
 import { QuotaManager } from './quota-manager';
@@ -58,6 +59,14 @@ export interface RouterOptions {
   tierConfig?: TierConfig;
   singleModel?: SingleModelRouterConfig;
   /**
+   * Model pool: provider name → model ids the router may use when the
+   * request model is 'auto'. When at least one provider has a non-empty
+   * list, only those models are candidates; providers without enabled
+   * models are skipped. When unset (or every list is empty) all models
+   * are candidates (legacy behavior).
+   */
+  enabledModels?: Record<string, string[]>;
+  /**
    * Code policy function: maps a RouterClassification to a tier label.
    * Defaults to the built-in `selectModelByRouter` policy.
    */
@@ -76,6 +85,8 @@ export interface SingleModelRouterConfig {
 }
 
 // ── Service type detection ─────────────────────────────────────────
+
+const MODEL_ID_CACHE_TTL_MS = 3600 * 1000;
 
 const DEFAULT_SERVICE_TIERS: Record<string, string> = {
   casual: '4b',
@@ -141,6 +152,9 @@ export class Router {
   private codePolicy: (classification: RouterClassification | null) => string;
   private serviceTiers: Record<string, string>;
   private singleModel?: SingleModelRouterConfig;
+  private enabledModels?: Record<string, string[]>;
+  private providerModelIds = new Map<string, { ids: Set<string>; timestamp: number }>();
+  private modelPins = new Map<string, string>();
 
   constructor(quotaManagerOrOptions?: QuotaManager | RouterOptions) {
     // Backward-compatible constructor: accept QuotaManager directly or RouterOptions
@@ -160,6 +174,7 @@ export class Router {
       this.codePolicy = opts.codePolicy ?? selectModelByRouter;
       this.serviceTiers = opts.serviceTiers ?? { ...DEFAULT_SERVICE_TIERS };
       this.singleModel = opts.singleModel;
+      this.enabledModels = opts.enabledModels;
     }
   }
 
@@ -173,6 +188,131 @@ export class Router {
     return this.providers;
   }
 
+  /** Unregister a provider by exact name. Returns false if it wasn't registered. */
+  removeProvider(name: string): boolean {
+    const index = this.providers.findIndex(p => p.name === name);
+    if (index === -1) return false;
+    this.providers.splice(index, 1);
+    this.providerModelIds.delete(name);
+    for (const [model, pinned] of this.modelPins) {
+      if (pinned === name) this.modelPins.delete(model);
+    }
+    return true;
+  }
+
+  // ── Model pool (per-model enable/disable) ───────────────────────
+
+  /** Replace the enabled-model pool at runtime. Pass undefined to allow all models. */
+  setEnabledModels(enabledModels?: Record<string, string[]>) {
+    this.enabledModels = enabledModels;
+  }
+
+  getEnabledModels(): Record<string, string[]> | undefined {
+    return this.enabledModels;
+  }
+
+  /** True when the pool constrains routing (at least one non-empty list). */
+  private hasActiveModelPool(): boolean {
+    return Boolean(
+      this.enabledModels
+      && Object.values(this.enabledModels).some(models => Array.isArray(models) && models.length > 0),
+    );
+  }
+
+  /** Enabled models for a provider, or null when the pool is inactive. */
+  private enabledModelsFor(provider: Provider): string[] | null {
+    if (!this.hasActiveModelPool()) return null;
+    const norm = normalizeProviderName(provider.name);
+    for (const [key, models] of Object.entries(this.enabledModels!)) {
+      if (normalizeProviderName(key) === norm) return models;
+    }
+    return [];
+  }
+
+  /**
+   * Pick the model a provider should serve for an 'auto' request, or null
+   * when the provider has no enabled models and must be skipped.
+   */
+  private autoModelFor(provider: Provider): string | null {
+    const enabled = this.enabledModelsFor(provider);
+    if (!enabled) return provider.defaultModel;
+    if (enabled.length === 0) return null;
+    return enabled.includes(provider.defaultModel) ? provider.defaultModel : enabled[0];
+  }
+
+  private async providerListsModel(provider: Provider, model: string): Promise<boolean> {
+    const cached = this.providerModelIds.get(provider.name);
+    if (cached && Date.now() - cached.timestamp < MODEL_ID_CACHE_TTL_MS) {
+      return cached.ids.has(model);
+    }
+    await this.reindexProvider(provider);
+    return this.providerModelIds.get(provider.name)?.ids.has(model) ?? false;
+  }
+
+  /** Refresh the cached model-id list for one provider (used eagerly and lazily). */
+  async reindexProvider(provider: Provider): Promise<void> {
+    let ids = new Set<string>();
+    try {
+      ids = new Set((await provider.getModels()).map(detail => detail.id));
+    } catch {
+      // Provider offline or unlistable — treat as unknown and retry later.
+    }
+    this.providerModelIds.set(provider.name, { ids, timestamp: Date.now() });
+  }
+
+  /** Eagerly refresh the model-id index for every registered provider. */
+  async reindexAll(): Promise<void> {
+    await Promise.all(this.providers.map(provider => this.reindexProvider(provider)));
+  }
+
+  /** Derived view of the model-id index: model id → provider names that list it, in priority order. */
+  getModelIndex(): Record<string, string[]> {
+    const index: Record<string, string[]> = {};
+    for (const provider of this.providers) {
+      const cached = this.providerModelIds.get(provider.name);
+      if (!cached) continue;
+      for (const modelId of cached.ids) {
+        (index[modelId] ??= []).push(provider.name);
+      }
+    }
+    return index;
+  }
+
+  /** Replace the model-id pin map (model id → preferred provider name) at runtime. */
+  setModelPins(pins?: Record<string, string>) {
+    this.modelPins = new Map(Object.entries(pins ?? {}));
+  }
+
+  getModelPins(): Record<string, string> {
+    return Object.fromEntries(this.modelPins);
+  }
+
+  /**
+   * Provider order for a request. For explicit model ids, providers that
+   * enable or list that model are tried first; the original priority order
+   * remains as failover so unknown ids keep the legacy behavior. When more
+   * than one provider lists the model, a configured pin (if it names one of
+   * the matches) is moved to the front to resolve the ambiguity.
+   */
+  private async candidateProviders(model: string): Promise<Provider[]> {
+    if (!model || model === 'auto') return this.providers;
+
+    const matches: Provider[] = [];
+    for (const provider of this.providers) {
+      const enabled = this.enabledModelsFor(provider);
+      if (enabled?.includes(model) || await this.providerListsModel(provider, model)) {
+        matches.push(provider);
+      }
+    }
+    if (matches.length === 0) return this.providers;
+    if (matches.length > 1) {
+      const pinned = this.modelPins.get(model);
+      const pinnedIndex = pinned ? matches.findIndex(p => p.name === pinned) : -1;
+      if (pinnedIndex > 0) matches.unshift(matches.splice(pinnedIndex, 1)[0]);
+    }
+    return [...matches, ...this.providers.filter(provider => !matches.includes(provider))];
+  }
+
   // ── Route execution (existing) ──────────────────────────────────
 
   private async prepareRoutedRequest(request: CompletionRequest): Promise<CompletionRequest> {
@@ -181,11 +321,20 @@ export class Router {
     return { ...compressed, messages };
   }
 
-  async route(request: CompletionRequest): Promise<CompletionResponse> {
+  async route(request: CompletionRequest, opts?: RouteOptions): Promise<CompletionResponse> {
     const start = Date.now();
     const requestId = Math.random().toString(36).substring(7);
 
     const routedRequest = await this.prepareRoutedRequest(request);
+
+    if (opts?.forceProvider) {
+      const provider = this.providers.find(p => p.name === opts.forceProvider);
+      if (!provider) {
+        throw new Error(`Provider "${opts.forceProvider}" is not registered.`);
+      }
+      return this.runForcedProvider(provider, routedRequest, requestId, start);
+    }
+
     const fixedRoute = this.getSingleModelRoute();
     if (fixedRoute) {
       const { provider, model } = fixedRoute;
@@ -220,7 +369,13 @@ export class Router {
       }
     }
 
-    for (const provider of this.providers) {
+    for (const provider of await this.candidateProviders(request.model)) {
+      const autoModel = request.model === 'auto' ? this.autoModelFor(provider) : null;
+      if (request.model === 'auto' && autoModel === null) {
+        console.log(`[Router] Skipping ${provider.name} — no models enabled for routing.`);
+        continue;
+      }
+
       if (!this.quotaManager.checkQuota(provider.name)) {
         logger.log({ requestId, provider: provider.name, model: request.model, status: 'rate_limited', error: 'Quota exceeded' });
         console.warn(`[Router] Skipping ${provider.name} due to quota limit.`);
@@ -230,7 +385,7 @@ export class Router {
       console.log(`[Router] Attempting to route to ${provider.name}...`);
       let effectiveModel = request.model;
       try {
-        effectiveModel = request.model === 'auto' ? provider.defaultModel : request.model;
+        effectiveModel = request.model === 'auto' ? autoModel! : request.model;
         const isAvailable = await provider.isAvailable();
         if (!isAvailable) {
             logger.log({
@@ -281,13 +436,23 @@ export class Router {
     throw new Error('All providers failed or are rate-limited.');
   }
 
-  async *routeStream(request: CompletionRequest): AsyncGenerator<StreamChunk, void, unknown> {
+  async *routeStream(request: CompletionRequest, opts?: RouteOptions): AsyncGenerator<StreamChunk, void, unknown> {
     const start = Date.now();
     const requestId = Math.random().toString(36).substring(7);
     let accumulatedContent = '';
 
     const routedRequest = await this.prepareRoutedRequest(request);
     const originalMessages = routedRequest.messages;
+
+    if (opts?.forceProvider) {
+      const provider = this.providers.find(p => p.name === opts.forceProvider);
+      if (!provider) {
+        throw new Error(`Provider "${opts.forceProvider}" is not registered.`);
+      }
+      yield* this.runForcedProviderStream(provider, routedRequest, requestId, start);
+      return;
+    }
+
     const fixedRoute = this.getSingleModelRoute();
     if (fixedRoute) {
       const { provider, model } = fixedRoute;
@@ -341,7 +506,13 @@ export class Router {
       }
     }
 
-    for (const provider of this.providers) {
+    for (const provider of await this.candidateProviders(request.model)) {
+        const autoModel = request.model === 'auto' ? this.autoModelFor(provider) : null;
+        if (request.model === 'auto' && autoModel === null) {
+          console.log(`[Router] Skipping ${provider.name} — no models enabled for routing.`);
+          continue;
+        }
+
         if (!this.quotaManager.checkQuota(provider.name)) {
           logger.log({ requestId, provider: provider.name, model: request.model, status: 'rate_limited', error: 'Quota exceeded' });
           console.warn(`[Router] Skipping ${provider.name} due to quota limit.`);
@@ -360,7 +531,7 @@ export class Router {
         let providerUsage: UsageSnapshot | undefined;
         let effectiveModel = request.model;
         try {
-            effectiveModel = request.model === 'auto' ? provider.defaultModel : request.model;
+            effectiveModel = request.model === 'auto' ? autoModel! : request.model;
             const isAvailable = await provider.isAvailable();
             if (!isAvailable) {
                 logger.log({
@@ -427,6 +598,105 @@ export class Router {
         }
       }
       throw new Error('All providers failed or are rate-limited.');
+  }
+
+  /** Execute a single non-streaming request against an explicitly forced provider — no fallback. */
+  private async runForcedProvider(
+    provider: Provider,
+    routedRequest: CompletionRequest,
+    requestId: string,
+    start: number,
+  ): Promise<CompletionResponse> {
+    const model = routedRequest.model;
+    if (!this.quotaManager.checkQuota(provider.name)) {
+      logger.log({ requestId, provider: provider.name, model, status: 'rate_limited', error: 'Quota exceeded' });
+      throw new Error(`Provider ${provider.name} is rate-limited.`);
+    }
+
+    try {
+      const isAvailable = await provider.isAvailable();
+      if (!isAvailable) {
+        throw new Error(`Provider ${provider.name} reported unavailable.`);
+      }
+
+      const canHandle = await providerCanHandle(provider, routedRequest, model);
+      if (!canHandle) {
+        throw new Error(`${provider.name} does not support model ${model}`);
+      }
+
+      console.log(`[Router] Forced routing to ${provider.name} with model: ${model}`);
+      const response = await provider.complete(routedRequest);
+      this.quotaManager.incrementUsage(provider.name);
+      logger.log({ requestId, provider: provider.name, model, status: 'success', duration: Date.now() - start, usage: response.usage });
+      return response;
+    } catch (error: any) {
+      logger.log({ requestId, provider: provider.name, model, status: 'error', error: error.message, duration: Date.now() - start });
+      const hydrated = await hydrateAxiosError(error);
+      console.error(`[Router] Error with forced provider ${provider.name}:`, formatProviderError(hydrated));
+      throw hydrated;
+    }
+  }
+
+  /** Streaming counterpart of `runForcedProvider`. */
+  private async *runForcedProviderStream(
+    provider: Provider,
+    routedRequest: CompletionRequest,
+    requestId: string,
+    start: number,
+  ): AsyncGenerator<StreamChunk, void, unknown> {
+    const model = routedRequest.model;
+    let providerChars = 0;
+    let providerUsage: UsageSnapshot | undefined;
+
+    if (!this.quotaManager.checkQuota(provider.name)) {
+      logger.log({ requestId, provider: provider.name, model, status: 'rate_limited', error: 'Quota exceeded' });
+      throw new Error(`Provider ${provider.name} is rate-limited.`);
+    }
+
+    try {
+      const isAvailable = await provider.isAvailable();
+      if (!isAvailable) {
+        throw new Error(`Provider ${provider.name} reported unavailable.`);
+      }
+
+      const canHandle = await providerCanHandle(provider, routedRequest, model);
+      if (!canHandle) {
+        throw new Error(`${provider.name} does not support model ${model}`);
+      }
+
+      console.log(`[Router] Forced routing stream to ${provider.name} with model: ${model}`);
+      const stream = provider.completeStream(routedRequest);
+      this.quotaManager.incrementUsage(provider.name);
+
+      for await (const chunk of stream) {
+        const content = chunk.choices[0]?.delta?.content || '';
+        providerChars += content.length;
+        providerUsage = usageFromStreamChunk(chunk) ?? providerUsage;
+        yield chunk;
+      }
+
+      logger.log({
+        requestId,
+        provider: provider.name,
+        model,
+        status: 'success',
+        duration: Date.now() - start,
+        usage: streamLogUsage(providerUsage, providerChars),
+      });
+    } catch (error: any) {
+      logger.log({
+        requestId,
+        provider: provider.name,
+        model,
+        status: 'error',
+        error: error.message,
+        duration: Date.now() - start,
+        usage: streamLogUsage(providerUsage, providerChars),
+      });
+      const hydrated = await hydrateAxiosError(error);
+      console.error(`[Router] Stream error with forced provider ${provider.name}:`, formatProviderError(hydrated));
+      throw hydrated;
+    }
   }
 
   // ── NEW: Semantic route resolution ──────────────────────────────
@@ -548,6 +818,10 @@ export class Router {
   /** Enable, disable, or update single-model mode at runtime. */
   setSingleModel(config?: SingleModelRouterConfig) {
     this.singleModel = config;
+  }
+
+  getSingleModel(): SingleModelRouterConfig | undefined {
+    return this.singleModel;
   }
 
   private getSingleModelRoute(): { provider: Provider; model: string } | null {

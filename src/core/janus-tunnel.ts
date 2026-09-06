@@ -100,7 +100,17 @@ export class JanusTunnel {
   private startProcess(): void {
     const args = ['run'];
     if (this.options.configPath) args.push('--config', this.options.configPath);
+    const pathEntries = [
+      process.env.PATH,
+      process.platform === 'darwin' ? '/opt/homebrew/bin' : undefined,
+      process.platform === 'darwin' ? '/usr/local/bin' : undefined,
+      process.env.HOME ? `${process.env.HOME}/.local/bin` : undefined,
+    ].filter((entry): entry is string => Boolean(entry));
     this.process = spawn(this.options.command, args, {
+      env: {
+        ...process.env,
+        PATH: pathEntries.join(':'),
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     this.processPairingCode = new Promise(resolve => {

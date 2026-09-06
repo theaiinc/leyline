@@ -5,15 +5,19 @@ export type RuntimeConfig = {
   openAICompatible?: boolean;
 };
 
-export type PersistenceMode = 'keychain' | 'localStorage' | 'memory';
-export type ApiKeySource = PersistenceMode | 'env' | 'none';
+export type PersistenceMode = 'keychain' | 'localStorage' | 'memory' | 'arcana';
+export type ApiKeySource = PersistenceMode | 'arcana' | 'env' | 'none';
 
 export type ApiKeyProvider = {
   name: string;
+  family?: string;
+  label?: string;
   defaultModel: string;
   configured: boolean;
   source: ApiKeySource;
   persisted: boolean;
+  arcanaAvailable?: boolean;
+  arcanaReference?: string;
   keychainAvailable: boolean;
   runtimeConfigurable: boolean;
   runtimeConfig?: RuntimeConfig;
@@ -24,6 +28,32 @@ export type RoutingStatus = {
   singleModelEnabled: boolean;
   fixedProvider: string | null;
   fixedModel: string | null;
+  /** Provider name → model ids enabled for auto routing. Empty = all models. */
+  enabledModels: Record<string, string[]>;
+  /** Model id → preferred provider name, used to disambiguate duplicate model ids across instances. */
+  modelPins: Record<string, string>;
+  /** Model id → provider names that list it. */
+  modelIndex: Record<string, string[]>;
+};
+
+export type InstanceFieldSpec = {
+  key: string;
+  label: string;
+  role: 'secret' | 'runtimeBaseUrl' | 'runtimeModel' | 'extra';
+  required?: boolean;
+  placeholder?: string;
+};
+
+export type InstanceFamily = {
+  family: string;
+  displayName: string;
+  baseName: string;
+  fields: InstanceFieldSpec[];
+  instances: Array<{ id: string; name: string; label?: string }>;
+};
+
+export type ProviderInstancesResponse = {
+  families: InstanceFamily[];
 };
 
 export type PersistenceStatus = {
@@ -51,6 +81,8 @@ export type ModelSummary = {
 
 export type ProviderStats = {
   name: string;
+  family?: string;
+  label?: string;
   defaultModel: string;
   apiKeyConfigurable?: boolean;
   apiKeyConfigured?: boolean;
@@ -101,7 +133,7 @@ export type ClientAuthInfo = {
 export type BadgeTone = 'neutral' | 'success' | 'warning' | 'danger';
 
 const UNKNOWN_PROVIDER = 'Unknown provider';
-const PROVIDER_TONES = new Set(['gemini', 'huggingface', 'openai', 'openrouter', 'azureopenai', 'ollama']);
+const PROVIDER_TONES = new Set(['gemini', 'huggingface', 'openai', 'openrouter', 'azureopenai', 'ollama', 'llmapi']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -117,7 +149,7 @@ function optionalNumber(value: unknown): number | undefined {
 }
 
 function sourceValue(value: unknown): ApiKeySource {
-  if (value === 'env' || value === 'keychain' || value === 'localStorage' || value === 'memory') {
+  if (value === 'env' || value === 'arcana' || value === 'keychain' || value === 'localStorage' || value === 'memory') {
     return value;
   }
 
@@ -125,7 +157,7 @@ function sourceValue(value: unknown): ApiKeySource {
 }
 
 function persistenceModeValue(value: unknown, fallback: PersistenceMode): PersistenceMode {
-  if (value === 'keychain' || value === 'localStorage' || value === 'memory') {
+  if (value === 'keychain' || value === 'localStorage' || value === 'memory' || value === 'arcana') {
     return value;
   }
 
@@ -174,6 +206,7 @@ function normalizePersistence(value: unknown): PersistenceStatus {
       keychain: normalizePersistenceMode(modes.keychain),
       localStorage: normalizePersistenceMode(modes.localStorage, true),
       memory: normalizePersistenceMode(modes.memory, true),
+      arcana: normalizePersistenceMode(modes.arcana),
     },
   };
 }
@@ -209,13 +242,97 @@ function normalizeUsage(value: unknown): ProviderStats['usage'] {
   };
 }
 
-function normalizeRouting(value: unknown): RoutingStatus | undefined {
+export function normalizeEnabledModels(value: unknown): Record<string, string[]> {
+  if (!isRecord(value)) return {};
+  const result: Record<string, string[]> = {};
+  for (const [provider, models] of Object.entries(value)) {
+    if (!Array.isArray(models)) continue;
+    result[provider] = models.filter((model): model is string => typeof model === 'string');
+  }
+  return result;
+}
+
+export function normalizeModelPins(value: unknown): Record<string, string> {
+  if (!isRecord(value)) return {};
+  const result: Record<string, string> = {};
+  for (const [model, provider] of Object.entries(value)) {
+    if (typeof provider === 'string' && provider) result[model] = provider;
+  }
+  return result;
+}
+
+export function normalizeModelIndex(value: unknown): Record<string, string[]> {
+  if (!isRecord(value)) return {};
+  const result: Record<string, string[]> = {};
+  for (const [model, providers] of Object.entries(value)) {
+    if (!Array.isArray(providers)) continue;
+    result[model] = providers.filter((provider): provider is string => typeof provider === 'string');
+  }
+  return result;
+}
+
+export function normalizeRouting(value: unknown): RoutingStatus | undefined {
   if (!isRecord(value)) return undefined;
 
   return {
     singleModelEnabled: Boolean(value.singleModelEnabled),
     fixedProvider: optionalString(value.fixedProvider) || null,
     fixedModel: optionalString(value.fixedModel) || null,
+    enabledModels: normalizeEnabledModels(value.enabledModels),
+    modelPins: normalizeModelPins(value.modelPins),
+    modelIndex: normalizeModelIndex(value.modelIndex),
+  };
+}
+
+function normalizeInstanceField(value: unknown): InstanceFieldSpec | undefined {
+  if (!isRecord(value)) return undefined;
+  const key = optionalString(value.key);
+  const label = optionalString(value.label);
+  const role = value.role;
+  if (!key || !label || (role !== 'secret' && role !== 'runtimeBaseUrl' && role !== 'runtimeModel' && role !== 'extra')) {
+    return undefined;
+  }
+  return {
+    key,
+    label,
+    role,
+    required: Boolean(value.required),
+    placeholder: optionalString(value.placeholder),
+  };
+}
+
+function normalizeInstanceFamily(value: unknown): InstanceFamily | undefined {
+  if (!isRecord(value)) return undefined;
+  const family = optionalString(value.family);
+  const baseName = optionalString(value.baseName);
+  if (!family || !baseName) return undefined;
+
+  return {
+    family,
+    displayName: optionalString(value.displayName) || family,
+    baseName,
+    fields: Array.isArray(value.fields)
+      ? value.fields.map(normalizeInstanceField).filter((field): field is InstanceFieldSpec => Boolean(field))
+      : [],
+    instances: Array.isArray(value.instances)
+      ? value.instances
+        .filter(isRecord)
+        .map(instance => ({
+          id: asString(instance.id),
+          name: asString(instance.name),
+          label: optionalString(instance.label),
+        }))
+        .filter(instance => instance.id && instance.name)
+      : [],
+  };
+}
+
+export function normalizeProviderInstancesResponse(value: unknown): ProviderInstancesResponse {
+  const raw = isRecord(value) ? value : {};
+  return {
+    families: Array.isArray(raw.families)
+      ? raw.families.map(normalizeInstanceFamily).filter((family): family is InstanceFamily => Boolean(family))
+      : [],
   };
 }
 
@@ -224,10 +341,14 @@ function normalizeApiKeyProvider(value: unknown, index: number): ApiKeyProvider 
 
   return {
     name: providerName(raw.name, index),
+    family: optionalString(raw.family),
+    label: optionalString(raw.label),
     defaultModel: optionalString(raw.defaultModel) || '-',
     configured: Boolean(raw.configured),
     source: sourceValue(raw.source),
     persisted: Boolean(raw.persisted),
+    arcanaAvailable: Boolean(raw.arcanaAvailable),
+    arcanaReference: optionalString(raw.arcanaReference),
     keychainAvailable: Boolean(raw.keychainAvailable),
     runtimeConfigurable: Boolean(raw.runtimeConfigurable),
     runtimeConfig: normalizeRuntimeConfig(raw.runtimeConfig),
@@ -247,6 +368,8 @@ function normalizeProviderStats(value: unknown, index: number): ProviderStats {
 
   return {
     name: providerName(raw.name, index),
+    family: optionalString(raw.family),
+    label: optionalString(raw.label),
     defaultModel: optionalString(raw.defaultModel) || '-',
     apiKeyConfigurable: typeof raw.apiKeyConfigurable === 'boolean' ? raw.apiKeyConfigurable : undefined,
     apiKeyConfigured: typeof raw.apiKeyConfigured === 'boolean' ? raw.apiKeyConfigured : undefined,
@@ -315,13 +438,19 @@ export function asString(value: unknown, fallback = ''): string {
   return String(value);
 }
 
-export function providerTone(provider: unknown): string {
-  const tone = asString(provider).toLowerCase().replace(/[^a-z0-9]/g, '');
+/** Groups a provider's name under its family, falling back to the name itself for single-instance providers. */
+export function familyOf(name: unknown, family?: unknown): string {
+  return optionalString(family) || asString(name);
+}
+
+export function providerTone(provider: unknown, family?: unknown): string {
+  const tone = familyOf(provider, family).toLowerCase().replace(/[^a-z0-9]/g, '');
   return PROVIDER_TONES.has(tone) ? tone : 'default';
 }
 
 export function sourceLabel(source: unknown): string {
   if (source === 'env') return '.env';
+  if (source === 'arcana') return 'Arcana';
   if (source === 'keychain') return 'Apple Keychain';
   if (source === 'localStorage') return 'Browser localStorage';
   if (source === 'memory') return 'Server memory';
@@ -351,9 +480,10 @@ export function formatLogUsage(usage: LogEntry['usage']): string {
   return '-';
 }
 
-export function providerDescription(name: string): string | undefined {
+export function providerDescription(name: string, family?: string): string | undefined {
   if (name === 'OpenAI') return 'Direct OpenAI API (api.openai.com). Not Azure.';
-  if (name === 'AzureOpenAI') return 'Azure OpenAI — save your Azure resource key and base URL here.';
+  if (name === 'LLM API') return 'OpenAI-compatible LLM API — configure its endpoint and credential independently.';
+  if (familyOf(name, family) === 'AzureOpenAI') return 'Azure OpenAI — save your Azure resource key and base URL here.';
   return undefined;
 }
 

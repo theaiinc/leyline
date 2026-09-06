@@ -72,11 +72,20 @@ export interface ModelDetail {
 
 export interface Provider {
   name: string;
+  /** Provider family shared across instances, e.g. 'AzureOpenAI'. Unset for single-instance providers. */
+  family?: string;
+  /** Human-readable label for this instance, may differ from `name`. */
+  label?: string;
   defaultModel: string;
   isAvailable(): Promise<boolean>;
   getModels(): Promise<ModelDetail[]>;
   complete(request: CompletionRequest): Promise<CompletionResponse>;
   completeStream(request: CompletionRequest): AsyncGenerator<StreamChunk, void, unknown>;
+}
+
+export interface RouteOptions {
+  /** Bypass routing/candidate selection and force this exact provider name. */
+  forceProvider?: string;
 }
 
 export interface ApiKeyConfigurableProvider extends Provider {

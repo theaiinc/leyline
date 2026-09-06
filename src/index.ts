@@ -23,8 +23,10 @@ export type {
   RuntimeConfigurableProvider,
   CompletionRequest, CompletionResponse, StreamChunk, ModelDetail, Quota,
   ModelVariant, BillingClass, ResourceClass,
-  RouterClassification, ClassifyRequest, RouteResult, TierConfig,
+  RouterClassification, ClassifyRequest, RouteResult, RouteOptions, TierConfig,
 } from './core/types';
+export { INSTANCE_FAMILIES } from './core/provider-instances';
+export type { InstanceFamilyDefinition, InstanceFieldSpec } from './core/provider-instances';
 export { GeminiProvider } from './providers/gemini';
 export { HuggingFaceProvider } from './providers/huggingface';
 export { OpenAIProvider } from './providers/openai';
@@ -32,6 +34,7 @@ export { OpenRouterProvider } from './providers/openrouter';
 export { OllamaProvider } from './providers/ollama';
 export { LMStudioProvider } from './providers/lmstudio';
 export { LiteLLMProvider } from './providers/litellm';
+export { LlmApiProvider } from './providers/llm-api';
 export { AzureOpenAIProvider } from './providers/azure-openai';
 export { createServer, startServer } from './server';
 export type { CreateServerOptions, StartServerOptions } from './server';
@@ -44,6 +47,8 @@ export type { JanusTunnelOptions } from './core/janus-tunnel';
 export { maybeCompress, isCompressionAvailable } from './core/compress';
 export {
   DEFAULT_KEYCHAIN_SERVICE,
+  ArcanaFallbackSecretStore,
+  ArcanaSecretStore,
   FallbackSecretStore,
   KeychainSecretStore,
   MemorySecretStore,
@@ -52,8 +57,14 @@ export {
   runtimeConfigAccount,
   parseRuntimeConfig,
   serializeRuntimeConfig,
+  instanceManifestAccount,
+  parseInstanceManifest,
+  serializeInstanceManifest,
 } from './core/secret-store';
-export type { ApiKeyPersistenceMode, ApiKeySource, SecretStore, SecretStoreStatus, PersistedRuntimeConfig } from './core/secret-store';
+export type {
+  ApiKeyPersistenceMode, ApiKeySource, SecretStore, SecretStoreStatus, PersistedRuntimeConfig,
+  PersistedProviderInstance,
+} from './core/secret-store';
 
 // ── Internal imports (for bootstrap) ─────────────────────────────────
 import { startServer } from './server';
@@ -68,13 +79,21 @@ import { OpenRouterProvider } from './providers/openrouter';
 import { OllamaProvider } from './providers/ollama';
 import { LMStudioProvider } from './providers/lmstudio';
 import { LiteLLMProvider } from './providers/litellm';
+import { LlmApiProvider } from './providers/llm-api';
 import { AzureOpenAIProvider } from './providers/azure-openai';
 import { config, DEFAULT_LEYLINE_CLIENT_API_KEY } from './config';
 import type { ModelVariant } from './core/types';
 import { isCompressionAvailable } from './core/compress';
 import { CloudflaredTunnel } from './core/cloudflared-tunnel';
 import { JanusTunnel } from './core/janus-tunnel';
-import { createDefaultSecretStore } from './core/secret-store';
+import {
+  createDefaultSecretStore,
+  runtimeConfigAccount,
+  sanitizeEnabledModels,
+  instanceManifestAccount,
+  parseInstanceManifest,
+} from './core/secret-store';
+import { INSTANCE_FAMILIES } from './core/provider-instances';
 
 // ── Standalone server bootstrap ──────────────────────────────────────
 
@@ -133,19 +152,48 @@ export async function bootstrap() {
     console.log(`[Leyline] Router classifier configured: model=${routerModel}, baseUrl=${routerBaseUrl}`);
   }
 
+  // Optional env seed for the routing model pool, e.g.
+  // LEYLINE_ENABLED_MODELS='{"OpenAI":["gpt-5.5"],"Ollama":["llama2"]}'
+  let enabledModels: Record<string, string[]> | undefined;
+  if (process.env.LEYLINE_ENABLED_MODELS) {
+    try {
+      enabledModels = sanitizeEnabledModels(JSON.parse(process.env.LEYLINE_ENABLED_MODELS));
+    } catch {
+      console.warn('[Leyline] Failed to parse LEYLINE_ENABLED_MODELS, routing across all models');
+    }
+  }
+
   const router = new Router({
     quotaManager,
     modelRegistry,
     classifier,
     tierConfig: config.tierModels,
     singleModel: config.singleModel,
+    enabledModels,
   });
+
+  const secretStore = createDefaultSecretStore();
+  if (!process.env.LLM_API_BASE_URL) {
+    const arcanaLlmApiUrl = await secretStore.get(runtimeConfigAccount('LLM API'));
+    if (arcanaLlmApiUrl) {
+      process.env.LLM_API_BASE_URL = arcanaLlmApiUrl.trim().replace(/^["']|["']$/g, '');
+    }
+  }
 
   // Add providers in priority order
   router.addProvider(new GeminiProvider());
   router.addProvider(new HuggingFaceProvider());
   router.addProvider(new OpenAIProvider());
   router.addProvider(new OpenRouterProvider());
+  if (
+    process.env.LLM_API_BASE_URL
+    || process.env.LLM_API_DEFAULT_MODEL
+    || process.env.LLM_API_KEY
+    || process.env.LEYLINE_ARCANA_OPENAI_API_KEY_REF
+    || process.env.LEYLINE_ARCANA_OPENAI_API_URL_REF
+  ) {
+    router.addProvider(new LlmApiProvider());
+  }
   if (process.env.LITELLM_ENABLED === 'true' || process.env.LITELLM_BASE_URL || process.env.LITELLM_MODEL) {
     router.addProvider(new LiteLLMProvider());
   }
@@ -158,13 +206,24 @@ export async function bootstrap() {
     router.addProvider(new LMStudioProvider());
   }
 
+  // Add any additional named instances (e.g. extra Azure endpoints) configured via the dashboard.
+  // These register as blank shells; startServer's initializeApiKeys() hydrates each from its own
+  // Keychain accounts, keyed by the composed instance name.
+  for (const familyDef of INSTANCE_FAMILIES) {
+    const manifestRaw = await secretStore.get(instanceManifestAccount(familyDef.family));
+    for (const instance of manifestRaw ? parseInstanceManifest(manifestRaw) : []) {
+      router.addProvider(familyDef.create({ id: instance.id, label: instance.label, ...instance.extra }));
+    }
+  }
+
   const tunnel = new JanusTunnel({
     ...config.tunnel,
-    secretStore: createDefaultSecretStore(),
+    secretStore,
   });
   const localUrl = `http://127.0.0.1:${config.port}`;
 
   const app = await startServer(router, quotaManager, {
+    apiKeyStore: secretStore,
     getTunnelInfo: () => tunnel.getInfo(),
     host: process.env.LEYLINE_HOST || '127.0.0.1',
   });

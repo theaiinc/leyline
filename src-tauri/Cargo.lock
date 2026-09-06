@@ -1593,6 +1593,7 @@ dependencies = [
 name = "leyline"
 version = "1.3.3"
 dependencies = [
+ "png 0.18.1",
  "tauri",
  "tauri-build",
 ]

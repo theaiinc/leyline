@@ -75,6 +75,10 @@ AZURE_OPENAI_DEFAULT_MODEL=gpt-5.5
 LEYLINE_KEYCHAIN_ENABLED=true
 LEYLINE_KEYCHAIN_SERVICE=@theaiinc/leyline
 
+# Optional Arcana Secret Bridge references (read before Keychain)
+# LEYLINE_ARCANA_OPENAI_REF=arcana://openai/api-key
+# LEYLINE_ARCANA_AZURE_OPENAI_REF=arcana://azure/openai-api-key
+
 # ── Router / Classifier Model (optional) ───────────────────
 # A lightweight model like arch-router-1.5b.gguf
 LEYLINE_ROUTER_MODEL=
@@ -163,6 +167,17 @@ Set `LEYLINE_CLIENT_API_KEY` to pin a stable expected key, or `LEYLINE_CLIENT_AU
 
 Do **not** pass your Azure or OpenAI provider key to Leyline clients. Configure `AZURE_OPENAI_API_KEY` (or save it in `/dashboard` under `AzureOpenAI`) on the Leyline server instead.
 
+#### Arcana secrets
+
+Leyline can consume provider keys from the local Arcana Secret Bridge while retaining Apple Keychain as the local persistence fallback. Set a reference for each provider, for example:
+
+```bash
+LEYLINE_ARCANA_OPENAI_REF=arcana://openai/api-key
+LEYLINE_ARCANA_AZURE_OPENAI_REF=arcana://azure/openai-api-key
+```
+
+Arcana references are resolved through `arcana run` and are read-only from Leyline. `.env` values still take precedence, followed by Arcana, then Keychain. The Arcana project must be bound and its policy must allow the configured reference, environment name, and runner (`python3` by default).
+
 ### 2. Usage as a Library
 
 ```typescript
@@ -239,7 +254,7 @@ for await (const chunk of failoverRouter.routeStream({
 
 ### 3. Tauri Desktop App
 
-Leyline can run as a Tauri desktop application. Tauri starts the Node sidecar only when the internal API is not already reachable on `127.0.0.1:3000`, waits for readiness, and terminates a sidecar it started when the desktop app exits.
+Leyline can run as a Tauri desktop application. Tauri builds the Node entrypoint before development startup, starts the Node sidecar only when the internal API is not already reachable on `127.0.0.1:3417`, waits for readiness, and terminates a sidecar it started when the desktop app exits. The desktop API uses port 3417 to avoid conflicts with local Docker services commonly published on port 3000. Unless disabled with `LEYLINE_TUNNEL_ENABLED=false`, the sidecar also starts `janus run` automatically when the Janus API is unavailable.
 
 ```bash
 npm run tauri:dev
@@ -261,7 +276,7 @@ For a release bundle, build the desktop frontend and Tauri app with:
 npm run tauri:build
 ```
 
-The current sidecar strategy expects Node to be available on the host. Set `LEYLINE_SIDECAR_COMMAND` and `LEYLINE_SIDECAR_ENTRYPOINT` when a deployment uses a bundled Node runtime or a custom sidecar executable.
+The current sidecar strategy expects Node and the `janus` command to be available on the host. Set `LEYLINE_SIDECAR_COMMAND`, `LEYLINE_SIDECAR_ENTRYPOINT`, or `LEYLINE_JANUS_COMMAND` when a deployment uses custom executables. On macOS, the app also checks common Homebrew and user-bin locations because GUI-launched apps may not inherit the shell `PATH`.
 
 ## 🧠 Architecture
 

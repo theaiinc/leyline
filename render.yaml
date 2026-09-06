@@ -1,0 +1,53 @@
+# Render blueprint for Leyline's multi-tenant hosted mode.
+# Identity/tenant auth is delegated to Aegis (id.theaiinc.com) — see
+# .env.example's "Aegis-verified hosted mode" section and the provisioning
+# steps in the project plan for how LEYLINE_AEGIS_ISSUER / LEYLINE_AEGIS_CLIENT_ID
+# are obtained. No database is provisioned here: Aegis owns tenant identity,
+# and per-tenant usage is emitted as structured log lines (see src/server.ts).
+services:
+  - type: web
+    name: leyline
+    env: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      # Required: defaults to loopback, which would make this service unreachable.
+      - key: LEYLINE_HOST
+        value: 0.0.0.0
+      # Required: no Janus/cloudflared binary or desktop pairing flow exists on Render.
+      - key: LEYLINE_TUNNEL_ENABLED
+        value: 'false'
+      # Aegis-verified hosted auth replaces the single static client key on this deployment.
+      - key: LEYLINE_AEGIS_AUTH_ENABLED
+        value: 'true'
+      - key: LEYLINE_CLIENT_AUTH_ENABLED
+        value: 'false'
+      # Leyline lives in its own Aegis tenant ("Leyline"), client id "leyline".
+      # NOTE: leyline.theaiinc.com is registered in Aegis as a custom issuer domain but is
+      # still PENDING activation — the TXT record + DNS/routing below must be completed
+      # and the domain Activated in Aegis before this issuer actually resolves/serves JWKS.
+      #   DNS TXT record: _aegis-verify.leyline.theaiinc.com
+      #   Value: aegis-domain-verification=vvrk8AYiy1PryRX6Me_2gkXLlbh0lBAw
+      #   Then route leyline.theaiinc.com to Aegis (Cloud Run domain mapping or a
+      #   Cloudflare Worker proxy — see the Leyline tenant's Domains panel in
+      #   id-console.theaiinc.com for the exact proxy config), then click Verify DNS
+      #   and Activate on that domain entry.
+      - key: LEYLINE_AEGIS_ISSUER
+        value: https://leyline.theaiinc.com
+      - key: LEYLINE_AEGIS_CLIENT_ID
+        value: leyline
+      # Keychain is macOS-only; Leyline already falls back to memory-only on Linux, but this
+      # makes the intent explicit and avoids a startup warning.
+      - key: LEYLINE_KEYCHAIN_ENABLED
+        value: 'false'
+      # Shared provider API key pool — set the real values in the Render dashboard, not here.
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: HF_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: AZURE_OPENAI_API_KEY
+        sync: false

@@ -1,7 +1,7 @@
 import { execFile, type ExecFileException } from 'child_process';
 
-export type ApiKeyPersistenceMode = 'keychain' | 'memory' | 'localStorage';
-export type ApiKeySource = ApiKeyPersistenceMode | 'env' | 'none';
+export type ApiKeyPersistenceMode = 'keychain' | 'memory' | 'localStorage' | 'arcana';
+export type ApiKeySource = ApiKeyPersistenceMode | 'arcana' | 'env' | 'none';
 
 export interface SecretStoreStatus {
   mode: 'keychain' | 'memory';
@@ -15,6 +15,10 @@ export interface SecretStore {
   set(account: string, secret: string): Promise<void>;
   delete(account: string): Promise<void>;
   status(): SecretStoreStatus;
+  getSource?(account: string): Promise<ApiKeySource>;
+  hasArcanaReference?(account?: string): boolean;
+  getArcanaReference?(account: string): string | undefined;
+  setArcanaReference?(account: string, reference: string): void;
 }
 
 export const DEFAULT_KEYCHAIN_SERVICE = '@theaiinc/leyline';
@@ -105,6 +109,115 @@ export function parseRuntimeConfig(raw: string): PersistedRuntimeConfig | undefi
   }
 }
 
+export const ROUTING_CONFIG_ACCOUNT = 'routing-config';
+
+export interface PersistedRoutingConfig {
+  /** 'auto' routes across the enabled model pool; 'pinned' forces one provider/model. */
+  mode?: 'auto' | 'pinned';
+  pinnedProvider?: string;
+  pinnedModel?: string;
+  /** Provider name → model ids enabled for auto routing. Empty/absent = all models. */
+  enabledModels?: Record<string, string[]>;
+  /** Model id → preferred provider name, used to disambiguate when more than one provider lists a model. */
+  modelPins?: Record<string, string>;
+}
+
+export function serializeRoutingConfig(config: PersistedRoutingConfig): string {
+  return JSON.stringify({
+    mode: config.mode === 'pinned' ? 'pinned' : 'auto',
+    pinnedProvider: typeof config.pinnedProvider === 'string' ? config.pinnedProvider : '',
+    pinnedModel: typeof config.pinnedModel === 'string' ? config.pinnedModel : '',
+    enabledModels: sanitizeEnabledModels(config.enabledModels) ?? {},
+    modelPins: sanitizeModelPins(config.modelPins) ?? {},
+  });
+}
+
+export function parseRoutingConfig(raw: string): PersistedRoutingConfig | undefined {
+  try {
+    const parsed = JSON.parse(raw) as PersistedRoutingConfig;
+    if (!parsed || typeof parsed !== 'object') return undefined;
+    return {
+      mode: parsed.mode === 'pinned' ? 'pinned' : 'auto',
+      pinnedProvider: typeof parsed.pinnedProvider === 'string' ? parsed.pinnedProvider : undefined,
+      pinnedModel: typeof parsed.pinnedModel === 'string' ? parsed.pinnedModel : undefined,
+      enabledModels: sanitizeEnabledModels(parsed.enabledModels),
+      modelPins: sanitizeModelPins(parsed.modelPins),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+export function sanitizeEnabledModels(value: unknown): Record<string, string[]> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const result: Record<string, string[]> = {};
+  for (const [provider, models] of Object.entries(value as Record<string, unknown>)) {
+    if (!Array.isArray(models)) continue;
+    result[provider] = models.filter((model): model is string => typeof model === 'string');
+  }
+  return result;
+}
+
+export function sanitizeModelPins(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const result: Record<string, string> = {};
+  for (const [model, provider] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof provider === 'string' && provider) result[model] = provider;
+  }
+  return result;
+}
+
+// ── Multi-instance provider manifests ───────────────────────────────
+//
+// Secrets/runtime config for each instance reuse the existing generic
+// apiKeyAccount/runtimeConfigAccount helpers (keyed by the instance's
+// composed provider name). This manifest only tracks *which instance ids
+// exist* per family, plus any non-secret "extra" fields, so bootstrap knows
+// what to reconstruct before it can look up those accounts.
+
+export function instanceManifestAccount(family: string): string {
+  return `instances:${family}`;
+}
+
+export interface PersistedProviderInstance {
+  id: string;
+  label: string;
+  extra?: Record<string, string>;
+}
+
+export function serializeInstanceManifest(instances: PersistedProviderInstance[]): string {
+  return JSON.stringify(instances.map(instance => ({
+    id: instance.id,
+    label: instance.label || instance.id,
+    extra: instance.extra ?? {},
+  })));
+}
+
+export function parseInstanceManifest(raw: string): PersistedProviderInstance[] {
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const result: PersistedProviderInstance[] = [];
+    for (const entry of parsed) {
+      if (!entry || typeof entry !== 'object' || typeof entry.id !== 'string' || !entry.id) continue;
+      const extra: Record<string, string> = {};
+      if (entry.extra && typeof entry.extra === 'object') {
+        for (const [key, value] of Object.entries(entry.extra)) {
+          if (typeof value === 'string') extra[key] = value;
+        }
+      }
+      result.push({
+        id: entry.id,
+        label: typeof entry.label === 'string' && entry.label ? entry.label : entry.id,
+        extra,
+      });
+    }
+    return result;
+  } catch {
+    return [];
+  }
+}
+
 export class MemorySecretStore implements SecretStore {
   private readonly secrets = new Map<string, string>();
 
@@ -129,6 +242,10 @@ export class MemorySecretStore implements SecretStore {
       service: this.service,
       warning: this.warning,
     };
+  }
+
+  async getSource(account: string): Promise<ApiKeySource> {
+    return (await this.get(account)) ? 'memory' : 'none';
   }
 }
 
@@ -219,6 +336,10 @@ export class KeychainSecretStore implements SecretStore {
     };
   }
 
+  async getSource(account: string): Promise<ApiKeySource> {
+    return (await this.get(account)) ? 'keychain' : 'none';
+  }
+
   private markUnavailable(warning: string): void {
     this.available = false;
     this.warning = warning;
@@ -255,6 +376,14 @@ export class FallbackSecretStore implements SecretStore {
     await this.memory.delete(account);
   }
 
+  async getSource(account: string): Promise<ApiKeySource> {
+    const primarySource = this.primary.getSource
+      ? await this.primary.getSource(account)
+      : (await this.primary.get(account) ? 'keychain' : 'none');
+    if (primarySource !== 'none') return primarySource;
+    return (await this.memory.get(account)) ? 'memory' : 'none';
+  }
+
   status(): SecretStoreStatus {
     const primaryStatus = this.primary.status();
     if (primaryStatus.available) return primaryStatus;
@@ -266,13 +395,187 @@ export class FallbackSecretStore implements SecretStore {
   }
 }
 
+/**
+ * Resolves Arcana references through the Arcana Secret Bridge CLI.
+ *
+ * Arcana intentionally injects secrets into an allowlisted child process
+ * instead of returning them directly. The child prints only the requested
+ * value, which is captured in memory and never logged.
+ */
+export class ArcanaSecretStore implements SecretStore {
+  constructor(
+    private readonly references: Record<string, string>,
+    private readonly command = process.env.LEYLINE_ARCANA_COMMAND || 'arcana',
+    private readonly runner = process.env.LEYLINE_ARCANA_RUNNER || 'python3',
+    private readonly timeoutMs = Number.parseInt(process.env.LEYLINE_ARCANA_TIMEOUT_MS || '10000', 10),
+  ) {}
+
+  async get(account: string): Promise<string | undefined> {
+    const reference = this.references[account];
+    if (!reference) return undefined;
+
+    const environmentName = arcanaEnvironmentName(account);
+    const source = `import os,sys; sys.stdout.write(os.environ.get(${JSON.stringify(environmentName)}, ""))`;
+
+    return new Promise(resolve => {
+      execFile(
+        this.command,
+        ['run', '--secret', reference, '--env', environmentName, '--', this.runner, '-c', source],
+        { timeout: this.timeoutMs },
+        (error, stdout) => {
+          if (error) {
+            resolve(undefined);
+            return;
+          }
+          resolve(stdout.trim() || undefined);
+        },
+      );
+    });
+  }
+
+  async set(): Promise<void> {
+    throw new Error('Arcana references are read-only; update the secret in Arcana.');
+  }
+
+  async delete(): Promise<void> {
+    // Arcana references are configuration, not locally persisted values.
+  }
+
+  status(): SecretStoreStatus {
+    return {
+      mode: 'memory',
+      available: Object.keys(this.references).length > 0,
+      service: 'Arcana Secret Bridge',
+    };
+  }
+
+  async getSource(account: string): Promise<ApiKeySource> {
+    return (await this.get(account)) ? 'arcana' : 'none';
+  }
+
+  hasArcanaReference(account?: string): boolean {
+    return account ? Boolean(this.references[account]) : Object.keys(this.references).length > 0;
+  }
+
+  getArcanaReference(account: string): string | undefined {
+    return this.references[account];
+  }
+
+  setArcanaReference(account: string, reference: string): void {
+    if (!reference.startsWith('arcana://')) {
+      throw new Error('Arcana reference must start with arcana://');
+    }
+    this.references[account] = reference;
+  }
+}
+
+export class ArcanaFallbackSecretStore implements SecretStore {
+  constructor(
+    private readonly arcana: ArcanaSecretStore,
+    private readonly persistent: SecretStore,
+  ) {}
+
+  async get(account: string): Promise<string | undefined> {
+    return (await this.arcana.get(account)) ?? this.persistent.get(account);
+  }
+
+  async set(account: string, secret: string): Promise<void> {
+    return this.persistent.set(account, secret);
+  }
+
+  async delete(account: string): Promise<void> {
+    await this.arcana.delete();
+    await this.persistent.delete(account);
+  }
+
+  status(): SecretStoreStatus {
+    return this.persistent.status();
+  }
+
+  async getSource(account: string): Promise<ApiKeySource> {
+    if (await this.arcana.get(account)) return 'arcana';
+    return this.persistent.getSource
+      ? this.persistent.getSource(account)
+      : (await this.persistent.get(account) ? this.persistent.status().mode : 'none');
+  }
+
+  hasArcanaReference(account?: string): boolean {
+    return this.arcana.hasArcanaReference(account);
+  }
+
+  getArcanaReference(account: string): string | undefined {
+    return this.arcana.getArcanaReference(account);
+  }
+
+  setArcanaReference(account: string, reference: string): void {
+    this.arcana.setArcanaReference(account, reference);
+  }
+}
+
+function arcanaEnvironmentName(account: string): string {
+  if (account === runtimeConfigAccount('LLM API')) return 'LLM_API_BASE_URL';
+  const provider = account.replace(/^api-key:/, '');
+  const providerEnvironmentNames: Record<string, string> = {
+    Gemini: 'GEMINI_API_KEY',
+    HuggingFace: 'HF_API_KEY',
+    OpenAI: 'OPENAI_API_KEY',
+    OpenRouter: 'OPENROUTER_API_KEY',
+    AzureOpenAI: 'AZURE_OPENAI_API_KEY',
+    'LLM API': 'LLM_API_KEY',
+  };
+  return providerEnvironmentNames[provider]
+    || `${provider.replace(/[^A-Za-z0-9]+/g, '_').toUpperCase()}_API_KEY`;
+}
+
+function parseArcanaReferences(): Record<string, string> {
+  const references: Record<string, string> = {};
+  const raw = process.env.LEYLINE_ARCANA_SECRET_REFS;
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      for (const [account, reference] of Object.entries(parsed)) {
+        if (typeof reference === 'string' && reference.startsWith('arcana://')) references[account] = reference;
+      }
+    } catch {
+      // Invalid optional configuration is ignored; Keychain remains available.
+    }
+  }
+
+  const providers: Record<string, string> = {
+    Gemini: 'GEMINI',
+    HuggingFace: 'HF',
+    OpenAI: 'OPENAI',
+    OpenRouter: 'OPENROUTER',
+    AzureOpenAI: 'AZURE_OPENAI',
+  };
+  for (const [provider, envName] of Object.entries(providers)) {
+    const reference = process.env[`LEYLINE_ARCANA_${envName}_REF`];
+    if (reference?.startsWith('arcana://')) references[apiKeyAccount(provider)] = reference;
+  }
+  const llmApiKeyReference = process.env.LEYLINE_ARCANA_OPENAI_API_KEY_REF;
+  if (llmApiKeyReference?.startsWith('arcana://')) {
+    references[apiKeyAccount('LLM API')] = llmApiKeyReference;
+  }
+  const llmApiUrlReference = process.env.LEYLINE_ARCANA_OPENAI_API_URL_REF;
+  if (llmApiUrlReference?.startsWith('arcana://')) {
+    references[runtimeConfigAccount('LLM API')] = llmApiUrlReference;
+  }
+  const janusApiKeyReference = process.env.LEYLINE_ARCANA_JANUS_API_KEY_REF;
+  if (janusApiKeyReference?.startsWith('arcana://')) {
+    const janusBaseUrl = process.env.LEYLINE_JANUS_BASE_URL || 'http://127.0.0.1:8088';
+    references[`janus-api-key:${janusBaseUrl}`] = janusApiKeyReference;
+  }
+  return references;
+}
+
 export function createDefaultSecretStore(): SecretStore {
   const service = process.env.LEYLINE_KEYCHAIN_SERVICE || DEFAULT_KEYCHAIN_SERVICE;
   const enabled = process.env.LEYLINE_KEYCHAIN_ENABLED !== 'false';
-
-  if (!enabled) {
-    return new MemorySecretStore(service, 'Apple Keychain persistence is disabled by LEYLINE_KEYCHAIN_ENABLED=false.');
-  }
-
-  return new FallbackSecretStore(new KeychainSecretStore(service), service);
+  const persistent = enabled
+    ? new FallbackSecretStore(new KeychainSecretStore(service), service)
+    : new MemorySecretStore(service, 'Apple Keychain persistence is disabled by LEYLINE_KEYCHAIN_ENABLED=false.');
+  const arcanaReferences = parseArcanaReferences();
+  return Object.keys(arcanaReferences).length > 0
+    ? new ArcanaFallbackSecretStore(new ArcanaSecretStore(arcanaReferences), persistent)
+    : persistent;
 }

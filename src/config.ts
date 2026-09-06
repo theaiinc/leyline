@@ -75,6 +75,19 @@ export interface TunnelConfig {
   pairingCode: string;
 }
 
+export interface AegisConfig {
+  /** Verify client requests as Aegis (id.theaiinc.com) token-exchange JWTs instead of the static client API key. */
+  enabled: boolean;
+  /** Issuer URL of Leyline's own Aegis tenant (JWKS served at `${issuer}/jwks`). */
+  issuer: string;
+  /** Leyline's own Aegis OAuth client id — the expected `aud` claim on exchanged tokens. */
+  clientId: string;
+  /** Default per-tenant (per requester_client_id) request-per-minute cap. */
+  defaultRequestsPerMinute: number;
+  /** Default per-tenant request-per-day cap. */
+  defaultRequestsPerDay: number;
+}
+
 /** Default Bearer token clients send when calling Leyline's OpenAI-compatible API. */
 export const DEFAULT_LEYLINE_CLIENT_API_KEY = 'leyline';
 
@@ -113,6 +126,7 @@ export interface LeylineConfig {
   tunnel: TunnelConfig;
   /** Max JSON request body size (express limit string, e.g. 50mb). */
   bodyLimit: string;
+  aegis: AegisConfig;
 }
 
 // ── Default config ────────────────────────────────────────────────────
@@ -192,4 +206,11 @@ export const config: LeylineConfig = {
     pairingCode: process.env.LEYLINE_JANUS_PAIRING_CODE || '',
   },
   bodyLimit: process.env.LEYLINE_BODY_LIMIT || '100mb',
+  aegis: {
+    enabled: process.env.LEYLINE_AEGIS_AUTH_ENABLED === 'true',
+    issuer: process.env.LEYLINE_AEGIS_ISSUER || '',
+    clientId: process.env.LEYLINE_AEGIS_CLIENT_ID || '',
+    defaultRequestsPerMinute: parseInt(process.env.LEYLINE_TENANT_DEFAULT_RPM || '60', 10),
+    defaultRequestsPerDay: parseInt(process.env.LEYLINE_TENANT_DEFAULT_RPD || '5000', 10),
+  },
 };

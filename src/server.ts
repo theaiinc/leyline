@@ -10,18 +10,30 @@ import { QuotaManager } from './core/quota-manager';
 import { getModelScore } from './core/leaderboard-data';
 import { config } from './config';
 import { requireClientApiKey } from './core/client-auth';
+import { createRequireAegisToken, AegisTenant } from './core/aegis-auth';
 import { chatCompletionErrorResponse, formatProviderError, hydrateAxiosError } from './core/api-errors';
 import { normalizeCompletionRequest } from './core/normalize-request';
 import { createMcpHttpHandler } from './mcp/http';
 import type { TunnelInfo } from './core/cloudflared-tunnel';
+import { INSTANCE_FAMILIES } from './core/provider-instances';
+import { generateInstanceId } from './core/instance-naming';
 import {
   ApiKeyPersistenceMode,
   ApiKeySource,
+  PersistedRoutingConfig,
+  ROUTING_CONFIG_ACCOUNT,
   SecretStore,
   apiKeyAccount,
   createDefaultSecretStore,
+  instanceManifestAccount,
+  parseInstanceManifest,
+  parseRoutingConfig,
   parseRuntimeConfig,
   runtimeConfigAccount,
+  sanitizeEnabledModels,
+  sanitizeModelPins,
+  serializeInstanceManifest,
+  serializeRoutingConfig,
   serializeRuntimeConfig,
 } from './core/secret-store';
 
@@ -42,6 +54,8 @@ export interface CreateServerOptions {
   host?: string;
   /** Enable the public-proxy route allowlist. Defaults to true. */
   enforceExternalSurface?: boolean;
+  /** Per-tenant quota manager for Aegis-verified hosted mode. Defaults to a fresh instance. */
+  aegisQuotaManager?: QuotaManager;
 }
 
 type ProviderKeyMetadata = {
@@ -49,7 +63,7 @@ type ProviderKeyMetadata = {
 };
 
 function isApiKeyPersistenceMode(value: unknown): value is ApiKeyPersistenceMode {
-  return value === 'keychain' || value === 'memory' || value === 'localStorage';
+  return value === 'keychain' || value === 'memory' || value === 'localStorage' || value === 'arcana';
 }
 
 function providerRuntimeReady(provider: Provider): boolean | undefined {
@@ -57,11 +71,15 @@ function providerRuntimeReady(provider: Provider): boolean | undefined {
   return Boolean(provider.getRuntimeConfig().baseUrlConfigured);
 }
 
-function dashboardRoutingStatus() {
+function dashboardRoutingStatus(router: Router) {
+  const single = router.getSingleModel();
   return {
-    singleModelEnabled: config.singleModel.enabled,
-    fixedProvider: config.singleModel.provider || null,
-    fixedModel: config.singleModel.model || null,
+    singleModelEnabled: Boolean(single?.enabled),
+    fixedProvider: single?.provider || null,
+    fixedModel: single?.model || null,
+    enabledModels: router.getEnabledModels() ?? {},
+    modelPins: router.getModelPins(),
+    modelIndex: router.getModelIndex(),
   };
 }
 
@@ -126,6 +144,35 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   const getTunnelInfo = options.getTunnelInfo;
   const keyMetadata = new Map<string, ProviderKeyMetadata>();
 
+  // Aegis-verified hosted mode is opt-in and additive: when disabled (the default), this is
+  // exactly `requireClientApiKey`, so local/desktop behavior is unchanged.
+  const authMiddleware = config.aegis.enabled
+    ? createRequireAegisToken({
+        issuer: config.aegis.issuer,
+        audience: config.aegis.clientId,
+        quota: options.aegisQuotaManager ?? new QuotaManager(),
+        defaultRequestsPerMinute: config.aegis.defaultRequestsPerMinute,
+        defaultRequestsPerDay: config.aegis.defaultRequestsPerDay,
+      })
+    : requireClientApiKey;
+
+  const logTenantUsage = (req: Request, model: string, usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }) => {
+    const tenant = (req as Request & { tenant?: AegisTenant }).tenant;
+    if (!tenant || !usage) return;
+    try {
+      console.log(JSON.stringify({
+        event: 'tenant_usage',
+        clientId: tenant.clientId,
+        model,
+        promptTokens: usage.prompt_tokens ?? 0,
+        completionTokens: usage.completion_tokens ?? 0,
+        totalTokens: usage.total_tokens ?? 0,
+      }));
+    } catch (e) {
+      console.error('Failed to log tenant usage', e);
+    }
+  };
+
   app.use(cors({ exposedHeaders: ['Mcp-Session-Id'] }));
   app.use(express.json({ limit: config.bodyLimit }));
 
@@ -151,7 +198,46 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   const modelCache: Record<string, { models: any[], timestamp: number }> = {};
   const CACHE_TTL = 3600 * 1000; // 1 hour
 
+  const applyRoutingConfig = (routing: PersistedRoutingConfig) => {
+    if (routing.mode === 'pinned') {
+      router.setSingleModel({
+        enabled: true,
+        provider: routing.pinnedProvider || null,
+        model: routing.pinnedModel || null,
+      });
+    } else if (routing.mode === 'auto') {
+      router.setSingleModel(undefined);
+    }
+    if (routing.enabledModels !== undefined) {
+      const hasEntries = Object.keys(routing.enabledModels).length > 0;
+      router.setEnabledModels(hasEntries ? routing.enabledModels : undefined);
+    }
+    if (routing.modelPins !== undefined) {
+      const hasEntries = Object.keys(routing.modelPins).length > 0;
+      router.setModelPins(hasEntries ? routing.modelPins : undefined);
+    }
+  };
+
+  const persistRoutingConfig = async () => {
+    const single = router.getSingleModel();
+    await apiKeyStore.set(ROUTING_CONFIG_ACCOUNT, serializeRoutingConfig({
+      mode: single?.enabled ? 'pinned' : 'auto',
+      pinnedProvider: single?.provider || '',
+      pinnedModel: single?.model || '',
+      enabledModels: router.getEnabledModels(),
+      modelPins: router.getModelPins(),
+    }));
+  };
+
+  const initializeRouting = async () => {
+    const persisted = await apiKeyStore.get(ROUTING_CONFIG_ACCOUNT);
+    if (!persisted) return;
+    const saved = parseRoutingConfig(persisted);
+    if (saved) applyRoutingConfig(saved);
+  };
+
   const initializeApiKeys = async () => {
+    await initializeRouting();
     await Promise.all(router.getProviders().map(async provider => {
       if (isApiKeyConfigurableProvider(provider)) {
         if (provider.hasApiKey()) {
@@ -160,7 +246,10 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
           const persistedKey = await apiKeyStore.get(apiKeyAccount(provider.name));
           if (persistedKey) {
             provider.setApiKey(persistedKey);
-            keyMetadata.set(provider.name, { source: apiKeyStore.status().mode });
+            const source = apiKeyStore.getSource
+              ? await apiKeyStore.getSource(apiKeyAccount(provider.name))
+              : apiKeyStore.status().mode;
+            keyMetadata.set(provider.name, { source });
           } else {
             keyMetadata.set(provider.name, { source: 'none' });
           }
@@ -181,6 +270,8 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
         });
       }
     }));
+
+    await router.reindexAll();
   };
 
   const persistRuntimeConfig = async (provider: RuntimeConfigurableProvider) => {
@@ -202,11 +293,11 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   });
 
   const mcpHandler = createMcpHttpHandler(router);
-  app.post('/mcp', requireClientApiKey, async (req, res, next) => {
+  app.post('/mcp', authMiddleware, async (req, res, next) => {
     await apiKeyInitialization;
     return mcpHandler(req, res, next);
   });
-  app.delete('/mcp', requireClientApiKey, async (req, res, next) => {
+  app.delete('/mcp', authMiddleware, async (req, res, next) => {
     await apiKeyInitialization;
     return mcpHandler(req, res, next);
   });
@@ -221,7 +312,12 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     return {
       configured: provider.hasApiKey(),
       source: provider.hasApiKey() ? source : 'none',
-      persisted: provider.hasApiKey() && source === 'keychain',
+      persisted: provider.hasApiKey() && (source === 'keychain' || source === 'arcana'),
+      arcanaAvailable: Boolean(
+        apiKeyStore.setArcanaReference
+        || apiKeyStore.hasArcanaReference?.(apiKeyAccount(provider.name)),
+      ),
+      arcanaReference: apiKeyStore.getArcanaReference?.(apiKeyAccount(provider.name)),
       keychainAvailable: storeStatus.mode === 'keychain' && storeStatus.available,
       runtimeReady,
     };
@@ -244,6 +340,10 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
         localStorage: {
           available: true,
           warning: 'Browser localStorage is browser-local, less secure than Apple Keychain, and cleared if browser storage is cleared.',
+        },
+        arcana: {
+          available: Boolean(apiKeyStore.setArcanaReference || apiKeyStore.hasArcanaReference?.()),
+          warning: 'Arcana references are read-only and must be configured in the environment or Arcana project policy.',
         },
       },
     };
@@ -278,6 +378,8 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
 
         return {
             name: p.name,
+            family: p.family,
+            label: p.label,
             defaultModel: p.defaultModel,
             apiKeyConfigurable: isApiKeyConfigurableProvider(p),
             apiKeyConfigured: isApiKeyConfigurableProvider(p) ? p.hasApiKey() : undefined,
@@ -314,11 +416,13 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     await apiKeyInitialization;
     res.json({
       persistence: dashboardPersistenceStatus(),
-      routing: dashboardRoutingStatus(),
+      routing: dashboardRoutingStatus(router),
       providers: router.getProviders()
         .filter(isApiKeyConfigurableProvider)
         .map(provider => ({
           name: provider.name,
+          family: provider.family,
+          label: provider.label,
           defaultModel: provider.defaultModel,
           ...providerKeyStatus(provider),
           runtimeConfigurable: isRuntimeConfigurableProvider(provider),
@@ -330,7 +434,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
 
   app.post('/dashboard/api-keys', async (req, res) => {
     await apiKeyInitialization;
-    const { provider: providerName, apiKey, baseUrl, model, persistence } = req.body || {};
+    const { provider: providerName, apiKey, baseUrl, model, persistence, arcanaReference } = req.body || {};
 
     if (!providerName || typeof providerName !== 'string') {
       return res.status(400).json({ error: 'provider is required' });
@@ -338,8 +442,11 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     if (apiKey !== undefined && typeof apiKey !== 'string') {
       return res.status(400).json({ error: 'apiKey must be a string' });
     }
+    if (arcanaReference !== undefined && typeof arcanaReference !== 'string') {
+      return res.status(400).json({ error: 'arcanaReference must be a string' });
+    }
     if (persistence !== undefined && !isApiKeyPersistenceMode(persistence)) {
-      return res.status(400).json({ error: 'persistence must be keychain, localStorage, or memory' });
+      return res.status(400).json({ error: 'persistence must be keychain, localStorage, memory, or arcana' });
     }
 
     const provider = router.getProviders()
@@ -355,7 +462,26 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     const trimmedApiKey = typeof apiKey === 'string' ? apiKey.trim() : undefined;
     const requestedPersistence: ApiKeyPersistenceMode = persistence || 'keychain';
 
-    if (trimmedApiKey) {
+    if (requestedPersistence === 'arcana') {
+      if (arcanaReference?.trim()) {
+        if (!apiKeyStore.setArcanaReference) {
+          return res.status(400).json({ error: 'Arcana references cannot be configured by this secret store' });
+        }
+        try {
+          apiKeyStore.setArcanaReference(apiKeyAccount(provider.name), arcanaReference.trim());
+        } catch (error) {
+          return res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid Arcana reference' });
+        }
+      }
+      const arcanaKey = await apiKeyStore.get(apiKeyAccount(provider.name));
+      if (!arcanaKey || (await apiKeyStore.getSource?.(apiKeyAccount(provider.name))) !== 'arcana') {
+        return res.status(400).json({
+          error: `No Arcana reference resolved for provider "${provider.name}"`,
+        });
+      }
+      provider.setApiKey(arcanaKey);
+      keyMetadata.set(provider.name, { source: 'arcana' });
+    } else if (trimmedApiKey) {
       provider.setApiKey(trimmedApiKey);
 
       if (requestedPersistence === 'keychain') {
@@ -379,6 +505,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       }
     }
     delete modelCache[provider.name];
+    await router.reindexProvider(provider);
 
     return res.json({
       provider: provider.name,
@@ -405,6 +532,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     provider.setApiKey('');
     keyMetadata.set(provider.name, { source: 'none' });
     delete modelCache[provider.name];
+    await router.reindexProvider(provider);
 
     return res.json({
       provider: provider.name,
@@ -414,8 +542,230 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     });
   });
 
+  // Routing control: auto vs pinned mode, and the per-model routing pool
+  app.get('/dashboard/routing', async (_req, res) => {
+    await apiKeyInitialization;
+    res.json(dashboardRoutingStatus(router));
+  });
+
+  app.post('/dashboard/routing', async (req, res) => {
+    await apiKeyInitialization;
+    const { mode, pinnedProvider, pinnedModel, enabledModels, modelPins } = req.body || {};
+
+    if (mode !== undefined && mode !== 'auto' && mode !== 'pinned') {
+      return res.status(400).json({ error: "mode must be 'auto' or 'pinned'" });
+    }
+    if (pinnedProvider !== undefined && typeof pinnedProvider !== 'string') {
+      return res.status(400).json({ error: 'pinnedProvider must be a string' });
+    }
+    if (pinnedModel !== undefined && typeof pinnedModel !== 'string') {
+      return res.status(400).json({ error: 'pinnedModel must be a string' });
+    }
+
+    const registered = new Map(router.getProviders().map(p => [p.name.toLowerCase(), p.name]));
+    if (pinnedProvider?.trim() && !registered.has(pinnedProvider.trim().toLowerCase())) {
+      return res.status(400).json({ error: `Provider "${pinnedProvider}" is not registered` });
+    }
+
+    let sanitizedEnabled: Record<string, string[]> | undefined;
+    if (enabledModels !== undefined) {
+      sanitizedEnabled = sanitizeEnabledModels(enabledModels);
+      if (!sanitizedEnabled) {
+        return res.status(400).json({ error: 'enabledModels must map provider names to arrays of model ids' });
+      }
+      for (const provider of Object.keys(sanitizedEnabled)) {
+        if (!registered.has(provider.toLowerCase())) {
+          return res.status(400).json({ error: `Provider "${provider}" is not registered` });
+        }
+      }
+    }
+
+    let sanitizedPins: Record<string, string> | undefined;
+    if (modelPins !== undefined) {
+      sanitizedPins = sanitizeModelPins(modelPins);
+      if (!sanitizedPins) {
+        return res.status(400).json({ error: 'modelPins must map model ids to provider names' });
+      }
+      for (const provider of Object.values(sanitizedPins)) {
+        if (!registered.has(provider.toLowerCase())) {
+          return res.status(400).json({ error: `Provider "${provider}" is not registered` });
+        }
+      }
+    }
+
+    const currentSingle = router.getSingleModel();
+    const nextMode: 'auto' | 'pinned' = mode ?? (currentSingle?.enabled ? 'pinned' : 'auto');
+    const nextPinnedModel = (pinnedModel ?? currentSingle?.model ?? '').trim();
+    if (nextMode === 'pinned' && !nextPinnedModel) {
+      return res.status(400).json({ error: 'pinnedModel is required when mode is pinned' });
+    }
+
+    applyRoutingConfig({
+      mode: nextMode,
+      pinnedProvider: (pinnedProvider ?? currentSingle?.provider ?? '').trim(),
+      pinnedModel: nextPinnedModel,
+      enabledModels: sanitizedEnabled,
+      modelPins: sanitizedPins,
+    });
+    await persistRoutingConfig();
+
+    return res.json(dashboardRoutingStatus(router));
+  });
+
+  // ── Generic multi-instance provider management ───────────────────────
+  // Lets a family (currently just Azure OpenAI) register more than one
+  // configured instance (distinct endpoint/key/etc). The generic routes
+  // below know nothing about Azure specifically — they're driven entirely
+  // by each family's declared `fields` and their `role` tags.
+
+  function findNamingProvider(): Provider | undefined {
+    return router.getProviders().find(p => {
+      if (!isApiKeyConfigurableProvider(p) || !p.hasApiKey()) return false;
+      const runtimeReady = providerRuntimeReady(p);
+      return runtimeReady !== false;
+    });
+  }
+
+  async function buildNamingAdapter() {
+    const namingProvider = findNamingProvider();
+    if (!namingProvider) return undefined;
+    return {
+      async complete(system: string, user: string): Promise<string> {
+        const response = await namingProvider.complete({
+          model: namingProvider.defaultModel,
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: user },
+          ],
+          max_tokens: 20,
+        });
+        return response.choices?.[0]?.message?.content || '';
+      },
+    };
+  }
+
+  app.get('/dashboard/provider-instances', (_req, res) => {
+    res.json({
+      families: INSTANCE_FAMILIES.map(f => ({
+        family: f.family,
+        displayName: f.displayName,
+        baseName: f.baseName,
+        fields: f.fields,
+        instances: router.getProviders()
+          .filter(p => p.family === f.family && p.name !== f.baseName)
+          .map(p => ({ id: p.name.slice(f.baseName.length + 1), name: p.name, label: p.label })),
+      })),
+    });
+  });
+
+  app.post('/dashboard/provider-instances', async (req, res) => {
+    await apiKeyInitialization;
+    const { family, config: instanceConfig } = req.body || {};
+
+    if (typeof family !== 'string' || !family) {
+      return res.status(400).json({ error: 'family is required' });
+    }
+    const familyDef = INSTANCE_FAMILIES.find(f => f.family === family);
+    if (!familyDef) {
+      return res.status(404).json({ error: `Unknown provider family "${family}"` });
+    }
+    if (!instanceConfig || typeof instanceConfig !== 'object') {
+      return res.status(400).json({ error: 'config is required' });
+    }
+
+    const rawConfig: Record<string, string> = {};
+    for (const field of familyDef.fields) {
+      const value = (instanceConfig as Record<string, unknown>)[field.key];
+      if (value !== undefined && typeof value !== 'string') {
+        return res.status(400).json({ error: `config.${field.key} must be a string` });
+      }
+      // Secret fields are set afterward via the existing /dashboard/api-keys card (same
+      // persistence-mode UI every other provider uses), not collected at creation time.
+      if (field.required && field.role !== 'secret' && !value?.trim()) {
+        return res.status(400).json({ error: `config.${field.key} is required` });
+      }
+      rawConfig[field.key] = typeof value === 'string' ? value.trim() : '';
+    }
+
+    const existingIds = new Set(
+      router.getProviders()
+        .filter(p => p.family === familyDef.family && p.name !== familyDef.baseName)
+        .map(p => p.name.slice(familyDef.baseName.length + 1)),
+    );
+    const llm = await buildNamingAdapter();
+    const id = await generateInstanceId(familyDef.namingHint(rawConfig), existingIds, llm);
+
+    const provider = familyDef.create({ ...rawConfig, id, label: id });
+    router.addProvider(provider);
+
+    for (const field of familyDef.fields) {
+      if (field.role === 'secret' && rawConfig[field.key]) {
+        await apiKeyStore.set(apiKeyAccount(provider.name), rawConfig[field.key]);
+        if (isApiKeyConfigurableProvider(provider)) {
+          keyMetadata.set(provider.name, { source: apiKeyStore.status().mode });
+        }
+      }
+    }
+    if (isRuntimeConfigurableProvider(provider)) {
+      const baseUrlField = familyDef.fields.find(f => f.role === 'runtimeBaseUrl');
+      const modelField = familyDef.fields.find(f => f.role === 'runtimeModel');
+      provider.setRuntimeConfig({
+        baseUrl: baseUrlField ? rawConfig[baseUrlField.key] : undefined,
+        model: modelField ? rawConfig[modelField.key] : undefined,
+      });
+      await persistRuntimeConfig(provider);
+    }
+
+    const extra: Record<string, string> = {};
+    for (const field of familyDef.fields) {
+      if (field.role === 'extra' && rawConfig[field.key]) extra[field.key] = rawConfig[field.key];
+    }
+
+    const manifestRaw = await apiKeyStore.get(instanceManifestAccount(familyDef.family));
+    const manifest = manifestRaw ? parseInstanceManifest(manifestRaw) : [];
+    manifest.push({ id, label: id, extra });
+    await apiKeyStore.set(instanceManifestAccount(familyDef.family), serializeInstanceManifest(manifest));
+
+    delete modelCache[provider.name];
+    await router.reindexProvider(provider);
+
+    return res.json({ name: provider.name, id, label: provider.label });
+  });
+
+  app.delete('/dashboard/provider-instances/:family/:id', async (req, res) => {
+    await apiKeyInitialization;
+    const familyDef = INSTANCE_FAMILIES.find(f => f.family === req.params.family);
+    if (!familyDef) {
+      return res.status(404).json({ error: `Unknown provider family "${req.params.family}"` });
+    }
+    const id = req.params.id;
+    if (!id) {
+      return res.status(400).json({ error: 'id is required' });
+    }
+
+    const name = `${familyDef.baseName}:${id}`;
+    const provider = router.getProviders().find(p => p.name === name);
+    if (!provider) {
+      return res.status(404).json({ error: `Instance "${id}" is not registered for ${familyDef.family}` });
+    }
+
+    router.removeProvider(name);
+    await apiKeyStore.delete(apiKeyAccount(name));
+    await apiKeyStore.delete(runtimeConfigAccount(name));
+    keyMetadata.delete(name);
+    delete modelCache[name];
+
+    const manifestRaw = await apiKeyStore.get(instanceManifestAccount(familyDef.family));
+    const manifest = (manifestRaw ? parseInstanceManifest(manifestRaw) : []).filter(entry => entry.id !== id);
+    await apiKeyStore.set(instanceManifestAccount(familyDef.family), serializeInstanceManifest(manifest));
+
+    await persistRoutingConfig();
+
+    return res.json({ removed: true });
+  });
+
   // Existing: chat completions endpoint (with provider failover)
-  app.post('/v1/chat/completions', requireClientApiKey, async (req, res) => {
+  app.post('/v1/chat/completions', authMiddleware, async (req, res) => {
     await apiKeyInitialization;
     const request = normalizeCompletionRequest(req.body);
 
@@ -429,23 +779,42 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       });
     }
 
+    const forceProviderHeader = req.headers['x-leyline-force-provider'];
+    const forceProvider = typeof forceProviderHeader === 'string' && forceProviderHeader.trim()
+      ? forceProviderHeader.trim()
+      : undefined;
+    if (forceProvider && !router.getProviders().some(p => p.name === forceProvider)) {
+      return res.status(400).json({
+        error: {
+          message: `Provider "${forceProvider}" is not registered`,
+          type: 'invalid_request_error',
+          code: 'unknown_provider',
+        },
+      });
+    }
+    const routeOptions = forceProvider ? { forceProvider } : undefined;
+
     try {
       if (request.stream) {
         res.setHeader('Content-Type', 'text/event-stream');
         res.setHeader('Cache-Control', 'no-cache');
         res.setHeader('Connection', 'keep-alive');
 
-        const stream = await router.routeStream(request);
+        const stream = await router.routeStream(request, routeOptions);
+        let streamUsage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined;
 
         for await (const chunk of stream) {
+            if (chunk.usage) streamUsage = chunk.usage;
             res.write(`data: ${JSON.stringify(chunk)}\n\n`);
         }
         res.write('data: [DONE]\n\n');
         res.end();
+        logTenantUsage(req, request.model, streamUsage);
 
       } else {
-        const response = await router.route(request);
+        const response = await router.route(request, routeOptions);
         res.json(response);
+        logTenantUsage(req, request.model, response.usage);
       }
     } catch (error: any) {
       const hydrated = await hydrateAxiosError(error);
@@ -459,7 +828,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   // Returns a full routing decision (tier, model, provider, classification)
   // for a user message. Used by agent pipelines to decide which model to
   // use before dispatching a request.
-  app.post('/v1/route', requireClientApiKey, async (req, res) => {
+  app.post('/v1/route', authMiddleware, async (req, res) => {
     await apiKeyInitialization;
     const { user_message, chat_history } = req.body || {};
     if (!user_message) {

@@ -9,7 +9,15 @@ use std::{
 };
 
 const DEFAULT_HOST: &str = "127.0.0.1";
-const DEFAULT_PORT: u16 = 3000;
+const DEFAULT_PORT: u16 = 3417;
+
+/// Result of `spawn_if_needed`: whether an existing API was reused or a new
+/// sidecar process was spawned (and still needs a readiness wait).
+pub enum StartOutcome {
+    Reused,
+    Spawned,
+    Waiting,
+}
 
 pub struct SidecarManager {
     child: Option<Child>,
@@ -29,65 +37,150 @@ impl SidecarManager {
         }
     }
 
-    pub fn ensure_started(&mut self, resource_dir: Option<PathBuf>) -> io::Result<()> {
-        self.ensure_started_with_timeout(resource_dir, Duration::from_secs(20))
+    pub fn endpoint(&self) -> (String, u16) {
+        (self.host.clone(), self.port)
     }
 
-    fn ensure_started_with_timeout(
-        &mut self,
-        resource_dir: Option<PathBuf>,
-        timeout: Duration,
-    ) -> io::Result<()> {
+    /// Spawn the sidecar unless an API is already reachable. Returns quickly;
+    /// callers that spawned must poll `endpoint_ready` themselves (see
+    /// `main.rs`), which keeps long waits out of any mutex guard.
+    pub fn spawn_if_needed(&mut self, resource_dir: Option<PathBuf>) -> io::Result<StartOutcome> {
+        self.reap_exited_child();
+
         if self.is_ready() {
             println!("[Leyline] Internal API already running; reusing it");
-            return Ok(());
+            return Ok(StartOutcome::Reused);
         }
 
-        let entrypoint = env::var("LEYLINE_SIDECAR_ENTRYPOINT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                resource_dir
-                    .clone()
-                    .map(|dir| {
-                        let nested = dir.join("_up_").join("dist").join("index.js");
-                        if nested.exists() {
-                            nested
-                        } else {
-                            dir.join("dist").join("index.js")
-                        }
-                    })
-                    .unwrap_or_else(|| PathBuf::from("dist/index.js"))
-            });
-        let command_name = env::var("LEYLINE_SIDECAR_COMMAND")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("node"));
+        if self.child.is_some() {
+            return Ok(StartOutcome::Waiting);
+        }
+
+        let entrypoint = self.resolve_entrypoint(resource_dir.clone())?;
+        let command_name = self.resolve_command();
+        let path_entries = [
+            env::var("PATH").ok(),
+            (cfg!(target_os = "macos")).then(|| "/opt/homebrew/bin".to_string()),
+            (cfg!(target_os = "macos")).then(|| "/usr/local/bin".to_string()),
+            env::var("HOME")
+                .ok()
+                .map(|home| format!("{home}/.local/bin")),
+            env::var("HOME")
+                .ok()
+                .map(|home| format!("{home}/.volta/bin")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(":");
 
         println!(
             "[Leyline] Starting internal API sidecar: {} {}",
             command_name.display(),
             entrypoint.display()
         );
-        let child = Command::new(command_name)
+        let mut command = Command::new(command_name);
+        command
             .arg(&entrypoint)
             .env("LEYLINE_HOST", &self.host)
-            .env("LEYLINE_TUNNEL_ENABLED", "false")
+            .env("PORT", self.port.to_string())
+            .env("PATH", path_entries)
             .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .spawn()?;
-        self.child = Some(child);
+            .stderr(Stdio::inherit());
 
-        if self.wait_until_ready(timeout) {
-            Ok(())
-        } else {
-            self.stop();
-            Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!(
-                    "Leyline internal API did not become ready on {}:{}",
-                    self.host, self.port
-                ),
-            ))
+        // In development, load the workspace .env just like `npm start`. Packaged
+        // builds get no cwd by default (Finder launches land at "/"), so they'd
+        // never find provider config; point them at the bundled resource
+        // directory instead, where tauri.conf.json's resources map ships a copy
+        // of .env alongside dist/ and node_modules/.
+        #[cfg(debug_assertions)]
+        if let Some(project_root) = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent() {
+            command.current_dir(project_root);
         }
+        #[cfg(not(debug_assertions))]
+        if let Some(dir) = resource_dir {
+            command.current_dir(dir.join("_up_"));
+        }
+
+        let child = command.spawn()?;
+        self.child = Some(child);
+        Ok(StartOutcome::Spawned)
+    }
+
+    #[cfg(test)]
+    fn ensure_started_with_timeout(
+        &mut self,
+        resource_dir: Option<PathBuf>,
+        timeout: Duration,
+    ) -> io::Result<()> {
+        match self.spawn_if_needed(resource_dir)? {
+            StartOutcome::Reused => Ok(()),
+            StartOutcome::Waiting => {
+                if self.wait_until_ready(timeout) {
+                    Ok(())
+                } else {
+                    self.stop();
+                    Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "Leyline internal API did not become ready on {}:{}",
+                            self.host, self.port
+                        ),
+                    ))
+                }
+            }
+            StartOutcome::Spawned => {
+                if self.wait_until_ready(timeout) {
+                    Ok(())
+                } else {
+                    self.stop();
+                    Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "Leyline internal API did not become ready on {}:{}",
+                            self.host, self.port
+                        ),
+                    ))
+                }
+            }
+        }
+    }
+
+    fn resolve_entrypoint(&self, resource_dir: Option<PathBuf>) -> io::Result<PathBuf> {
+        if let Ok(value) = env::var("LEYLINE_SIDECAR_ENTRYPOINT") {
+            let path = PathBuf::from(value);
+            if path.exists() {
+                return Ok(path);
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "LEYLINE_SIDECAR_ENTRYPOINT does not exist: {}",
+                    path.display()
+                ),
+            ));
+        }
+
+        let mut candidates = Vec::new();
+        if let Some(dir) = resource_dir {
+            candidates.push(dir.join("_up_").join("dist").join("index.js"));
+            candidates.push(dir.join("dist").join("index.js"));
+        }
+        if let Ok(current_dir) = env::current_dir() {
+            candidates.push(current_dir.join("dist").join("index.js"));
+        }
+        if let Ok(executable) = env::current_exe() {
+            if let Some(parent) = executable.parent() {
+                candidates.push(parent.join("dist").join("index.js"));
+            }
+        }
+
+        candidates.into_iter().find(|path| path.exists()).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "Could not locate Leyline dist/index.js; run npm run build or set LEYLINE_SIDECAR_ENTRYPOINT",
+            )
+        })
     }
 
     #[cfg(test)]
@@ -100,41 +193,12 @@ impl SidecarManager {
     }
 
     pub fn is_ready(&self) -> bool {
-        let address = format!("{}:{}", self.host, self.port);
-        let Some(address) = address
-            .to_socket_addrs()
-            .ok()
-            .and_then(|mut addresses| addresses.next())
-        else {
-            return false;
-        };
-        let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(150))
-        else {
-            return false;
-        };
-        let _ = stream.set_read_timeout(Some(Duration::from_millis(150)));
-        if stream
-            .write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-            .is_err()
-        {
-            return false;
-        }
-        let mut response = String::new();
-        if stream.read_to_string(&mut response).is_err() {
-            return false;
-        }
-        response.starts_with("HTTP/1.1 200 ") && response.contains("\"status\":\"ok\"")
+        endpoint_ready(&self.host, self.port)
     }
 
+    #[cfg(test)]
     fn wait_until_ready(&self, timeout: Duration) -> bool {
-        let started = Instant::now();
-        while started.elapsed() < timeout {
-            if self.is_ready() {
-                return true;
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
-        false
+        wait_until_endpoint_ready(&self.host, self.port, timeout)
     }
 
     pub fn stop(&mut self) {
@@ -143,12 +207,79 @@ impl SidecarManager {
             let _ = child.wait();
         }
     }
+
+    fn reap_exited_child(&mut self) {
+        let exited = self
+            .child
+            .as_mut()
+            .and_then(|child| child.try_wait().ok())
+            .flatten()
+            .is_some();
+        if exited {
+            self.child = None;
+            eprintln!("[Leyline] Internal API sidecar exited; it will be restarted.");
+        }
+    }
+
+    fn resolve_command(&self) -> PathBuf {
+        if let Ok(value) = env::var("LEYLINE_SIDECAR_COMMAND") {
+            return PathBuf::from(value);
+        }
+
+        let candidates = [
+            "/opt/homebrew/bin/node",
+            "/usr/local/bin/node",
+            "/usr/bin/node",
+        ];
+        candidates
+            .iter()
+            .map(PathBuf::from)
+            .find(|path| path.exists())
+            .unwrap_or_else(|| PathBuf::from("node"))
+    }
 }
 
 impl Drop for SidecarManager {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+pub fn endpoint_ready(host: &str, port: u16) -> bool {
+    let address = format!("{host}:{port}");
+    let Some(address) = address
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut addresses| addresses.next())
+    else {
+        return false;
+    };
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(150)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(150)));
+    if stream
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+    let mut response = String::new();
+    if stream.read_to_string(&mut response).is_err() {
+        return false;
+    }
+    response.starts_with("HTTP/1.1 200 ") && response.contains("\"status\":\"ok\"")
+}
+
+pub fn wait_until_endpoint_ready(host: &str, port: u16, timeout: Duration) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        if endpoint_ready(host, port) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    false
 }
 
 #[cfg(test)]

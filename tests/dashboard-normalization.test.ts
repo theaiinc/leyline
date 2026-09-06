@@ -1,8 +1,12 @@
 import {
+  familyOf,
   formatLogUsage,
   formatLogTime,
   normalizeApiKeyStatusResponse,
+  normalizeProviderInstancesResponse,
+  normalizeRouting,
   normalizeStatsResponse,
+  providerDescription,
   providerTone,
   sourceLabel,
   statusTone,
@@ -89,6 +93,54 @@ describe('dashboard response normalization', () => {
     expect(formatLogUsage({ total_tokens: 5 })).toBe('5 tokens');
     expect(formatLogUsage({ chars: 42 })).toBe('42 output chars');
     expect(formatLogUsage(undefined)).toBe('-');
+  });
+
+  it('groups multi-instance providers by family for tone/description', () => {
+    expect(familyOf('AzureOpenAI:prod-eastus', 'AzureOpenAI')).toBe('AzureOpenAI');
+    expect(providerTone('AzureOpenAI:prod-eastus', 'AzureOpenAI')).toBe('azureopenai');
+    expect(providerTone('AzureOpenAI:prod-eastus')).toBe('default');
+    expect(providerDescription('AzureOpenAI:prod-eastus', 'AzureOpenAI')).toContain('Azure OpenAI');
+  });
+
+  it('normalizes model pins and the model index on routing status', () => {
+    const routing = normalizeRouting({
+      singleModelEnabled: false,
+      fixedProvider: null,
+      fixedModel: null,
+      enabledModels: {},
+      modelPins: { 'gpt-4o': 'AzureOpenAI:prod-eastus' },
+      modelIndex: { 'gpt-4o': ['AzureOpenAI', 'AzureOpenAI:prod-eastus'] },
+    });
+
+    expect(routing?.modelPins).toEqual({ 'gpt-4o': 'AzureOpenAI:prod-eastus' });
+    expect(routing?.modelIndex).toEqual({ 'gpt-4o': ['AzureOpenAI', 'AzureOpenAI:prod-eastus'] });
+  });
+
+  it('normalizes the provider-instances families response', () => {
+    const result = normalizeProviderInstancesResponse({
+      families: [
+        {
+          family: 'AzureOpenAI',
+          displayName: 'Azure OpenAI',
+          baseName: 'AzureOpenAI',
+          fields: [
+            { key: 'endpoint', label: 'Endpoint', role: 'runtimeBaseUrl', required: true },
+            { key: 'apiKey', label: 'API key', role: 'secret', required: true },
+            { key: 'unknownRole', label: 'Bad field', role: 'not-a-role' },
+          ],
+          instances: [{ id: 'prod-eastus', name: 'AzureOpenAI:prod-eastus', label: 'prod-eastus' }],
+        },
+      ],
+    });
+
+    expect(result.families).toHaveLength(1);
+    expect(result.families[0].fields).toEqual([
+      { key: 'endpoint', label: 'Endpoint', role: 'runtimeBaseUrl', required: true, placeholder: undefined },
+      { key: 'apiKey', label: 'API key', role: 'secret', required: true, placeholder: undefined },
+    ]);
+    expect(result.families[0].instances).toEqual([
+      { id: 'prod-eastus', name: 'AzureOpenAI:prod-eastus', label: 'prod-eastus' },
+    ]);
   });
 
   it('fills missing API key status structures with safe defaults', () => {

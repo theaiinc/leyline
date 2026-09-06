@@ -3,16 +3,22 @@ import { createRoot } from 'react-dom/client';
 import './styles.css';
 import {
   ApiKeyStatusResponse,
+  familyOf,
   formatLogTime,
   formatLogUsage,
+  InstanceFamily,
   LogEntry,
   normalizeApiKeyStatusResponse,
+  normalizeProviderInstancesResponse,
+  normalizeRouting,
   normalizeStatsResponse,
   PersistenceMode,
   providerDescription,
   providerStatusLabel,
   providerTone,
+  ProviderInstancesResponse,
   ProviderStats,
+  RoutingStatus,
   sourceLabel,
   StatsResponse,
   statusTone,
@@ -24,6 +30,7 @@ const LOCAL_KEY_PREFIX = 'leyline.apiKey.';
 const LOCAL_MODE_PREFIX = 'leyline.persistence.';
 const LOCAL_RUNTIME_PREFIX = 'leyline.runtime.';
 const LOG_ERROR_MAX_LENGTH = 60;
+const API_STARTUP_RETRY_DELAY = 1000;
 const API_BASE = (import.meta.env.VITE_LEYLINE_API_BASE_URL || window.location.origin).replace(/\/$/, '');
 
 function apiUrl(path: string): string {
@@ -118,16 +125,13 @@ function App() {
   const [selectedProvider, setSelectedProvider] = useState('');
   const [persistenceMode, setPersistenceMode] = useState<PersistenceMode>('keychain');
   const [apiKey, setApiKey] = useState('');
+  const [arcanaReference, setArcanaReference] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [model, setModel] = useState('');
   const [message, setMessage] = useState('');
   const [modelSearch, setModelSearch] = useState('');
   const [rehydrated, setRehydrated] = useState(false);
-
-  const providers = status?.providers || [];
-  const persistence = status?.persistence;
-  const activeProvider = providers.find(provider => provider.name === selectedProvider) || providers[0];
-  const keychainAvailable = Boolean(persistence?.modes.keychain.available);
+  const [instanceFamilies, setInstanceFamilies] = useState<InstanceFamily[]>([]);
 
   const localStorageAvailable = useMemo(() => {
     try {
@@ -140,6 +144,47 @@ function App() {
     }
   }, []);
 
+  const providers = status?.providers || [];
+  const persistence = status?.persistence;
+  const routing = status?.routing;
+  const activeProvider = providers.find(provider => provider.name === selectedProvider) || providers[0];
+  const keychainAvailable = Boolean(persistence?.modes.keychain.available);
+  // arcanaAvailable only means "this secret store supports Arcana somewhere" — it does not mean
+  // *this* provider already has a reference configured, so it must not drive the default mode
+  // (every new/unconfigured provider would otherwise default to an Arcana reference field instead
+  // of a plain API key field). Use hasResolvedArcanaReference for defaulting instead.
+  const arcanaAvailable = Boolean(activeProvider?.arcanaAvailable);
+  const hasResolvedArcanaReference = Boolean(activeProvider?.arcanaReference);
+  const savedPersistenceMode: PersistenceMode = activeProvider
+    ? (localStorageAvailable
+      ? window.localStorage.getItem(localModeKey(activeProvider.name)) as PersistenceMode | null
+      : null) || (activeProvider.source === 'arcana'
+        ? 'arcana'
+        : activeProvider.configured
+          ? 'keychain'
+          : hasResolvedArcanaReference
+            ? 'arcana'
+            : keychainAvailable
+              ? 'keychain'
+              : arcanaAvailable
+                ? 'arcana'
+                : 'localStorage')
+    : persistenceMode;
+  const keyFormDirty = Boolean(
+    activeProvider
+    && (
+      Boolean(apiKey.trim())
+      || persistenceMode !== savedPersistenceMode
+      || (persistenceMode === 'arcana' && arcanaReference.trim() !== (activeProvider.arcanaReference || ''))
+    ),
+  );
+  const savedBaseUrl = activeProvider?.runtimeConfig?.baseUrl || '';
+  const savedModel = activeProvider?.runtimeConfig?.model || activeProvider?.defaultModel || '';
+  const runtimeFormDirty = Boolean(
+    activeProvider?.runtimeConfigurable
+    && (baseUrl.trim() !== savedBaseUrl || model.trim() !== savedModel),
+  );
+
   async function fetchApiKeyStatus() {
     const response = await fetch(apiUrl('/dashboard/api-keys'));
     const data = await response.json();
@@ -148,7 +193,7 @@ function App() {
     setStatus(normalized);
     if (!selectedProvider) {
       const preferred = normalized.routing?.fixedProvider
-        || normalized.providers.find(p => p.name === 'AzureOpenAI' && p.configured)?.name
+        || normalized.providers.find(p => familyOf(p.name, p.family) === 'AzureOpenAI' && p.configured)?.name
         || normalized.providers[0]?.name;
       if (preferred) setSelectedProvider(preferred);
     }
@@ -160,6 +205,14 @@ function App() {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Failed to fetch dashboard stats');
     setStats(normalizeStatsResponse(data));
+  }
+
+  async function fetchProviderInstances() {
+    const response = await fetch(apiUrl('/dashboard/provider-instances'));
+    const data = await response.json();
+    if (!response.ok) throw new Error('Failed to fetch provider instances');
+    const normalized: ProviderInstancesResponse = normalizeProviderInstancesResponse(data);
+    setInstanceFamilies(normalized.families);
   }
 
   async function rehydrateLocalKeys(data: ApiKeyStatusResponse) {
@@ -221,8 +274,21 @@ function App() {
     let cancelled = false;
 
     async function load() {
+      let data: ApiKeyStatusResponse | undefined;
+      while (!cancelled) {
+        try {
+          data = await fetchApiKeyStatus();
+          setMessage('');
+          break;
+        } catch (error) {
+          setMessage('Waiting for Leyline API…');
+          await new Promise(resolve => window.setTimeout(resolve, API_STARTUP_RETRY_DELAY));
+        }
+      }
+
+      if (cancelled || !data) return;
+
       try {
-        const data = await fetchApiKeyStatus();
         if (!rehydrated) {
           await rehydrateLocalKeys(data);
           await rehydrateLocalRuntime(data);
@@ -247,6 +313,9 @@ function App() {
     fetchStats().catch(error => {
       setMessage(error instanceof Error ? error.message : 'Failed to load dashboard stats');
     });
+    fetchProviderInstances().catch(error => {
+      setMessage(error instanceof Error ? error.message : 'Failed to load provider instances');
+    });
     const interval = window.setInterval(fetchStats, 5000);
     return () => window.clearInterval(interval);
   }, [rehydrated]);
@@ -257,18 +326,20 @@ function App() {
     const savedMode = localStorageAvailable
       ? window.localStorage.getItem(localModeKey(activeProvider.name)) as PersistenceMode | null
       : null;
-    const nextMode = savedMode || (keychainAvailable ? 'keychain' : 'localStorage');
+    const nextMode = savedMode
+      || (hasResolvedArcanaReference ? 'arcana' : keychainAvailable ? 'keychain' : arcanaAvailable ? 'arcana' : 'localStorage');
 
     setPersistenceMode(nextMode);
     setBaseUrl(activeProvider.runtimeConfig?.baseUrl || '');
     setModel(activeProvider.runtimeConfig?.model || activeProvider.defaultModel || '');
+    setArcanaReference(activeProvider.arcanaReference || '');
     setApiKey('');
-  }, [activeProvider?.name, persistence?.modes.keychain.available]);
+  }, [activeProvider?.name, persistence?.modes.arcana.available, persistence?.modes.keychain.available]);
 
   async function saveKey(event: FormEvent) {
     event.preventDefault();
     if (!activeProvider) return;
-    if (!apiKey.trim()) {
+    if (persistenceMode !== 'arcana' && !apiKey.trim()) {
       setMessage('Paste a key before saving. Blank keys never clear an existing key.');
       return;
     }
@@ -283,7 +354,8 @@ function App() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         provider: activeProvider.name,
-        apiKey,
+        apiKey: persistenceMode === 'arcana' ? undefined : apiKey,
+        arcanaReference: persistenceMode === 'arcana' ? arcanaReference : undefined,
         persistence: persistenceMode,
       }),
     });
@@ -296,7 +368,7 @@ function App() {
     if (persistenceMode === 'localStorage') {
       window.localStorage.setItem(localKey(activeProvider.name), apiKey);
       window.localStorage.setItem(localModeKey(activeProvider.name), 'localStorage');
-    } else {
+    } else if (persistenceMode !== 'arcana') {
       window.localStorage.removeItem(localKey(activeProvider.name));
       window.localStorage.setItem(localModeKey(activeProvider.name), persistenceMode);
     }
@@ -360,6 +432,81 @@ function App() {
     await fetchStats();
   }
 
+  async function addInstance(family: InstanceFamily, config: Record<string, string>) {
+    setMessage(`Adding ${family.displayName} instance...`);
+    const response = await fetch(apiUrl('/dashboard/provider-instances'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ family: family.family, config }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      setMessage(data.error || `Failed to add ${family.displayName} instance`);
+      return;
+    }
+
+    setMessage(`Added ${family.displayName} instance "${data.label || data.name}" — set its key in the API Keys card below.`);
+    await Promise.all([fetchApiKeyStatus(), fetchStats(), fetchProviderInstances()]);
+    setSelectedProvider(data.name);
+  }
+
+  async function removeInstance(family: InstanceFamily, id: string) {
+    const confirmed = window.confirm(`Remove this ${family.displayName} instance? Its saved key and settings will be deleted.`);
+    if (!confirmed) return;
+
+    setMessage(`Removing ${family.displayName} instance...`);
+    const response = await fetch(apiUrl(`/dashboard/provider-instances/${encodeURIComponent(family.family)}/${encodeURIComponent(id)}`), {
+      method: 'DELETE',
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      setMessage(data.error || `Failed to remove ${family.displayName} instance`);
+      return;
+    }
+
+    setMessage(`${family.displayName} instance removed.`);
+    if (selectedProvider === `${family.baseName}:${id}`) setSelectedProvider('');
+    await Promise.all([fetchApiKeyStatus(), fetchStats(), fetchProviderInstances()]);
+  }
+
+  async function updateRouting(body: Record<string, unknown>, successMessage?: string) {
+    const response = await fetch(apiUrl('/dashboard/routing'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      setMessage(data.error || 'Failed to update routing');
+      return false;
+    }
+
+    const normalized = normalizeRouting(data);
+    setStatus(current => (current ? { ...current, routing: normalized } : current));
+    if (successMessage) setMessage(successMessage);
+    return true;
+  }
+
+  function toggleModel(providerName: string, modelId: string, enable: boolean) {
+    const pool = routing?.enabledModels ?? {};
+    const next: Record<string, string[]> = Object.fromEntries(
+      Object.entries(pool).map(([provider, models]) => [provider, [...models]]),
+    );
+    const current = next[providerName] ?? [];
+    next[providerName] = enable
+      ? [...new Set([...current, modelId])]
+      : current.filter(id => id !== modelId);
+    if (next[providerName].length === 0) delete next[providerName];
+    void updateRouting({ enabledModels: next });
+  }
+
+  function pinModelInstance(modelId: string, providerName: string) {
+    const pins = { ...(routing?.modelPins ?? {}) };
+    if (providerName) pins[modelId] = providerName;
+    else delete pins[modelId];
+    void updateRouting({ modelPins: pins });
+  }
+
   return (
     <main className="shell">
       <header className="hero">
@@ -368,38 +515,51 @@ function App() {
           <h1>Provider Control Center</h1>
           <p className="hero-copy">Configure provider keys, Azure runtime settings, quotas, model coverage, and recent request flow from one place.</p>
         </div>
-        <Button variant="secondary" onClick={() => Promise.all([fetchApiKeyStatus(), fetchStats()])}>Refresh</Button>
+        <Button variant="secondary" onClick={() => Promise.all([fetchApiKeyStatus(), fetchStats(), fetchProviderInstances()])}>Refresh</Button>
       </header>
 
       {message ? <div className="notice" role="status" aria-live="polite">{message}</div> : null}
 
       <TunnelBanner tunnel={stats.tunnel} clientAuth={stats.clientAuth} />
 
-      {status?.routing?.fixedProvider ? (
-        <div className="notice">
-          Router is pinned to <strong>{status.routing.fixedProvider}</strong>
-          {status.routing.fixedModel ? <> / <code>{status.routing.fixedModel}</code></> : null}.
-          Configure keys on that provider card — OpenAI and Azure OpenAI use separate Keychain entries.
-        </div>
-      ) : null}
+      <RoutingPanel routing={routing} providers={stats.providers} onUpdate={updateRouting} />
 
       <section className="grid grid-3">
-        {providers.map(provider => {
+        {[...providers]
+          .sort((a, b) => familyOf(a.name, a.family).localeCompare(familyOf(b.name, b.family)) || a.name.localeCompare(b.name))
+          .map(provider => {
           const statusInfo = providerStatusLabel(provider);
+          const family = instanceFamilies.find(f => f.family === (provider.family || provider.name));
+          const removable = Boolean(family && provider.name !== family.baseName);
           return (
-          <button
+          <div
             key={provider.name}
-            type="button"
+            role="button"
+            tabIndex={0}
             className={cn('provider-card', activeProvider?.name === provider.name && 'provider-card-active')}
             onClick={() => setSelectedProvider(provider.name)}
+            onKeyDown={event => {
+              if (event.key === 'Enter' || event.key === ' ') setSelectedProvider(provider.name);
+            }}
           >
-            <span className={cn('provider-dot', `provider-bg-${providerTone(provider.name)}`)} />
-            <strong>{provider.name}</strong>
+            <span className={cn('provider-dot', `provider-bg-${providerTone(provider.name, provider.family)}`)} />
+            <strong>{provider.label || provider.name}</strong>
             <Badge tone={statusInfo.tone}>{statusInfo.label}</Badge>
-            <small>{providerDescription(provider.name) || sourceLabel(provider.source)}</small>
-          </button>
+            <small>{providerDescription(provider.name, provider.family) || sourceLabel(provider.source)}</small>
+            {removable && family ? (
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={event => { event.stopPropagation(); void removeInstance(family, provider.name.slice(family.baseName.length + 1)); }}
+              >
+                Remove
+              </Button>
+            ) : null}
+          </div>
         );})}
       </section>
+
+      <InstanceFamiliesPanel families={instanceFamilies} onAdd={addInstance} />
 
       <section className="grid grid-2">
         <Card>
@@ -423,7 +583,7 @@ function App() {
           {activeProvider?.name === 'OpenAI' ? (
             <p className="callout warning">OpenAI here means api.openai.com. Azure deployments use the <strong>AzureOpenAI</strong> card instead.</p>
           ) : null}
-          {activeProvider?.name === 'AzureOpenAI' && activeProvider.configured && activeProvider.runtimeReady === false ? (
+          {activeProvider && familyOf(activeProvider.name, activeProvider.family) === 'AzureOpenAI' && activeProvider.configured && activeProvider.runtimeReady === false ? (
             <p className="callout warning">Your Azure key is saved, but the base URL is missing after restart. Save the Azure base URL below — it is stored in Keychain with your key.</p>
           ) : null}
 
@@ -452,6 +612,24 @@ function App() {
                 <input
                   type="radio"
                   name="persistence"
+                  value="arcana"
+                  checked={persistenceMode === 'arcana'}
+                  disabled={!arcanaAvailable}
+                  onChange={() => setPersistenceMode('arcana')}
+                />
+                Arcana
+                <small>
+                  {arcanaAvailable
+                    ? arcanaReference
+                      ? 'Resolve this provider key from the configured Arcana reference.'
+                      : 'Enter an Arcana reference for this provider.'
+                    : 'No Arcana reference is available for this provider.'}
+                </small>
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  name="persistence"
                   value="localStorage"
                   checked={persistenceMode === 'localStorage'}
                   disabled={!localStorageAvailable}
@@ -473,17 +651,32 @@ function App() {
               </label>
             </fieldset>
 
-            <Field label="API key" hint="Saving a blank field is ignored. Use Clear key to remove a key.">
-              <input
-                type="password"
-                value={apiKey}
-                onChange={event => setApiKey(event.target.value)}
-                placeholder="Paste API key"
-                autoComplete="off"
-              />
-            </Field>
+            {persistenceMode === 'arcana' ? (
+              <>
+                <Field label="Arcana reference" hint="Example: arcana://llmapi/arion/api-key">
+                  <input
+                    type="text"
+                    value={arcanaReference}
+                    onChange={event => setArcanaReference(event.target.value)}
+                    placeholder="arcana://provider/name"
+                    autoComplete="off"
+                  />
+                </Field>
+                <p className="callout">The secret stays in Arcana. Leyline keeps only this reference in the running server and resolves it for this provider.</p>
+              </>
+            ) : (
+              <Field label="API key" hint="Saving a blank field is ignored. Use Clear key to remove a key.">
+                <input
+                  type="password"
+                  value={apiKey}
+                  onChange={event => setApiKey(event.target.value)}
+                  placeholder="Paste API key"
+                  autoComplete="off"
+                />
+              </Field>
+            )}
             <div className="actions">
-              <Button type="submit">Save Key</Button>
+              <Button type="submit" disabled={!keyFormDirty}>Save Key</Button>
               <Button type="button" variant="destructive" onClick={clearKey} disabled={!activeProvider?.configured}>Clear Key</Button>
             </div>
           </form>
@@ -493,14 +686,14 @@ function App() {
           <div className="section-heading">
             <div>
               <p className="eyebrow">Runtime</p>
-              <h2>{activeProvider?.name === 'AzureOpenAI' ? 'Azure OpenAI URL and deployment' : 'Provider runtime'}</h2>
+              <h2>{activeProvider && familyOf(activeProvider.name, activeProvider.family) === 'AzureOpenAI' ? 'Azure OpenAI URL and deployment' : 'Provider runtime'}</h2>
             </div>
             <Badge tone={activeProvider?.runtimeConfigurable ? (activeProvider.runtimeReady ? 'success' : 'warning') : 'neutral'}>
               {activeProvider?.runtimeConfigurable ? (activeProvider.runtimeReady ? 'Ready' : 'Needs base URL') : 'Not applicable'}
             </Badge>
           </div>
           <p className="muted">
-            {activeProvider?.name === 'AzureOpenAI'
+            {activeProvider && familyOf(activeProvider.name, activeProvider.family) === 'AzureOpenAI'
               ? 'Azure base URL and deployment persist in Apple Keychain across restarts. Example: https://your-resource.services.ai.azure.com/openai/v1'
               : 'Runtime settings persist in Apple Keychain on macOS when supported. Browser localStorage is used as a dashboard fallback.'}
           </p>
@@ -521,20 +714,248 @@ function App() {
                 aria-label="Azure model or deployment"
               />
             </Field>
-            <Button type="submit" variant="secondary" disabled={!activeProvider?.runtimeConfigurable}>Save Settings</Button>
+            <Button type="submit" variant="secondary" disabled={!runtimeFormDirty}>Save Settings</Button>
           </form>
         </Card>
       </section>
 
-      <NetworkPanel providers={stats.providers} search={modelSearch} setSearch={setModelSearch} />
+      <NetworkPanel
+        providers={stats.providers}
+        search={modelSearch}
+        setSearch={setModelSearch}
+        routing={routing}
+        onToggleModel={toggleModel}
+        onPinModel={pinModelInstance}
+      />
+      <PlaygroundPanel providers={stats.providers} clientAuth={stats.clientAuth} />
       <AnalyticsPanel providers={stats.providers} logs={stats.logs} />
       <LogsPanel logs={stats.logs} tunnel={stats.tunnel} clientAuth={stats.clientAuth} />
     </main>
   );
 }
 
-function NetworkPanel({ providers, search, setSearch }: { providers: ProviderStats[]; search: string; setSearch: (value: string) => void }) {
+function poolIsActive(routing?: RoutingStatus): boolean {
+  return Boolean(routing && Object.values(routing.enabledModels).some(models => models.length > 0));
+}
+
+function RoutingPanel({
+  routing,
+  providers,
+  onUpdate,
+}: {
+  routing?: RoutingStatus;
+  providers: ProviderStats[];
+  onUpdate: (body: Record<string, unknown>, successMessage?: string) => Promise<boolean>;
+}) {
+  const [pinnedProvider, setPinnedProvider] = useState('');
+  const [pinnedModel, setPinnedModel] = useState('');
+
+  useEffect(() => {
+    setPinnedProvider(routing?.fixedProvider || '');
+    setPinnedModel(routing?.fixedModel || '');
+  }, [routing?.fixedProvider, routing?.fixedModel]);
+
+  const pinned = Boolean(routing?.singleModelEnabled);
+  const poolActive = poolIsActive(routing);
+  const poolCount = routing
+    ? Object.values(routing.enabledModels).reduce((total, models) => total + models.length, 0)
+    : 0;
+  const pinnedProviderModels = providers.find(provider => provider.name === pinnedProvider)?.models || [];
+
+  async function pinModel(event: FormEvent) {
+    event.preventDefault();
+    if (!pinnedModel.trim()) return;
+    await onUpdate(
+      { mode: 'pinned', pinnedProvider, pinnedModel: pinnedModel.trim() },
+      `Router pinned to ${pinnedProvider ? `${pinnedProvider} / ` : ''}${pinnedModel.trim()}.`,
+    );
+  }
+
+  async function useAutoRouting() {
+    await onUpdate({ mode: 'auto' }, 'Auto routing enabled.');
+  }
+
+  async function resetPool() {
+    await onUpdate({ enabledModels: {} }, 'Model selection cleared — routing across all models.');
+  }
+
+  return (
+    <Card>
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Routing</p>
+          <h2>Model routing</h2>
+        </div>
+        <Badge tone={pinned ? 'warning' : 'success'}>
+          {pinned
+            ? `Pinned: ${routing?.fixedModel || 'unset'}`
+            : poolActive
+              ? `Auto: ${poolCount} model${poolCount === 1 ? '' : 's'} selected`
+              : 'Auto: all models'}
+        </Badge>
+      </div>
+
+      <div className="routing-modes">
+        <div
+          role="button"
+          tabIndex={0}
+          className={cn('provider-card', !pinned && 'provider-card-active')}
+          onClick={() => { if (pinned) void useAutoRouting(); }}
+          onKeyDown={event => {
+            if (pinned && (event.key === 'Enter' || event.key === ' ')) void useAutoRouting();
+          }}
+        >
+          <strong>Auto routing</strong>
+          <small>
+            {poolActive
+              ? `Route requests across the ${poolCount} selected model${poolCount === 1 ? '' : 's'}. Use the Route toggles below to change the selection.`
+              : 'Route requests across every available model. Toggle Route on specific models below to restrict the pool.'}
+          </small>
+          {!pinned && poolActive ? (
+            <Button type="button" variant="ghost" onClick={event => { event.stopPropagation(); void resetPool(); }}>
+              Clear selection (use all models)
+            </Button>
+          ) : null}
+        </div>
+
+        <form
+          className={cn('provider-card', pinned && 'provider-card-active')}
+          onSubmit={pinModel}
+        >
+          <strong>Pinned model</strong>
+          <small>Send every request to one provider and model. Requests that name another model are still forced to the pinned one.</small>
+          <div className="routing-pin-fields">
+            <select
+              value={pinnedProvider}
+              onChange={event => setPinnedProvider(event.target.value)}
+              aria-label="Pinned provider"
+            >
+              <option value="">Infer provider</option>
+              {providers.map(provider => (
+                <option key={provider.name} value={provider.name}>{provider.name}</option>
+              ))}
+            </select>
+            <input
+              value={pinnedModel}
+              onChange={event => setPinnedModel(event.target.value)}
+              placeholder="Model id (free text)"
+              list="pinned-model-options"
+              aria-label="Pinned model"
+            />
+            <datalist id="pinned-model-options">
+              {pinnedProviderModels.map(model => (
+                <option key={model.id} value={model.id} />
+              ))}
+            </datalist>
+            <Button type="submit" variant="secondary" disabled={!pinnedModel.trim()}>
+              {pinned ? 'Update pin' : 'Pin'}
+            </Button>
+          </div>
+        </form>
+      </div>
+
+      <p className="muted">
+        Tip: clients can also request a specific model per call — set <code>"model"</code> to the model id
+        in the request and Leyline routes it to the provider that serves it. Use <code>"model": "auto"</code>
+        to let the router pick from the pool.
+      </p>
+    </Card>
+  );
+}
+
+function InstanceFamiliesPanel({
+  families,
+  onAdd,
+}: {
+  families: InstanceFamily[];
+  onAdd: (family: InstanceFamily, config: Record<string, string>) => Promise<void>;
+}) {
+  if (families.length === 0) return null;
+
+  return (
+    <section className="grid grid-2">
+      {families.map(family => (
+        <InstanceFamilyForm key={family.family} family={family} onAdd={onAdd} />
+      ))}
+    </section>
+  );
+}
+
+function InstanceFamilyForm({
+  family,
+  onAdd,
+}: {
+  family: InstanceFamily;
+  onAdd: (family: InstanceFamily, config: Record<string, string>) => Promise<void>;
+}) {
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setSubmitting(true);
+    try {
+      await onAdd(family, values);
+      setValues({});
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  // The key itself is set afterward via the API Keys card below (same persistence-mode
+  // choice as every other provider) — this form only collects non-secret config.
+  const visibleFields = family.fields.filter(field => field.role !== 'secret');
+  const canSubmit = visibleFields.every(field => !field.required || Boolean(values[field.key]?.trim()));
+
+  return (
+    <Card>
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Multi-instance</p>
+          <h2>Add {family.displayName} endpoint</h2>
+        </div>
+        <Badge tone="neutral">{family.instances.length} extra instance{family.instances.length === 1 ? '' : 's'}</Badge>
+      </div>
+      <p className="muted">
+        Register another {family.displayName} account with its own endpoint and deployed model.
+        After it's added, select it above and set its key in the API Keys card.
+      </p>
+      <form onSubmit={submit} className="stack">
+        {visibleFields.map(field => (
+          <Field key={field.key} label={field.label}>
+            <input
+              type="text"
+              value={values[field.key] || ''}
+              placeholder={field.placeholder}
+              onChange={event => setValues(current => ({ ...current, [field.key]: event.target.value }))}
+              autoComplete="off"
+            />
+          </Field>
+        ))}
+        <Button type="submit" disabled={submitting || !canSubmit}>{submitting ? 'Adding…' : `Add ${family.displayName} instance`}</Button>
+      </form>
+    </Card>
+  );
+}
+
+function NetworkPanel({
+  providers,
+  search,
+  setSearch,
+  routing,
+  onToggleModel,
+  onPinModel,
+}: {
+  providers: ProviderStats[];
+  search: string;
+  setSearch: (value: string) => void;
+  routing?: RoutingStatus;
+  onToggleModel: (provider: string, modelId: string, enable: boolean) => void;
+  onPinModel: (modelId: string, providerName: string) => void;
+}) {
   const normalizedSearch = search.toLowerCase();
+  const poolActive = poolIsActive(routing);
+  const modelIndex = routing?.modelIndex ?? {};
 
   return (
     <Card>
@@ -569,21 +990,54 @@ function NetworkPanel({ providers, search, setSearch }: { providers: ProviderSta
                 return [model.id, model.name, model.description].some(value => value?.toLowerCase().includes(normalizedSearch));
               });
 
+              const enabledForProvider = routing?.enabledModels[provider.name] || [];
+
               return (
                 <tr key={provider.name}>
                   <td><strong className={`provider-text-${providerTone(provider.name)}`}>{provider.name}</strong></td>
                   <td><code>{provider.defaultModel}</code></td>
                   <td>
                     <details open={Boolean(search)}>
-                      <summary>{filteredModels.length} / {provider.models.length} models</summary>
+                      <summary>
+                        {filteredModels.length} / {provider.models.length} models
+                        {poolActive ? ` — ${enabledForProvider.length} routed` : ''}
+                      </summary>
                       <div className="model-list">
-                        {filteredModels.length ? filteredModels.map(model => (
+                        {filteredModels.length ? filteredModels.map(model => {
+                          const routed = enabledForProvider.includes(model.id);
+                          const offeredBy = modelIndex[model.id] ?? [];
+                          const ambiguous = offeredBy.length > 1;
+                          return (
                           <div key={model.id} className="model-row">
-                            <strong>{model.name || model.id}</strong>
-                            <small>{model.id}</small>
-                            {model.description ? <small>{model.description}</small> : null}
+                            <label className="model-toggle" title={poolActive
+                              ? (routed ? 'In the routing pool' : 'Excluded from auto routing')
+                              : 'No pool selected — auto routing uses all models. Toggle to start a selection.'}>
+                              <input
+                                type="checkbox"
+                                checked={routed}
+                                onChange={event => onToggleModel(provider.name, model.id, event.target.checked)}
+                              />
+                              <span>Route</span>
+                            </label>
+                            <div className="model-meta">
+                              <strong>{model.name || model.id}</strong>
+                              <small>{model.id}</small>
+                              {model.description ? <small>{model.description}</small> : null}
+                            </div>
+                            {ambiguous ? (
+                              <select
+                                aria-label={`Preferred instance for ${model.id}`}
+                                value={routing?.modelPins?.[model.id] || ''}
+                                onChange={event => onPinModel(model.id, event.target.value)}
+                              >
+                                <option value="">Priority order (unpinned)</option>
+                                {offeredBy.map(name => (
+                                  <option key={name} value={name}>{name}</option>
+                                ))}
+                              </select>
+                            ) : null}
                           </div>
-                        )) : <span className="muted">No matching models</span>}
+                        );}) : <span className="muted">No matching models</span>}
                       </div>
                     </details>
                   </td>
@@ -598,6 +1052,111 @@ function NetworkPanel({ providers, search, setSearch }: { providers: ProviderSta
           </tbody>
         </table>
       </div>
+    </Card>
+  );
+}
+
+function PlaygroundPanel({
+  providers,
+  clientAuth,
+}: {
+  providers: ProviderStats[];
+  clientAuth?: ClientAuthInfo;
+}) {
+  const [providerName, setProviderName] = useState('');
+  const [modelId, setModelId] = useState('');
+  const [prompt, setPrompt] = useState('Say hello in one sentence.');
+  const [response, setResponse] = useState('');
+  const [error, setError] = useState('');
+  const [latencyMs, setLatencyMs] = useState<number | null>(null);
+  const [sending, setSending] = useState(false);
+
+  const activeProvider = providers.find(p => p.name === providerName) || providers[0];
+  const models = activeProvider?.models ?? [];
+
+  useEffect(() => {
+    if (!providerName && providers[0]) setProviderName(providers[0].name);
+  }, [providers, providerName]);
+
+  useEffect(() => {
+    if (!activeProvider) return;
+    if (!models.some(m => m.id === modelId)) {
+      setModelId(models[0]?.id || activeProvider.defaultModel || '');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeProvider?.name]);
+
+  async function send(event: FormEvent) {
+    event.preventDefault();
+    if (!activeProvider || !modelId.trim() || !prompt.trim()) return;
+
+    setSending(true);
+    setError('');
+    setResponse('');
+    const started = performance.now();
+    try {
+      const res = await fetch(apiUrl('/v1/chat/completions'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${clientAuth?.apiKey || ''}`,
+          'X-Leyline-Force-Provider': activeProvider.name,
+        },
+        body: JSON.stringify({
+          model: modelId.trim(),
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      });
+      const data = await res.json();
+      setLatencyMs(Math.round(performance.now() - started));
+      if (!res.ok) {
+        setError(data?.error?.message || 'Request failed');
+        return;
+      }
+      setResponse(data.choices?.[0]?.message?.content || '(empty response)');
+    } catch (err) {
+      setLatencyMs(Math.round(performance.now() - started));
+      setError(err instanceof Error ? err.message : 'Request failed');
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <Card>
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Playground</p>
+          <h2>Test a provider and model</h2>
+        </div>
+      </div>
+      <p className="muted">
+        Sends one request straight to the selected provider instance via <code>/v1/chat/completions</code>,
+        bypassing routing pools and pins so you can confirm a specific combination works.
+      </p>
+      <form onSubmit={send} className="stack">
+        <div className="routing-pin-fields">
+          <select value={activeProvider?.name || ''} onChange={event => setProviderName(event.target.value)} aria-label="Playground provider">
+            {providers.map(provider => (
+              <option key={provider.name} value={provider.name}>{provider.label || provider.name}</option>
+            ))}
+          </select>
+          <select value={modelId} onChange={event => setModelId(event.target.value)} aria-label="Playground model">
+            {models.map(model => (
+              <option key={model.id} value={model.id}>{model.name || model.id}</option>
+            ))}
+          </select>
+        </div>
+        <Field label="Prompt">
+          <textarea value={prompt} onChange={event => setPrompt(event.target.value)} rows={3} />
+        </Field>
+        <div className="actions">
+          <Button type="submit" disabled={sending || !activeProvider || !modelId.trim()}>{sending ? 'Sending…' : 'Send'}</Button>
+          {latencyMs !== null ? <small className="muted">{latencyMs}ms</small> : null}
+        </div>
+      </form>
+      {error ? <p className="callout warning">{error}</p> : null}
+      {response ? <pre className="playground-response">{response}</pre> : null}
     </Card>
   );
 }
@@ -688,7 +1247,7 @@ function TunnelBanner({ tunnel, clientAuth }: { tunnel?: TunnelInfo; clientAuth?
 function LogsPanel({ logs, tunnel, clientAuth }: { logs: LogEntry[]; tunnel?: TunnelInfo; clientAuth?: ClientAuthInfo }) {
   const sortedLogs = [...logs].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).slice(0, 50);
   const hasLogs = sortedLogs.length > 0;
-  const endpointBase = tunnel?.publicBaseUrl || 'http://localhost:3000/v1';
+  const endpointBase = tunnel?.publicBaseUrl || 'http://localhost:3417/v1';
   const authToken = clientAuth?.apiKey || 'leyline';
   const exampleCurl = `curl -X POST ${endpointBase}/chat/completions -H 'Authorization: Bearer ${authToken}' -H 'Content-Type: application/json' -d '{"model":"auto","messages":[{"role":"user","content":"Hello Leyline"}]}'`;
 

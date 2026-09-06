@@ -3,6 +3,7 @@ import { AzureOpenAI } from 'openai/azure';
 import { Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail } from '../core/types';
 import { config } from '../config';
 import { prepareAzureChatParams } from './azure-request';
+import type { InstanceFamilyDefinition } from '../core/provider-instances';
 
 function toProviderError(error: unknown): unknown {
   const candidate = error as {
@@ -33,6 +34,8 @@ function toProviderError(error: unknown): unknown {
  */
 export class AzureOpenAIProvider implements Provider {
   name = 'AzureOpenAI';
+  family = 'AzureOpenAI' as const;
+  label = 'AzureOpenAI';
   defaultModel: string;
   private apiKey: string;
   private endpoint: string;
@@ -150,11 +153,55 @@ export class AzureOpenAIProvider implements Provider {
       });
     }
 
+    // Pass `baseURL` (computed ourselves) instead of `endpoint`: the SDK's `AzureOpenAI`
+    // constructor defaults `baseURL` from the global `OPENAI_BASE_URL` env var, and throws
+    // "baseURL and endpoint are mutually exclusive" if that env var is set (e.g. for an
+    // unrelated OpenAI-compatible provider) while `endpoint` is also passed explicitly.
     return new AzureOpenAI({
-      endpoint: this.endpoint,
+      baseURL: `${this.endpoint}/openai`,
       apiKey: this.apiKey,
       deployment: this.deployment,
       apiVersion: this.apiVersion,
     });
   }
+
+  /**
+   * Builds an additional named Azure instance (distinct endpoint/key/deployment).
+   * When `id` is set, `name`/`label` are suffixed so this instance coexists
+   * with the env-configured default (whose `name` stays the bare `'AzureOpenAI'`).
+   */
+  static forInstance(cfg: {
+    id?: string;
+    label?: string;
+    endpoint?: string;
+    deployment?: string;
+    apiKey?: string;
+    apiVersion?: string;
+  }): AzureOpenAIProvider {
+    const provider = new AzureOpenAIProvider(
+      cfg.apiKey ?? '',
+      cfg.endpoint ?? '',
+      cfg.deployment ?? '',
+      cfg.apiVersion || '2024-10-21',
+    );
+    if (cfg.id) {
+      provider.name = `AzureOpenAI:${cfg.id}`;
+      provider.label = cfg.label || cfg.id;
+    }
+    return provider;
+  }
 }
+
+export const azureOpenAIInstanceFamily: InstanceFamilyDefinition = {
+  family: 'AzureOpenAI',
+  baseName: 'AzureOpenAI',
+  displayName: 'Azure OpenAI',
+  fields: [
+    { key: 'endpoint', label: 'Endpoint', role: 'runtimeBaseUrl', required: true },
+    { key: 'deployment', label: 'Deployment', role: 'runtimeModel', required: true },
+    { key: 'apiKey', label: 'API key', role: 'secret', required: true },
+    { key: 'apiVersion', label: 'API version', role: 'extra', placeholder: '2024-10-21' },
+  ],
+  namingHint: cfg => ({ endpoint: cfg.endpoint || '', deployment: cfg.deployment || '' }),
+  create: cfg => AzureOpenAIProvider.forInstance(cfg),
+};

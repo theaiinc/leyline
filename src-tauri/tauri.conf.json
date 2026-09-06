@@ -4,8 +4,9 @@
   "version": "1.3.3",
   "identifier": "com.theaiinc.leyline",
   "build": {
-    "beforeDevCommand": "npm run dev:dashboard",
-    "devUrl": "http://127.0.0.1:1420/dashboard/",
+    "beforeDevCommand": "npm run build:desktop && VITE_TAURI=true VITE_LEYLINE_API_BASE_URL=http://127.0.0.1:3417 npm run dev:dashboard",
+    "beforeBuildCommand": "npm run build:desktop && npm run prepare:sidecar-deps",
+    "devUrl": "http://127.0.0.1:1421/",
     "frontendDist": "../public"
   },
   "app": {
@@ -29,8 +30,11 @@
       "icons/icon.png",
       "icons/icon.icns"
     ],
-    "resources": [
-      "../dist"
-    ]
+    "resources": {
+      "../dist": "_up_/dist",
+      "../public": "_up_/public",
+      "../src-tauri/sidecar-deps/node_modules": "_up_/node_modules",
+      "../src-tauri/sidecar-deps/.env": "_up_/.env"
+    }
   }
 }
