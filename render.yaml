@@ -8,6 +8,7 @@ services:
   - type: web
     name: leyline
     env: docker
+    plan: free
     dockerfilePath: ./Dockerfile
     healthCheckPath: /healthz
     envVars:
