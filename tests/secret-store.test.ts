@@ -56,6 +56,15 @@ describe('secret store', () => {
     delete process.env.LEYLINE_KEYCHAIN_SERVICE;
   });
 
+  afterEach(() => {
+    // Jest reuses worker processes (and their `process.env`) across test
+    // files, so a var set mid-test here can otherwise leak into whichever
+    // file Jest schedules next in the same worker — beforeEach only resets
+    // this before each test IN this file, not after the last one.
+    delete process.env.LEYLINE_KEYCHAIN_ENABLED;
+    delete process.env.LEYLINE_KEYCHAIN_SERVICE;
+  });
+
   afterAll(() => {
     Object.defineProperty(process, 'platform', { value: originalPlatform });
   });
@@ -207,7 +216,7 @@ describe('secret store', () => {
       mockedAxios.get.mockResolvedValue({ data: { value: 'sk-from-cloud', version: 1 } });
 
       const store = new ArcanaCloudSecretStore(
-        { 'api-key:OpenAI': 'arcana-cloud://leyline/openai-api-key' },
+        { 'api-key:OpenAI': 'arcana://leyline/openai-api-key' },
         arcanaCloudConfig,
       );
 
@@ -228,7 +237,7 @@ describe('secret store', () => {
       mockedAxios.get.mockResolvedValue({ data: { value: 'sk-from-cloud' } });
 
       const store = new ArcanaCloudSecretStore(
-        { 'api-key:OpenAI': 'arcana-cloud://leyline/openai-api-key' },
+        { 'api-key:OpenAI': 'arcana://leyline/openai-api-key' },
         arcanaCloudConfig,
       );
 
@@ -244,7 +253,7 @@ describe('secret store', () => {
       mockedAxios.get.mockResolvedValue({ data: { value: 'sk-from-cloud' } });
 
       const store = new ArcanaCloudSecretStore(
-        { 'api-key:OpenAI': 'arcana-cloud://leyline/openai-api-key' },
+        { 'api-key:OpenAI': 'arcana://leyline/openai-api-key' },
         { ...arcanaCloudConfig, accessClientId: 'cf-id', accessClientSecret: 'cf-secret' },
       );
 
@@ -265,17 +274,17 @@ describe('secret store', () => {
       mockedAxios.post.mockRejectedValue(new Error('network error'));
 
       const store = new ArcanaCloudSecretStore(
-        { 'api-key:OpenAI': 'arcana-cloud://leyline/openai-api-key' },
+        { 'api-key:OpenAI': 'arcana://leyline/openai-api-key' },
         arcanaCloudConfig,
       );
 
       await expect(store.get('api-key:OpenAI')).resolves.toBeUndefined();
     });
 
-    it('rejects a reference that is not arcana-cloud://<project>/<secret>', () => {
+    it('rejects a reference that is not arcana://<project>/<secretName>', () => {
       const store = new ArcanaCloudSecretStore({}, arcanaCloudConfig);
-      expect(() => store.setArcanaReference('api-key:OpenAI', 'arcana://openai/api-key')).toThrow(
-        'arcana-cloud://<project>/<secretName>',
+      expect(() => store.setArcanaReference('api-key:OpenAI', 'arcana://openai-api-key')).toThrow(
+        'arcana://<project>/<secretName>',
       );
     });
 
@@ -287,7 +296,7 @@ describe('secret store', () => {
       await persistent.set('api-key:OpenAI', 'local-fallback-key');
 
       const store = new ArcanaCloudFallbackSecretStore(
-        new ArcanaCloudSecretStore({ 'api-key:OpenAI': 'arcana-cloud://leyline/openai-api-key' }, arcanaCloudConfig),
+        new ArcanaCloudSecretStore({ 'api-key:OpenAI': 'arcana://leyline/openai-api-key' }, arcanaCloudConfig),
         persistent,
       );
 
@@ -311,7 +320,7 @@ describe('secret store', () => {
       process.env.LEYLINE_ARCANA_CLOUD_WORKSPACE_ID = 'ws-1';
       process.env.LEYLINE_ARCANA_CLOUD_CLIENT_ID = 'client-1';
       process.env.LEYLINE_ARCANA_CLOUD_CLIENT_SECRET = 'secret-1';
-      process.env.LEYLINE_ARCANA_CLOUD_OPENAI_REF = 'arcana-cloud://leyline/openai-api-key';
+      process.env.LEYLINE_ARCANA_CLOUD_OPENAI_REF = 'arcana://leyline/openai-api-key';
 
       const store = createDefaultSecretStore();
 

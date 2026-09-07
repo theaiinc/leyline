@@ -603,7 +603,7 @@ export class ArcanaCloudSecretStore implements SecretStore {
 
   setArcanaReference(account: string, reference: string): void {
     if (!parseArcanaCloudReference(reference)) {
-      throw new Error('Arcana Cloud reference must be arcana-cloud://<project>/<secretName>');
+      throw new Error('Arcana Cloud reference must be arcana://<project>/<secretName>');
     }
     this.references[account] = reference;
   }
@@ -681,7 +681,7 @@ export class ArcanaCloudFallbackSecretStore implements SecretStore {
 }
 
 function parseArcanaCloudReference(reference: string): { project: string; secretName: string } | undefined {
-  const match = /^arcana-cloud:\/\/([^/]+)\/([^/]+)$/.exec(reference);
+  const match = /^arcana:\/\/([^/]+)\/([^/]+)$/.exec(reference);
   if (!match) return undefined;
   return { project: match[1], secretName: match[2] };
 }
