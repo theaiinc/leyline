@@ -116,7 +116,10 @@ function requireLocalDashboardAccess(req: Request, res: Response, next: NextFunc
   });
 }
 
-const EXTERNAL_ROUTES = new Set(['/v1/chat/completions', '/v1/route', '/mcp']);
+// Public operational endpoints must remain reachable through hosted proxies so
+// Render/Cloudflare can perform health checks and Argus can distinguish a
+// sleeping service from an API-surface policy response.
+const EXTERNAL_ROUTES = new Set(['/healthz', '/readyz', '/v1/chat/completions', '/v1/route', '/mcp']);
 
 function requireExternalSurfaceAllowlist(req: Request, res: Response, next: NextFunction): void {
   if (
@@ -182,6 +185,15 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
 
   app.get('/healthz', (_req, res) => {
     res.json({ status: 'ok', service: 'leyline' });
+  });
+
+  app.get('/readyz', (_req, res) => {
+    const providerCount = router.getProviders().length;
+    res.status(providerCount > 0 ? 200 : 503).json({
+      status: providerCount > 0 ? 'ready' : 'unavailable',
+      service: 'leyline',
+      providers: providerCount,
+    });
   });
 
   app.use('/dashboard', requireLocalDashboardAccess);
