@@ -1,4 +1,5 @@
 import { execFile, type ExecFileException } from 'child_process';
+import axios from 'axios';
 
 export type ApiKeyPersistenceMode = 'keychain' | 'memory' | 'localStorage' | 'arcana';
 export type ApiKeySource = ApiKeyPersistenceMode | 'arcana' | 'env' | 'none';
@@ -512,6 +513,179 @@ export class ArcanaFallbackSecretStore implements SecretStore {
   }
 }
 
+export interface ArcanaCloudConfig {
+  baseUrl: string;
+  aegisUrl: string;
+  workspaceId: string;
+  clientId: string;
+  clientSecret: string;
+  accessClientId?: string;
+  accessClientSecret?: string;
+  timeoutMs: number;
+}
+
+interface CachedAegisToken {
+  token: string;
+  expiresAt: number;
+}
+
+/**
+ * Resolves Arcana references over the network through services/arcana-cloud,
+ * for deployments with no OS keychain and no local Arcana daemon to shell
+ * out to (e.g. Leyline running headless on Render) — the network-reachable
+ * counterpart to ArcanaSecretStore's local child-process bridge. Mints and
+ * caches its own Aegis client_credentials token (service_account, arcana:pull
+ * scope); if Cloudflare Access sits in front of arcana-cloud, accessClientId/
+ * accessClientSecret are sent as service-token headers alongside it.
+ */
+export class ArcanaCloudSecretStore implements SecretStore {
+  private token: CachedAegisToken | undefined;
+
+  constructor(
+    private readonly references: Record<string, string>,
+    private readonly config: ArcanaCloudConfig,
+  ) {}
+
+  async get(account: string): Promise<string | undefined> {
+    const reference = this.references[account];
+    const parsed = reference ? parseArcanaCloudReference(reference) : undefined;
+    if (!parsed) return undefined;
+
+    try {
+      const token = await this.getAccessToken();
+      const url = `${this.config.baseUrl}/v1/workspaces/${encodeURIComponent(this.config.workspaceId)}/projects/${encodeURIComponent(parsed.project)}/secrets/${encodeURIComponent(parsed.secretName)}`;
+      const response = await axios.get(url, {
+        timeout: this.config.timeoutMs,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...(this.config.accessClientId && this.config.accessClientSecret
+            ? {
+                'CF-Access-Client-Id': this.config.accessClientId,
+                'CF-Access-Client-Secret': this.config.accessClientSecret,
+              }
+            : {}),
+        },
+      });
+      const value = response.data?.value;
+      return typeof value === 'string' && value ? value : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  async set(): Promise<void> {
+    throw new Error('Arcana Cloud references are read-only; push the secret via the Arcana operator API instead.');
+  }
+
+  async delete(): Promise<void> {
+    // Arcana Cloud references are configuration, not locally persisted values.
+  }
+
+  status(): SecretStoreStatus {
+    return {
+      mode: 'memory',
+      available: Object.keys(this.references).length > 0,
+      service: 'Arcana Cloud',
+    };
+  }
+
+  async getSource(account: string): Promise<ApiKeySource> {
+    return (await this.get(account)) ? 'arcana' : 'none';
+  }
+
+  hasArcanaReference(account?: string): boolean {
+    return account ? Boolean(this.references[account]) : Object.keys(this.references).length > 0;
+  }
+
+  getArcanaReference(account: string): string | undefined {
+    return this.references[account];
+  }
+
+  setArcanaReference(account: string, reference: string): void {
+    if (!parseArcanaCloudReference(reference)) {
+      throw new Error('Arcana Cloud reference must be arcana-cloud://<project>/<secretName>');
+    }
+    this.references[account] = reference;
+  }
+
+  private async getAccessToken(): Promise<string> {
+    const now = Date.now();
+    if (this.token && this.token.expiresAt > now) return this.token.token;
+
+    const response = await axios.post(
+      `${this.config.aegisUrl}/token`,
+      new URLSearchParams({
+        grant_type: 'client_credentials',
+        client_id: this.config.clientId,
+        client_secret: this.config.clientSecret,
+        scope: 'arcana:pull',
+      }).toString(),
+      {
+        timeout: this.config.timeoutMs,
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      },
+    );
+
+    const accessToken = response.data?.access_token;
+    if (typeof accessToken !== 'string' || !accessToken) {
+      throw new Error('Aegis did not return an access token');
+    }
+
+    const expiresIn = Number(response.data?.expires_in) || 300;
+    this.token = { token: accessToken, expiresAt: now + Math.max(expiresIn - 30, 30) * 1000 };
+    return this.token.token;
+  }
+}
+
+export class ArcanaCloudFallbackSecretStore implements SecretStore {
+  constructor(
+    private readonly cloud: ArcanaCloudSecretStore,
+    private readonly persistent: SecretStore,
+  ) {}
+
+  async get(account: string): Promise<string | undefined> {
+    return (await this.cloud.get(account)) ?? this.persistent.get(account);
+  }
+
+  async set(account: string, secret: string): Promise<void> {
+    return this.persistent.set(account, secret);
+  }
+
+  async delete(account: string): Promise<void> {
+    await this.cloud.delete();
+    await this.persistent.delete(account);
+  }
+
+  status(): SecretStoreStatus {
+    return this.persistent.status();
+  }
+
+  async getSource(account: string): Promise<ApiKeySource> {
+    if (await this.cloud.get(account)) return 'arcana';
+    return this.persistent.getSource
+      ? this.persistent.getSource(account)
+      : (await this.persistent.get(account) ? this.persistent.status().mode : 'none');
+  }
+
+  hasArcanaReference(account?: string): boolean {
+    return this.cloud.hasArcanaReference(account);
+  }
+
+  getArcanaReference(account: string): string | undefined {
+    return this.cloud.getArcanaReference(account);
+  }
+
+  setArcanaReference(account: string, reference: string): void {
+    this.cloud.setArcanaReference(account, reference);
+  }
+}
+
+function parseArcanaCloudReference(reference: string): { project: string; secretName: string } | undefined {
+  const match = /^arcana-cloud:\/\/([^/]+)\/([^/]+)$/.exec(reference);
+  if (!match) return undefined;
+  return { project: match[1], secretName: match[2] };
+}
+
 function arcanaEnvironmentName(account: string): string {
   if (account === runtimeConfigAccount('LLM API')) return 'LLM_API_BASE_URL';
   const provider = account.replace(/^api-key:/, '');
@@ -568,12 +742,81 @@ function parseArcanaReferences(): Record<string, string> {
   return references;
 }
 
+function parseArcanaCloudReferences(): Record<string, string> {
+  const references: Record<string, string> = {};
+  const raw = process.env.LEYLINE_ARCANA_CLOUD_SECRET_REFS;
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      for (const [account, reference] of Object.entries(parsed)) {
+        if (typeof reference === 'string' && parseArcanaCloudReference(reference)) references[account] = reference;
+      }
+    } catch {
+      // Invalid optional configuration is ignored; the persistent store remains available.
+    }
+  }
+
+  const providers: Record<string, string> = {
+    Gemini: 'GEMINI',
+    HuggingFace: 'HF',
+    OpenAI: 'OPENAI',
+    OpenRouter: 'OPENROUTER',
+    AzureOpenAI: 'AZURE_OPENAI',
+  };
+  for (const [provider, envName] of Object.entries(providers)) {
+    const reference = process.env[`LEYLINE_ARCANA_CLOUD_${envName}_REF`];
+    if (reference && parseArcanaCloudReference(reference)) references[apiKeyAccount(provider)] = reference;
+  }
+  const llmApiKeyReference = process.env.LEYLINE_ARCANA_CLOUD_OPENAI_API_KEY_REF;
+  if (llmApiKeyReference && parseArcanaCloudReference(llmApiKeyReference)) {
+    references[apiKeyAccount('LLM API')] = llmApiKeyReference;
+  }
+  const llmApiUrlReference = process.env.LEYLINE_ARCANA_CLOUD_OPENAI_API_URL_REF;
+  if (llmApiUrlReference && parseArcanaCloudReference(llmApiUrlReference)) {
+    references[runtimeConfigAccount('LLM API')] = llmApiUrlReference;
+  }
+  const janusApiKeyReference = process.env.LEYLINE_ARCANA_CLOUD_JANUS_API_KEY_REF;
+  if (janusApiKeyReference && parseArcanaCloudReference(janusApiKeyReference)) {
+    const janusBaseUrl = process.env.LEYLINE_JANUS_BASE_URL || 'http://127.0.0.1:8088';
+    references[`janus-api-key:${janusBaseUrl}`] = janusApiKeyReference;
+  }
+  return references;
+}
+
+function arcanaCloudConfigFromEnv(): ArcanaCloudConfig | undefined {
+  const workspaceId = process.env.LEYLINE_ARCANA_CLOUD_WORKSPACE_ID;
+  const clientId = process.env.LEYLINE_ARCANA_CLOUD_CLIENT_ID;
+  const clientSecret = process.env.LEYLINE_ARCANA_CLOUD_CLIENT_SECRET;
+  if (!workspaceId || !clientId || !clientSecret) return undefined;
+
+  return {
+    baseUrl: process.env.LEYLINE_ARCANA_CLOUD_URL || 'https://arcana-cloud.theaiinc.com',
+    aegisUrl: process.env.LEYLINE_ARCANA_CLOUD_AEGIS_URL || 'https://id.theaiinc.com',
+    workspaceId,
+    clientId,
+    clientSecret,
+    accessClientId: process.env.LEYLINE_ARCANA_CLOUD_ACCESS_CLIENT_ID || undefined,
+    accessClientSecret: process.env.LEYLINE_ARCANA_CLOUD_ACCESS_CLIENT_SECRET || undefined,
+    timeoutMs: Number.parseInt(process.env.LEYLINE_ARCANA_CLOUD_TIMEOUT_MS || '10000', 10),
+  };
+}
+
 export function createDefaultSecretStore(): SecretStore {
   const service = process.env.LEYLINE_KEYCHAIN_SERVICE || DEFAULT_KEYCHAIN_SERVICE;
   const enabled = process.env.LEYLINE_KEYCHAIN_ENABLED !== 'false';
   const persistent = enabled
     ? new FallbackSecretStore(new KeychainSecretStore(service), service)
     : new MemorySecretStore(service, 'Apple Keychain persistence is disabled by LEYLINE_KEYCHAIN_ENABLED=false.');
+
+  // arcana-cloud (network) takes precedence over the local Arcana CLI bridge
+  // when fully configured — the deployment target (headless/cloud vs. desktop
+  // with a local daemon) determines which set of env vars is actually set.
+  const arcanaCloudConfig = arcanaCloudConfigFromEnv();
+  const arcanaCloudReferences = arcanaCloudConfig ? parseArcanaCloudReferences() : {};
+  if (arcanaCloudConfig && Object.keys(arcanaCloudReferences).length > 0) {
+    return new ArcanaCloudFallbackSecretStore(new ArcanaCloudSecretStore(arcanaCloudReferences, arcanaCloudConfig), persistent);
+  }
+
   const arcanaReferences = parseArcanaReferences();
   return Object.keys(arcanaReferences).length > 0
     ? new ArcanaFallbackSecretStore(new ArcanaSecretStore(arcanaReferences), persistent)

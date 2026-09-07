@@ -1,5 +1,8 @@
 import { execFile } from 'child_process';
+import axios from 'axios';
 import {
+  ArcanaCloudFallbackSecretStore,
+  ArcanaCloudSecretStore,
   FallbackSecretStore,
   KeychainSecretStore,
   MemorySecretStore,
@@ -13,9 +16,20 @@ import {
 jest.mock('child_process', () => ({
   execFile: jest.fn(),
 }));
+jest.mock('axios');
 
 const mockedExecFile = execFile as unknown as jest.Mock;
+const mockedAxios = axios as jest.Mocked<typeof axios>;
 const originalPlatform = process.platform;
+
+const arcanaCloudConfig = {
+  baseUrl: 'https://arcana-cloud.theaiinc.com',
+  aegisUrl: 'https://id.theaiinc.com',
+  workspaceId: 'ws-1',
+  clientId: 'client-1',
+  clientSecret: 'secret-1',
+  timeoutMs: 5000,
+};
 
 type MockSecurityError = Error & {
   code?: string | number;
@@ -179,6 +193,139 @@ describe('secret store', () => {
     expect(store.status()).toMatchObject({
       mode: 'memory',
       available: true,
+    });
+  });
+
+  describe('ArcanaCloudSecretStore', () => {
+    beforeEach(() => {
+      mockedAxios.get.mockReset();
+      mockedAxios.post.mockReset();
+    });
+
+    it('mints an Aegis token then pulls the secret from arcana-cloud', async () => {
+      mockedAxios.post.mockResolvedValue({ data: { access_token: 'jwt-1', expires_in: 300 } });
+      mockedAxios.get.mockResolvedValue({ data: { value: 'sk-from-cloud', version: 1 } });
+
+      const store = new ArcanaCloudSecretStore(
+        { 'api-key:OpenAI': 'arcana-cloud://leyline/openai-api-key' },
+        arcanaCloudConfig,
+      );
+
+      await expect(store.get('api-key:OpenAI')).resolves.toBe('sk-from-cloud');
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        'https://id.theaiinc.com/token',
+        expect.stringContaining('grant_type=client_credentials'),
+        expect.objectContaining({ headers: expect.objectContaining({ 'Content-Type': 'application/x-www-form-urlencoded' }) }),
+      );
+      expect(mockedAxios.get).toHaveBeenCalledWith(
+        'https://arcana-cloud.theaiinc.com/v1/workspaces/ws-1/projects/leyline/secrets/openai-api-key',
+        expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer jwt-1' }) }),
+      );
+    });
+
+    it('reuses a cached Aegis token instead of minting one per pull', async () => {
+      mockedAxios.post.mockResolvedValue({ data: { access_token: 'jwt-1', expires_in: 300 } });
+      mockedAxios.get.mockResolvedValue({ data: { value: 'sk-from-cloud' } });
+
+      const store = new ArcanaCloudSecretStore(
+        { 'api-key:OpenAI': 'arcana-cloud://leyline/openai-api-key' },
+        arcanaCloudConfig,
+      );
+
+      await store.get('api-key:OpenAI');
+      await store.get('api-key:OpenAI');
+
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+      expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+    });
+
+    it('sends Cloudflare Access service token headers when configured', async () => {
+      mockedAxios.post.mockResolvedValue({ data: { access_token: 'jwt-1', expires_in: 300 } });
+      mockedAxios.get.mockResolvedValue({ data: { value: 'sk-from-cloud' } });
+
+      const store = new ArcanaCloudSecretStore(
+        { 'api-key:OpenAI': 'arcana-cloud://leyline/openai-api-key' },
+        { ...arcanaCloudConfig, accessClientId: 'cf-id', accessClientSecret: 'cf-secret' },
+      );
+
+      await store.get('api-key:OpenAI');
+
+      expect(mockedAxios.get).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            'CF-Access-Client-Id': 'cf-id',
+            'CF-Access-Client-Secret': 'cf-secret',
+          }),
+        }),
+      );
+    });
+
+    it('resolves undefined without throwing when arcana-cloud is unreachable', async () => {
+      mockedAxios.post.mockRejectedValue(new Error('network error'));
+
+      const store = new ArcanaCloudSecretStore(
+        { 'api-key:OpenAI': 'arcana-cloud://leyline/openai-api-key' },
+        arcanaCloudConfig,
+      );
+
+      await expect(store.get('api-key:OpenAI')).resolves.toBeUndefined();
+    });
+
+    it('rejects a reference that is not arcana-cloud://<project>/<secret>', () => {
+      const store = new ArcanaCloudSecretStore({}, arcanaCloudConfig);
+      expect(() => store.setArcanaReference('api-key:OpenAI', 'arcana://openai/api-key')).toThrow(
+        'arcana-cloud://<project>/<secretName>',
+      );
+    });
+
+    it('falls back to the persistent store when arcana-cloud has no value', async () => {
+      mockedAxios.post.mockResolvedValue({ data: { access_token: 'jwt-1', expires_in: 300 } });
+      mockedAxios.get.mockResolvedValue({ data: {} });
+
+      const persistent = new MemorySecretStore();
+      await persistent.set('api-key:OpenAI', 'local-fallback-key');
+
+      const store = new ArcanaCloudFallbackSecretStore(
+        new ArcanaCloudSecretStore({ 'api-key:OpenAI': 'arcana-cloud://leyline/openai-api-key' }, arcanaCloudConfig),
+        persistent,
+      );
+
+      await expect(store.get('api-key:OpenAI')).resolves.toBe('local-fallback-key');
+    });
+  });
+
+  describe('createDefaultSecretStore with Arcana Cloud env', () => {
+    const cloudEnvKeys = [
+      'LEYLINE_ARCANA_CLOUD_WORKSPACE_ID',
+      'LEYLINE_ARCANA_CLOUD_CLIENT_ID',
+      'LEYLINE_ARCANA_CLOUD_CLIENT_SECRET',
+      'LEYLINE_ARCANA_CLOUD_OPENAI_REF',
+    ];
+
+    afterEach(() => {
+      for (const key of cloudEnvKeys) delete process.env[key];
+    });
+
+    it('picks Arcana Cloud over the local Arcana CLI bridge when fully configured', () => {
+      process.env.LEYLINE_ARCANA_CLOUD_WORKSPACE_ID = 'ws-1';
+      process.env.LEYLINE_ARCANA_CLOUD_CLIENT_ID = 'client-1';
+      process.env.LEYLINE_ARCANA_CLOUD_CLIENT_SECRET = 'secret-1';
+      process.env.LEYLINE_ARCANA_CLOUD_OPENAI_REF = 'arcana-cloud://leyline/openai-api-key';
+
+      const store = createDefaultSecretStore();
+
+      expect(store).toBeInstanceOf(ArcanaCloudFallbackSecretStore);
+    });
+
+    it('ignores Arcana Cloud config with no references configured', () => {
+      process.env.LEYLINE_ARCANA_CLOUD_WORKSPACE_ID = 'ws-1';
+      process.env.LEYLINE_ARCANA_CLOUD_CLIENT_ID = 'client-1';
+      process.env.LEYLINE_ARCANA_CLOUD_CLIENT_SECRET = 'secret-1';
+
+      const store = createDefaultSecretStore();
+
+      expect(store).not.toBeInstanceOf(ArcanaCloudFallbackSecretStore);
     });
   });
 });
