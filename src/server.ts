@@ -299,6 +299,24 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
 
   const apiKeyInitialization = initializeApiKeys();
 
+  // An Arcana phone approval can land after startup/dashboard callers stopped waiting; hydrate
+  // providers that are still keyless once it does. The secret value is never logged.
+  apiKeyStore.onArcanaResolved?.((account, secret) => {
+    void (async () => {
+      await apiKeyInitialization;
+      const provider = router.getProviders()
+        .find(p => isApiKeyConfigurableProvider(p) && apiKeyAccount(p.name) === account);
+      if (!provider || !isApiKeyConfigurableProvider(provider) || provider.hasApiKey()) return;
+      provider.setApiKey(secret);
+      keyMetadata.set(provider.name, { source: 'arcana' });
+      delete modelCache[provider.name];
+      await router.reindexProvider(provider);
+      console.log(`[Leyline] Arcana approval resolved; API key applied for ${provider.name}`);
+    })().catch(error => {
+      console.warn(`[Leyline] Failed to apply late Arcana key: ${error instanceof Error ? error.message : 'unknown error'}`);
+    });
+  });
+
   app.get('/readyz', async (_req, res) => {
     await apiKeyInitialization;
     res.json({ status: 'ready', service: 'leyline' });
@@ -485,8 +503,18 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
           return res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid Arcana reference' });
         }
       }
-      const arcanaKey = await apiKeyStore.get(apiKeyAccount(provider.name));
-      if (!arcanaKey || (await apiKeyStore.getSource?.(apiKeyAccount(provider.name))) !== 'arcana') {
+      const account = apiKeyAccount(provider.name);
+      // Choosing Arcana in the dashboard is an explicit user action: skip any failure cooldown.
+      apiKeyStore.retryArcana?.(account);
+      // get() only blocks for LEYLINE_ARCANA_WAIT_MS; a pending phone approval keeps running and
+      // hydrates the provider through onArcanaResolved when it lands.
+      const arcanaKey = await apiKeyStore.get(account);
+      if (!arcanaKey && apiKeyStore.isArcanaPending?.(account)) {
+        return res.status(400).json({
+          error: `Arcana approval pending for provider "${provider.name}"; approve the request on your phone and the key will be applied automatically.`,
+        });
+      }
+      if (!arcanaKey || (await apiKeyStore.getSource?.(account)) !== 'arcana') {
         return res.status(400).json({
           error: `No Arcana reference resolved for provider "${provider.name}"`,
         });

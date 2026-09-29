@@ -20,6 +20,12 @@ export interface SecretStore {
   hasArcanaReference?(account?: string): boolean;
   getArcanaReference?(account: string): string | undefined;
   setArcanaReference?(account: string, reference: string): void;
+  /** True while an Arcana resolution for this account awaits approval. */
+  isArcanaPending?(account: string): boolean;
+  /** Clears an Arcana failure cooldown after an explicit user action. */
+  retryArcana?(account: string): void;
+  /** Notified when an Arcana secret resolves after its callers stopped waiting. */
+  onArcanaResolved?(listener: (account: string, secret: string) => void): () => void;
 }
 
 export const DEFAULT_KEYCHAIN_SERVICE = '@theaiinc/leyline';
@@ -396,41 +402,178 @@ export class FallbackSecretStore implements SecretStore {
   }
 }
 
+/** Default lifetime of one `arcana run` child: Arcana holds a phone approval open for up to 5 minutes. */
+export const DEFAULT_ARCANA_TIMEOUT_MS = 300_000;
+/** Default time a caller blocks on a pending Arcana resolution before continuing without a value. */
+export const DEFAULT_ARCANA_WAIT_MS = 10_000;
+/** Default cooldown after a failed resolution before Arcana is asked again for the same account. */
+export const DEFAULT_ARCANA_FAILURE_COOLDOWN_MS = 600_000;
+
+export type ArcanaResolvedListener = (account: string, secret: string) => void;
+
+export interface ArcanaSecretStoreOptions {
+  command?: string;
+  runner?: string;
+  /** Lifetime of the `arcana run` child (how long a phone approval may take). */
+  timeoutMs?: number;
+  /** How long get() blocks before returning undefined while the child keeps running. */
+  waitMs?: number;
+  /** How long a failed resolution suppresses new `arcana run` spawns for that account. */
+  failureCooldownMs?: number;
+  now?: () => number;
+}
+
+function positiveIntFromEnv(name: string, fallback: number): number {
+  const parsed = Number.parseInt(process.env[name] || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+interface ArcanaInFlight {
+  generation: number;
+  promise: Promise<string | undefined>;
+  /** Set when some caller stopped waiting before the child finished. */
+  abandoned: boolean;
+}
+
 /**
  * Resolves Arcana references through the Arcana Secret Bridge CLI.
  *
  * Arcana intentionally injects secrets into an allowlisted child process
  * instead of returning them directly. The child prints only the requested
  * value, which is captured in memory and never logged.
+ *
+ * Every `arcana run` without a live grant queues a phone approval, so
+ * resolution is deliberately frugal:
+ * - resolved values are cached for the process lifetime (until the reference changes);
+ * - concurrent get() calls for one account share a single child process;
+ * - the child lives long enough for a human to approve (`LEYLINE_ARCANA_TIMEOUT_MS`),
+ *   while callers only block for `LEYLINE_ARCANA_WAIT_MS` — a late approval still
+ *   lands in the cache and is announced to onArcanaResolved listeners;
+ * - a failed/denied/timed-out resolution suppresses re-spawns for
+ *   `LEYLINE_ARCANA_FAILURE_COOLDOWN_MS` unless the user explicitly retries.
  */
 export class ArcanaSecretStore implements SecretStore {
+  private readonly command: string;
+  private readonly runner: string;
+  private readonly timeoutMs: number;
+  private readonly waitMs: number;
+  private readonly failureCooldownMs: number;
+  private readonly now: () => number;
+  private readonly resolved = new Map<string, string>();
+  private readonly failedAt = new Map<string, number>();
+  private readonly inFlight = new Map<string, ArcanaInFlight>();
+  private readonly generations = new Map<string, number>();
+  private readonly listeners = new Set<ArcanaResolvedListener>();
+
   constructor(
     private readonly references: Record<string, string>,
-    private readonly command = process.env.LEYLINE_ARCANA_COMMAND || 'arcana',
-    private readonly runner = process.env.LEYLINE_ARCANA_RUNNER || 'python3',
-    private readonly timeoutMs = Number.parseInt(process.env.LEYLINE_ARCANA_TIMEOUT_MS || '10000', 10),
-  ) {}
+    options: ArcanaSecretStoreOptions = {},
+  ) {
+    this.command = options.command ?? (process.env.LEYLINE_ARCANA_COMMAND || 'arcana');
+    this.runner = options.runner ?? (process.env.LEYLINE_ARCANA_RUNNER || 'python3');
+    this.timeoutMs = options.timeoutMs ?? positiveIntFromEnv('LEYLINE_ARCANA_TIMEOUT_MS', DEFAULT_ARCANA_TIMEOUT_MS);
+    this.waitMs = options.waitMs ?? positiveIntFromEnv('LEYLINE_ARCANA_WAIT_MS', DEFAULT_ARCANA_WAIT_MS);
+    this.failureCooldownMs = options.failureCooldownMs
+      ?? positiveIntFromEnv('LEYLINE_ARCANA_FAILURE_COOLDOWN_MS', DEFAULT_ARCANA_FAILURE_COOLDOWN_MS);
+    this.now = options.now ?? Date.now;
+  }
 
   async get(account: string): Promise<string | undefined> {
     const reference = this.references[account];
     if (!reference) return undefined;
 
+    const cached = this.resolved.get(account);
+    if (cached !== undefined) return cached;
+
+    let flight = this.inFlight.get(account);
+    if (!flight) {
+      if (this.isCoolingDown(account)) return undefined;
+      flight = this.spawn(account, reference);
+    }
+    return this.waitFor(flight);
+  }
+
+  /** True while an `arcana run` for this account is still waiting (e.g. on a phone approval). */
+  isArcanaPending(account: string): boolean {
+    return this.inFlight.has(account);
+  }
+
+  /**
+   * Clears the failure cooldown so the next get() asks Arcana again. Call only
+   * on an explicit user action; a cached value and an in-flight request are kept.
+   */
+  retryArcana(account: string): void {
+    this.failedAt.delete(account);
+  }
+
+  /** Subscribes to resolutions that completed after a caller gave up waiting. */
+  onArcanaResolved(listener: ArcanaResolvedListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private isCoolingDown(account: string): boolean {
+    const failedAt = this.failedAt.get(account);
+    if (failedAt === undefined) return false;
+    if (this.now() - failedAt < this.failureCooldownMs) return true;
+    this.failedAt.delete(account);
+    return false;
+  }
+
+  private spawn(account: string, reference: string): ArcanaInFlight {
+    const generation = this.generations.get(account) ?? 0;
     const environmentName = arcanaEnvironmentName(account);
     const source = `import os,sys; sys.stdout.write(os.environ.get(${JSON.stringify(environmentName)}, ""))`;
 
-    return new Promise(resolve => {
+    const flight: ArcanaInFlight = { generation, abandoned: false, promise: Promise.resolve(undefined) };
+    flight.promise = new Promise<string | undefined>(resolve => {
       execFile(
         this.command,
         ['run', '--secret', reference, '--env', environmentName, '--', this.runner, '-c', source],
         { timeout: this.timeoutMs },
         (error, stdout) => {
-          if (error) {
-            resolve(undefined);
-            return;
-          }
-          resolve(stdout.trim() || undefined);
+          const value = error ? undefined : (String(stdout ?? '').trim() || undefined);
+          this.settle(account, flight, value);
+          resolve(value);
         },
       );
+    });
+    this.inFlight.set(account, flight);
+    return flight;
+  }
+
+  private settle(account: string, flight: ArcanaInFlight, value: string | undefined): void {
+    if (this.inFlight.get(account) === flight) this.inFlight.delete(account);
+    // The reference changed while this child ran; its result belongs to the old reference.
+    if ((this.generations.get(account) ?? 0) !== flight.generation) return;
+
+    if (value === undefined) {
+      this.failedAt.set(account, this.now());
+      return;
+    }
+    this.failedAt.delete(account);
+    this.resolved.set(account, value);
+    if (!flight.abandoned) return;
+    for (const listener of this.listeners) {
+      try {
+        listener(account, value);
+      } catch {
+        // Listeners are best-effort hydration hooks; never let one break resolution.
+      }
+    }
+  }
+
+  private waitFor(flight: ArcanaInFlight): Promise<string | undefined> {
+    return new Promise(resolve => {
+      const timer = setTimeout(() => {
+        flight.abandoned = true;
+        resolve(undefined);
+      }, this.waitMs);
+      timer.unref?.();
+      void flight.promise.then(value => {
+        clearTimeout(timer);
+        resolve(value);
+      });
     });
   }
 
@@ -466,7 +609,14 @@ export class ArcanaSecretStore implements SecretStore {
     if (!reference.startsWith('arcana://')) {
       throw new Error('Arcana reference must start with arcana://');
     }
-    this.references[account] = reference;
+    if (this.references[account] !== reference) {
+      this.references[account] = reference;
+      this.generations.set(account, (this.generations.get(account) ?? 0) + 1);
+      this.resolved.delete(account);
+      this.inFlight.delete(account);
+    }
+    // Configuring a reference is an explicit user action: retry immediately.
+    this.retryArcana(account);
   }
 }
 
@@ -510,6 +660,18 @@ export class ArcanaFallbackSecretStore implements SecretStore {
 
   setArcanaReference(account: string, reference: string): void {
     this.arcana.setArcanaReference(account, reference);
+  }
+
+  isArcanaPending(account: string): boolean {
+    return this.arcana.isArcanaPending(account);
+  }
+
+  retryArcana(account: string): void {
+    this.arcana.retryArcana(account);
+  }
+
+  onArcanaResolved(listener: ArcanaResolvedListener): () => void {
+    return this.arcana.onArcanaResolved(listener);
   }
 }
 
