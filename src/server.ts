@@ -10,7 +10,7 @@ import { QuotaManager } from './core/quota-manager';
 import { getModelScore } from './core/leaderboard-data';
 import { config } from './config';
 import { requireClientApiKey } from './core/client-auth';
-import { mountHosted, recordUsage, requireIssuedKey, resolveModel, type HostedOptions } from './core/hosted';
+import { adminOf, mountHosted, recordUsage, requireIssuedKey, resolveModel, sameOrigin, type HostedOptions } from './core/hosted';
 import { createRequireAegisToken, AegisTenant } from './core/aegis-auth';
 import { chatCompletionErrorResponse, formatProviderError, hydrateAxiosError } from './core/api-errors';
 import { normalizeCompletionRequest } from './core/normalize-request';
@@ -119,6 +119,26 @@ function requireLocalDashboardAccess(req: Request, res: Response, next: NextFunc
   });
 }
 
+function requireHostedAdmin(hosted: HostedOptions) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const who = adminOf(hosted, req);
+    if (!who) {
+      const page = req.method === 'GET' && (req.path === '/' || req.path.endsWith('.html'));
+      if (page && hosted.login) {
+        res.redirect(302, '/auth/login?next=/dashboard/');
+        return;
+      }
+      res.status(401).json({ error: 'Sign in to manage this Leyline.' });
+      return;
+    }
+    if (req.method !== 'GET' && req.method !== 'HEAD' && who !== 'token' && !sameOrigin(hosted, req)) {
+      res.status(403).json({ error: 'forbidden' });
+      return;
+    }
+    next();
+  };
+}
+
 // Public operational endpoints must remain reachable through hosted proxies so
 // Render/Cloudflare can perform health checks and Argus can distinguish a
 // sleeping service from an API-surface policy response.
@@ -206,7 +226,13 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     });
   });
 
-  app.use('/dashboard', requireLocalDashboardAccess);
+  // Local: the dashboard is for this machine only. Hosted: it's for the owner, signed in with Aegis (or the admin token).
+  app.use('/dashboard', hosted ? requireHostedAdmin(hosted) : requireLocalDashboardAccess);
+  app.get('/dashboard/session', (req, res) => {
+    res.json(hosted
+      ? { hosted: true, email: adminOf(hosted, req), publicUrl: hosted.publicUrl, signIn: Boolean(hosted.login) }
+      : { hosted: false });
+  });
 
   // Serve dashboard static files
   app.use('/dashboard', express.static(path.join(__dirname, '../public')));

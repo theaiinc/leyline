@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'crypto';
 import { mkdir, readFile, writeFile } from 'fs/promises';
 import { dirname, join } from 'path';
+import { GcpToken } from './gcp';
 
 /**
  * API keys handed out to people for their coding agents (hosted Leyline). The owner creates each key with its caps
@@ -118,16 +119,13 @@ export class FileDocStore implements DocStore {
 
 /** Cloud Storage, with generation preconditions; the token comes from the Cloud Run metadata server. */
 export class GcsDocStore implements DocStore {
-  private token: { value: string; until: number } | null = null;
-  constructor(private readonly bucket: string, private readonly fetchImpl: typeof fetch = fetch) {}
+  private readonly token: GcpToken;
+  constructor(private readonly bucket: string, private readonly fetchImpl: typeof fetch = fetch) {
+    this.token = new GcpToken(fetchImpl);
+  }
 
-  private async auth(): Promise<string> {
-    if (this.token && Date.now() < this.token.until) return this.token.value;
-    const res = await this.fetchImpl('http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token', { headers: { 'Metadata-Flavor': 'Google' } });
-    if (!res.ok) throw new Error(`metadata token: ${res.status}`);
-    const t = (await res.json()) as { access_token: string; expires_in: number };
-    this.token = { value: t.access_token, until: Date.now() + (t.expires_in - 60) * 1000 };
-    return t.access_token;
+  private auth(): Promise<string> {
+    return this.token.get();
   }
 
   private name(key: string) {
@@ -182,6 +180,26 @@ export async function update<T>(store: DocStore, key: string, fn: (cur: T | null
   }
 }
 
+export type HostedSettings = {
+  /** Model ids (or patterns with *) offered; empty: whatever the router can serve. */
+  models: string[];
+  /** Requested model (exact or pattern with *) -> the model actually used. */
+  aliases: Record<string, string>;
+  updatedAt?: number;
+  updatedBy?: string;
+};
+
+export function cleanSettings(input: Partial<HostedSettings> | null | undefined): HostedSettings {
+  const models = Array.isArray(input?.models) ? [...new Set(input!.models.map((m) => String(m).trim()).filter(Boolean))].slice(0, 200) : [];
+  const aliases: Record<string, string> = {};
+  for (const [from, to] of Object.entries(input?.aliases && typeof input.aliases === 'object' ? input.aliases : {})) {
+    const a = String(from).trim();
+    const b = typeof to === 'string' ? to.trim() : '';
+    if (a && b) aliases[a] = b;
+  }
+  return { models, aliases };
+}
+
 export const hashKey = (key: string) => createHash('sha256').update(key).digest('hex');
 const monthOf = (t: number) => new Date(t).toISOString().slice(0, 7);
 const dayOf = (t: number) => new Date(t).toISOString().slice(0, 10);
@@ -201,6 +219,18 @@ export class IssuedKeys {
 
   constructor(private readonly store: DocStore, opts: { now?: () => number } = {}) {
     this.now = opts.now ?? Date.now;
+  }
+
+  /** What hosted Leyline offers (set on the dashboard; null until first saved, then env defaults apply). */
+  async settings(): Promise<HostedSettings | null> {
+    return (await this.store.get<HostedSettings>('settings/hosted'))?.value ?? null;
+  }
+
+  async saveSettings(input: HostedSettings, by: string): Promise<HostedSettings> {
+    const clean = cleanSettings(input);
+    const saved = { ...clean, updatedAt: this.now(), updatedBy: by };
+    await update<HostedSettings>(this.store, 'settings/hosted', () => saved);
+    return saved;
   }
 
   /** Make a key: returns the key itself (shown once) and its record. */

@@ -280,27 +280,36 @@ The current sidecar strategy expects Node and the `janus` command to be availabl
 
 ## 🔑 Hosted keys (an LLM API for other people's coding agents)
 
-Run Leyline in the cloud and hand out API keys that use your provider keys, each with caps you set.
+Run Leyline in the cloud and hand out API keys that use your provider keys, each with caps you set. In the cloud, the same dashboard as the desktop app runs at `/dashboard`, behind Aegis sign-in.
 
-- Turn it on with `LEYLINE_HOSTED_KEYS=on`. Requests then need an issued key (`Authorization: Bearer ll_…` or `x-api-key`) instead of the client auth header.
+**Turning it on and calling it**
+- Set `LEYLINE_HOSTED_KEYS=on`. Requests then need an issued key (`Authorization: Bearer ll_…` or `x-api-key`) instead of the client auth header.
 - Endpoints:
   - `POST /v1/chat/completions` (OpenAI; tools are passed through).
   - `POST /v1/messages` and `/v1/messages/count_tokens` (Anthropic, for Claude Code; streaming and tool use are translated).
   - `GET /v1/models`.
-- Caps per key: tokens a month, requests a day, requests a minute, and which models. Usage is counted per key and month.
-- Manage keys at `/admin`. Sign in with Aegis (emails in `LEYLINE_ADMIN_EMAILS`), or script it with `Authorization: Bearer $LEYLINE_ADMIN_TOKEN` against `/admin/api/keys` (GET, POST `{name, caps}`, PATCH `/:id` `{caps}`, DELETE `/:id` to revoke).
+
+**The dashboard (for emails in `LEYLINE_ADMIN_EMAILS`)**
+- Providers: provider keys and runtime settings. With `LEYLINE_SECRET_STORE=gcp` they're kept in Google Secret Manager.
+- Routing, Playground and Activity: the same as on the desktop.
+- **Access keys:** create keys and set their caps (tokens a month, requests a day and a minute, models). Usage is shown per key and month; revoke keys here.
+- **Offered models:** the models keys may use, and aliases. For example, map `claude-*` to the models you want Claude Code to use.
+
+**Scripting:** use `Authorization: Bearer $LEYLINE_ADMIN_TOKEN` against `/admin/api/keys` and `/admin/api/settings`:
+- `GET /admin/api/keys`; `POST /admin/api/keys` with `{name, caps}`; `PATCH /admin/api/keys/:id` with `{caps}`; `DELETE /admin/api/keys/:id` to revoke.
+- `GET` or `PUT /admin/api/settings` with `{models, aliases}`.
 
 | Variable | Meaning |
 | --- | --- |
-| `LEYLINE_PUBLIC_URL` | e.g. `https://leyline.theaiinc.com` (admin page, sign-in callback, snippets) |
-| `LEYLINE_KEYS_BUCKET` / `LEYLINE_KEYS_DIR` | Where keys and usage live: a GCS bucket (Cloud Run), else a directory, else memory |
-| `LEYLINE_OFFERED_MODELS` | Comma list of model ids offered (`*` allowed) |
-| `LEYLINE_MODEL_ALIASES` | JSON, e.g. `{"claude-*":"gemini-2.5-pro"}`, so Claude Code's model names map to an offered model |
-| `LEYLINE_ADMIN_EMAILS`, `LEYLINE_ADMIN_TOKEN` | Who may manage keys |
-| `LEYLINE_LOGIN_ISSUER`, `LEYLINE_LOGIN_CLIENT_ID`, `LEYLINE_LOGIN_CLIENT_SECRET`, `LEYLINE_SESSION_SECRET` | Aegis sign-in for `/admin` |
-| `LEYLINE_KEYCHAIN_ENABLED=false` | On Linux/cloud hosts (no Apple Keychain) |
+| `LEYLINE_PUBLIC_URL` | e.g. `https://leyline.theaiinc.com` (sign-in callback, snippets) |
+| `LEYLINE_KEYS_BUCKET` / `LEYLINE_KEYS_DIR` | Where keys, usage and the offered models live: a GCS bucket (Cloud Run), else a directory, else memory |
+| `LEYLINE_SECRET_STORE=gcp`, `LEYLINE_GCP_PROJECT` | Keep provider keys and dashboard settings in Secret Manager (project defaults to the one Cloud Run runs in) |
+| `LEYLINE_OFFERED_MODELS`, `LEYLINE_MODEL_ALIASES` | Defaults for Offered models until it's first saved on the dashboard |
+| `LEYLINE_ADMIN_EMAILS`, `LEYLINE_ADMIN_TOKEN` | Who may manage this Leyline |
+| `LEYLINE_LOGIN_ISSUER`, `LEYLINE_LOGIN_CLIENT_ID`, `LEYLINE_LOGIN_CLIENT_SECRET`, `LEYLINE_SESSION_SECRET` | Aegis sign-in for the dashboard |
+| `LEYLINE_KEYCHAIN_ENABLED=false`, `LEYLINE_TUNNEL_ENABLED=false` | On cloud hosts (no Apple Keychain, no tunnel) |
 
-Give a person their key like this:
+Give a person their key like this (the dashboard shows these lines when you create one):
 
 ```sh
 # Claude Code

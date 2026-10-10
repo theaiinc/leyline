@@ -62,6 +62,8 @@ export type PersistenceStatus = {
     available: boolean;
     service: string;
     warning?: string;
+    /** What the persistent store is ("Apple Keychain", "Google Secret Manager"). */
+    label?: string;
   };
   modes: Record<PersistenceMode, { available: boolean; warning?: string; service?: string }>;
 };
@@ -201,6 +203,7 @@ function normalizePersistence(value: unknown): PersistenceStatus {
       available: server.available === undefined ? serverMode === 'memory' : Boolean(server.available),
       service: asString(server.service),
       warning: optionalString(server.warning),
+      label: optionalString(server.label),
     },
     modes: {
       keychain: normalizePersistenceMode(modes.keychain),
@@ -448,10 +451,10 @@ export function providerTone(provider: unknown, family?: unknown): string {
   return PROVIDER_TONES.has(tone) ? tone : 'default';
 }
 
-export function sourceLabel(source: unknown): string {
+export function sourceLabel(source: unknown, storeLabel = 'Apple Keychain'): string {
   if (source === 'env') return '.env';
   if (source === 'arcana') return 'Arcana';
-  if (source === 'keychain') return 'Apple Keychain';
+  if (source === 'keychain') return storeLabel;
   if (source === 'localStorage') return 'Browser localStorage';
   if (source === 'memory') return 'Server memory';
   return 'Not configured';

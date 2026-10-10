@@ -9,6 +9,8 @@ export interface SecretStoreStatus {
   available: boolean;
   service: string;
   warning?: string;
+  /** What the persistent store is, for people (e.g. "Apple Keychain", "Google Secret Manager"). */
+  label?: string;
 }
 
 export interface SecretStore {

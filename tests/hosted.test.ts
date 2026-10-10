@@ -160,3 +160,104 @@ describe('anthropic translation', () => {
     expect(s.end().map((e) => e.event)).toEqual(['message_start', 'message_delta', 'message_stop']);
   });
 });
+
+describe('hosted dashboard', () => {
+  const cookieFor = (email: string) => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { sign } = require('../src/core/admin-login') as typeof import('../src/core/admin-login');
+    return `leyline_session=${sign({ sub: 'u1', email, exp: Math.floor(Date.now() / 1000) + 3600 }, 'test-session-secret')}`;
+  };
+  const withLogin = () => {
+    const { AegisAuth } = require('../src/core/admin-login') as typeof import('../src/core/admin-login');
+    const login = new AegisAuth({ issuer: 'https://id.example', clientId: 'c', clientSecret: 's', redirectUri: 'https://leyline.test/auth/callback', sessionSecret: 'test-session-secret' });
+    return setup({ login, adminEmails: ['owner@example.com'] });
+  };
+
+  it('is for the signed-in owner only; strangers are sent to sign in', async () => {
+    const { app } = withLogin();
+    const page = await request(app).get('/dashboard/');
+    expect(page.status).toBe(302);
+    expect(page.headers.location).toBe('/auth/login?next=/dashboard/');
+    expect((await request(app).get('/dashboard/api-keys')).status).toBe(401);
+    expect((await request(app).get('/dashboard/api-keys').set('Cookie', cookieFor('someone@else.com'))).status).toBe(401);
+    const me = await request(app).get('/dashboard/session').set('Cookie', cookieFor('owner@example.com'));
+    expect(me.body).toEqual({ hosted: true, email: 'owner@example.com', publicUrl: 'https://leyline.test', signIn: true });
+    expect((await request(app).get('/dashboard/api-keys').set('Cookie', cookieFor('owner@example.com'))).status).toBe(200);
+  });
+
+  it('refuses changes from another site', async () => {
+    const { app } = withLogin();
+    const cookie = cookieFor('owner@example.com');
+    expect((await request(app).post('/dashboard/routing').set('Cookie', cookie).set('Origin', 'https://evil.example').send({ mode: 'auto' })).status).toBe(403);
+    expect((await request(app).post('/dashboard/routing').set('Cookie', cookie).set('Origin', 'https://leyline.test').send({ mode: 'auto' })).status).toBe(200);
+  });
+
+  it('the playground works with the owner session and no key, and is not counted', async () => {
+    const { app, keys } = withLogin();
+    const r = await request(app).post('/v1/chat/completions').set('Cookie', cookieFor('owner@example.com')).set('Origin', 'https://leyline.test')
+      .send({ model: 'anything-at-all', messages: [{ role: 'user', content: 'hi' }] });
+    expect(r.status).toBe(200);
+    expect(await keys.list()).toEqual([]);
+    expect((await request(app).post('/v1/chat/completions').set('Cookie', cookieFor('owner@example.com')).set('Origin', 'https://evil.example')
+      .send({ model: 'gpt-5.5', messages: [{ role: 'user', content: 'hi' }] })).status).toBe(401);
+  });
+
+  it('offered models and aliases are set on the dashboard and take effect', async () => {
+    const { app } = setup({ models: ['gpt-5.5'], aliases: {} });
+    const before = await request(app).get('/admin/api/settings').set(ADMIN);
+    expect(before.body).toMatchObject({ models: ['gpt-5.5'], aliases: {}, saved: null });
+    const saved = await request(app).put('/admin/api/settings').set(ADMIN).send({ models: ['gemini-2.5-pro', ' ', 'gemini-2.5-pro'], aliases: { 'claude-*': 'gemini-2.5-pro', bad: '' } });
+    expect(saved.body).toMatchObject({ models: ['gemini-2.5-pro'], aliases: { 'claude-*': 'gemini-2.5-pro' }, saved: { by: 'token' } });
+    const { key } = (await request(app).post('/admin/api/keys').set(ADMIN).send({ name: 'x' })).body;
+    const models = await request(app).get('/v1/models').set({ Authorization: `Bearer ${key}` });
+    expect(models.body.data.map((m: { id: string }) => m.id)).toEqual(['gemini-2.5-pro']);
+    expect((await request(app).post('/v1/chat/completions').set({ Authorization: `Bearer ${key}` }).send({ model: 'gpt-5.5', messages: [{ role: 'user', content: 'hi' }] })).status).toBe(404);
+  });
+});
+
+describe('SecretManagerSecretStore', () => {
+  it('reads, writes (a new version, older ones destroyed) and deletes through the Secret Manager API', async () => {
+    const { SecretManagerSecretStore } = require('../src/core/secret-manager-store') as typeof import('../src/core/secret-manager-store');
+    const secrets = new Map<string, string[]>();
+    const calls: string[] = [];
+    const fake = (async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      calls.push(`${method} ${url.replace('https://secretmanager.googleapis.com/v1/projects/p/secrets', '')}`);
+      const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
+      if (url.includes('metadata.google.internal')) return json(200, { access_token: 't', expires_in: 3600 });
+      const m = url.match(/secrets\/([^/:?]+)/);
+      const id = m?.[1] ?? new URL(url).searchParams.get('secretId')!;
+      if (method === 'POST' && url.includes('?secretId=')) {
+        if (secrets.has(id)) return json(409, {});
+        secrets.set(id, []);
+        return json(200, {});
+      }
+      if (url.endsWith(':addVersion')) {
+        const v = secrets.get(id)!;
+        v.push(JSON.parse(String(init!.body)).payload.data);
+        return json(200, { name: `projects/p/secrets/${id}/versions/${v.length}` });
+      }
+      if (url.endsWith('/versions/latest:access')) {
+        const v = secrets.get(id);
+        return v?.length ? json(200, { payload: { data: v[v.length - 1] } }) : json(404, {});
+      }
+      if (url.includes('/versions?')) return json(200, { versions: (secrets.get(id) ?? []).map((_, i) => ({ name: `projects/p/secrets/${id}/versions/${i + 1}` })) });
+      if (url.endsWith(':destroy')) return json(200, {});
+      if (method === 'DELETE') return secrets.delete(id) ? json(200, {}) : json(404, {});
+      return json(500, {});
+    }) as typeof fetch;
+
+    const store = new SecretManagerSecretStore('p', 'leyline-', fake);
+    expect(store.secretId('api-key:Azure OpenAI')).toBe('leyline-api-key_3aAzure_20OpenAI');
+    expect(await store.get('api-key:Gemini')).toBeUndefined();
+    await store.set('api-key:Gemini', 'first');
+    await store.set('api-key:Gemini', 'second');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(await new SecretManagerSecretStore('p', 'leyline-', fake).get('api-key:Gemini')).toBe('second');
+    expect(calls.filter((c) => c.endsWith(':destroy'))).toEqual(['POST /leyline-api-key_3aGemini/versions/1:destroy']);
+    await store.delete('api-key:Gemini');
+    expect(await store.get('api-key:Gemini')).toBeUndefined();
+    expect(store.status()).toMatchObject({ mode: 'keychain', label: 'Google Secret Manager' });
+  });
+});

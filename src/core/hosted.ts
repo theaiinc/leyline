@@ -3,8 +3,7 @@ import { timingSafeEqual } from 'crypto';
 import type { Router } from './router';
 import { AegisAuth, cookie, type AdminUser } from './admin-login';
 import { AnthropicStream, anthropicError, anthropicToOpenAI, estimateTokens, openAIToAnthropic, type AnthropicRequest } from './anthropic';
-import { IssuedKeys, modelAllowed, type IssuedKey, type KeyCaps } from './issued-keys';
-import { adminPage } from './admin-page';
+import { IssuedKeys, modelAllowed, type HostedSettings, type IssuedKey, type KeyCaps } from './issued-keys';
 
 /**
  * Hosted Leyline: an LLM API the owner hands out keys for, so people can plug it into their coding agents.
@@ -13,8 +12,9 @@ import { adminPage } from './admin-page';
  *   month, requests a day and a minute, models) are checked first and its usage counted after.
  * - OpenAI's /v1/chat/completions (server.ts) and Anthropic's /v1/messages (here) both route through Leyline's
  *   router to the owner's provider keys; /v1/models lists what's offered.
- * - The owner manages keys at /admin, signed in with Aegis (emails in LEYLINE_ADMIN_EMAILS), or with
- *   LEYLINE_ADMIN_TOKEN as a bearer token for scripts.
+ * - The owner manages everything on the dashboard (/dashboard: provider keys, routing, these keys, the models
+ *   offered), signed in with Aegis (emails in LEYLINE_ADMIN_EMAILS), or with LEYLINE_ADMIN_TOKEN as a bearer token
+ *   for scripts. The models offered and aliases start from env and, once saved on the dashboard, come from the store.
  */
 
 export type HostedOptions = {
@@ -27,6 +27,8 @@ export type HostedOptions = {
   adminEmails: string[];
   adminToken?: string;
   publicUrl: string;
+  /** When the offered models/aliases were last saved on the dashboard (null: env defaults). */
+  settingsSaved?: { at: number; by: string } | null;
 };
 
 type WithKey = Request & { issuedKey?: IssuedKey; requestedModel?: string };
@@ -54,6 +56,11 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
       ? res.status(status).json(anthropicError(status, message))
       : res.status(status).json({ error: { message, type: status === 401 ? 'invalid_request_error' : status === 429 ? 'rate_limit_error' : 'permission_error', code } }));
     const presented = presentedKey(req);
+    // The owner, signed in on the dashboard (its playground): no key, no caps, not counted.
+    if (!presented && adminOf(opts, req) && sameOrigin(opts, req)) {
+      (req as WithKey).requestedModel = typeof req.body?.model === 'string' ? req.body.model : '';
+      return next();
+    }
     if (!presented) return fail(401, 'missing_api_key', 'Missing API key: send Authorization: Bearer <key> (or x-api-key).');
     let key: IssuedKey | null;
     try {
@@ -86,7 +93,8 @@ export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_
   void opts.keys.record(r.issuedKey, r.requestedModel ?? '', usage).catch((err) => console.error('[hosted] usage record failed', err));
 }
 
-function admin(opts: HostedOptions, req: Request): string | null {
+/** Who is managing this Leyline: their email (Aegis session), 'token' (LEYLINE_ADMIN_TOKEN), or null. */
+export function adminOf(opts: HostedOptions, req: Request): string | null {
   const auth = req.headers.authorization;
   if (opts.adminToken && auth?.startsWith('Bearer ')) {
     const a = Buffer.from(auth.slice(7).trim());
@@ -97,7 +105,7 @@ function admin(opts: HostedOptions, req: Request): string | null {
   return s && opts.adminEmails.includes(s.email) ? s.email : null;
 }
 
-function sameOrigin(opts: HostedOptions, req: Request): boolean {
+export function sameOrigin(opts: HostedOptions, req: Request): boolean {
   const o = req.headers.origin;
   return !o || o === opts.publicUrl;
 }
@@ -106,6 +114,25 @@ function sameOrigin(opts: HostedOptions, req: Request): boolean {
 function view(k: IssuedKey & { usage?: unknown }) {
   const { hash: _hash, ...rest } = k;
   return rest;
+}
+
+function applySettings(opts: HostedOptions, s: HostedSettings): void {
+  opts.models = s.models;
+  opts.aliases = s.aliases;
+  opts.settingsSaved = s.updatedAt ? { at: s.updatedAt, by: s.updatedBy ?? '' } : null;
+}
+
+function settingsView(opts: HostedOptions) {
+  return { models: opts.models, aliases: opts.aliases, saved: opts.settingsSaved ?? null, publicUrl: opts.publicUrl };
+}
+
+/** Load the dashboard-saved models/aliases now and every minute (other instances may change them). */
+export function watchSettings(opts: HostedOptions, everyMs = 60_000): () => void {
+  const load = () => opts.keys.settings().then((s) => { if (s) applySettings(opts, s); }).catch((err) => console.error('[hosted] settings load failed', err));
+  void load();
+  const t = setInterval(load, everyMs);
+  t.unref?.();
+  return () => clearInterval(t);
 }
 
 export function mountHosted(app: Express, router: Router, opts: HostedOptions): void {
@@ -191,20 +218,28 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
   }
 
   // ── admin: the page and the key API ─────────────────────────────────────────────────────────────────
-  app.get('/admin', (req, res) => {
-    const who = admin(opts, req);
-    if (!who) return res.redirect(302, login ? '/auth/login?next=/admin' : '/');
-    res.setHeader('Cache-Control', 'no-store');
-    res.type('html').send(adminPage({ email: who, publicUrl: opts.publicUrl, models: opts.models, aliases: opts.aliases }));
-  });
+  app.get('/admin', (_req, res) => res.redirect(302, '/dashboard/#/keys'));
 
   const guard = (req: Request, res: Response, next: NextFunction) => {
-    const who = admin(opts, req);
+    const who = adminOf(opts, req);
     if (!who) return res.status(401).json({ error: 'admin_only' });
     if (req.method !== 'GET' && who !== 'token' && !sameOrigin(opts, req)) return res.status(403).json({ error: 'forbidden' });
     (req as Request & { admin?: string }).admin = who;
     next();
   };
+  app.get('/admin/api/settings', guard, (_req, res) => {
+    res.json(settingsView(opts));
+  });
+  app.put('/admin/api/settings', guard, async (req, res) => {
+    try {
+      const saved = await opts.keys.saveSettings(req.body as HostedSettings, (req as Request & { admin?: string }).admin!);
+      applySettings(opts, saved);
+      console.log(JSON.stringify({ event: 'settings_saved', by: saved.updatedBy, models: saved.models, aliases: saved.aliases }));
+      res.json(settingsView(opts));
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
   app.get('/admin/api/keys', guard, async (_req, res) => {
     res.json({ keys: (await opts.keys.list()).map(view) });
   });

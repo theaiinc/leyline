@@ -69,7 +69,8 @@ export type {
 // ── Internal imports (for bootstrap) ─────────────────────────────────
 import { FileDocStore, GcsDocStore, IssuedKeys, MemoryDocStore } from './core/issued-keys';
 import { AegisAuth } from './core/admin-login';
-import type { HostedOptions } from './core/hosted';
+import { watchSettings, type HostedOptions } from './core/hosted';
+import { SecretManagerSecretStore } from './core/secret-manager-store';
 import { startServer } from './server';
 import { Router } from './core/router';
 import { ModelRegistry } from './core/model-registry';
@@ -175,7 +176,11 @@ export async function bootstrap() {
     enabledModels,
   });
 
-  const secretStore = createDefaultSecretStore();
+  // On Cloud Run there's no Keychain: LEYLINE_SECRET_STORE=gcp keeps provider keys and dashboard settings in
+  // Google Secret Manager instead.
+  const secretStore = process.env.LEYLINE_SECRET_STORE === 'gcp'
+    ? new SecretManagerSecretStore(process.env.LEYLINE_GCP_PROJECT || null)
+    : createDefaultSecretStore();
   if (!process.env.LLM_API_BASE_URL) {
     const arcanaLlmApiUrl = await secretStore.get(runtimeConfigAccount('LLM API'));
     if (arcanaLlmApiUrl) {
@@ -189,7 +194,8 @@ export async function bootstrap() {
   router.addProvider(new OpenAIProvider());
   router.addProvider(new OpenRouterProvider());
   if (
-    process.env.LLM_API_BASE_URL
+    config.hosted.enabled
+    || process.env.LLM_API_BASE_URL
     || process.env.LLM_API_DEFAULT_MODEL
     || process.env.LLM_API_KEY
     || process.env.LEYLINE_ARCANA_OPENAI_API_KEY_REF
@@ -320,5 +326,7 @@ function hostedOptions(): HostedOptions {
     ? new AegisAuth({ issuer: h.loginIssuer, clientId: h.loginClientId, clientSecret: h.loginClientSecret, redirectUri: `${h.publicUrl}/auth/callback`, sessionSecret: h.sessionSecret })
     : null;
   if (!login && !h.adminToken) console.warn('[Leyline] hosted keys: no admin sign-in and no LEYLINE_ADMIN_TOKEN; keys can\'t be managed');
-  return { keys: new IssuedKeys(store), models: h.models, aliases: h.aliases, login, adminEmails: h.adminEmails, ...(h.adminToken ? { adminToken: h.adminToken } : {}), publicUrl: h.publicUrl };
+  const opts: HostedOptions = { keys: new IssuedKeys(store), models: h.models, aliases: h.aliases, login, adminEmails: h.adminEmails, ...(h.adminToken ? { adminToken: h.adminToken } : {}), publicUrl: h.publicUrl };
+  watchSettings(opts);
+  return opts;
 }
