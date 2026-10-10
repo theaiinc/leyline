@@ -10,6 +10,7 @@ import { QuotaManager } from './core/quota-manager';
 import { getModelScore } from './core/leaderboard-data';
 import { config } from './config';
 import { requireClientApiKey } from './core/client-auth';
+import { mountHosted, recordUsage, requireIssuedKey, resolveModel, type HostedOptions } from './core/hosted';
 import { createRequireAegisToken, AegisTenant } from './core/aegis-auth';
 import { chatCompletionErrorResponse, formatProviderError, hydrateAxiosError } from './core/api-errors';
 import { normalizeCompletionRequest } from './core/normalize-request';
@@ -56,6 +57,8 @@ export interface CreateServerOptions {
   enforceExternalSurface?: boolean;
   /** Per-tenant quota manager for Aegis-verified hosted mode. Defaults to a fresh instance. */
   aegisQuotaManager?: QuotaManager;
+  /** Hosted keys mode (hosted.ts): issued API keys with caps, /v1/messages, /v1/models, the admin page. */
+  hosted?: HostedOptions;
 }
 
 type ProviderKeyMetadata = {
@@ -119,12 +122,15 @@ function requireLocalDashboardAccess(req: Request, res: Response, next: NextFunc
 // Public operational endpoints must remain reachable through hosted proxies so
 // Render/Cloudflare can perform health checks and Argus can distinguish a
 // sleeping service from an API-surface policy response.
-const EXTERNAL_ROUTES = new Set(['/healthz', '/readyz', '/v1/chat/completions', '/v1/route', '/mcp']);
+const EXTERNAL_ROUTES = new Set(['/healthz', '/readyz', '/v1/chat/completions', '/v1/route', '/mcp', '/v1/models', '/v1/messages', '/v1/messages/count_tokens']);
+/** Hosted keys mode: the admin page and its sign-in (each is still guarded by its own route). */
+const EXTERNAL_PREFIXES = ['/admin', '/auth/'];
 
 function requireExternalSurfaceAllowlist(req: Request, res: Response, next: NextFunction): void {
   if (
     !hasPublicProxyHeaders(req)
     || EXTERNAL_ROUTES.has(req.path)
+    || EXTERNAL_PREFIXES.some((p) => req.path === p || req.path.startsWith(p.endsWith('/') ? p : `${p}/`))
     || req.path === '/dashboard'
     || req.path.startsWith('/dashboard/')
   ) {
@@ -149,7 +155,10 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
 
   // Aegis-verified hosted mode is opt-in and additive: when disabled (the default), this is
   // exactly `requireClientApiKey`, so local/desktop behavior is unchanged.
-  const authMiddleware = config.aegis.enabled
+  const hosted = options.hosted;
+  const authMiddleware = hosted
+    ? requireIssuedKey(hosted, 'openai')
+    : config.aegis.enabled
     ? createRequireAegisToken({
         issuer: config.aegis.issuer,
         audience: config.aegis.clientId,
@@ -160,6 +169,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     : requireClientApiKey;
 
   const logTenantUsage = (req: Request, model: string, usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }) => {
+    if (hosted) recordUsage(hosted, req, usage);
     const tenant = (req as Request & { tenant?: AegisTenant }).tenant;
     if (!tenant || !usage) return;
     try {
@@ -808,6 +818,8 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   app.post('/v1/chat/completions', authMiddleware, async (req, res) => {
     await apiKeyInitialization;
     const request = normalizeCompletionRequest(req.body);
+    // Hosted: a requested model can be an alias for what the owner's providers serve.
+    if (hosted) request.model = resolveModel(hosted.aliases, request.model);
 
     if (request.messages.length === 0) {
       return res.status(400).json({
@@ -889,6 +901,8 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       });
     }
   });
+
+  if (hosted) mountHosted(app, router, hosted);
 
   app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
     const payloadError = err as { type?: string; status?: number; message?: string };

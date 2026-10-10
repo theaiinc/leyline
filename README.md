@@ -278,6 +278,37 @@ npm run tauri:build
 
 The current sidecar strategy expects Node and the `janus` command to be available on the host. Set `LEYLINE_SIDECAR_COMMAND`, `LEYLINE_SIDECAR_ENTRYPOINT`, or `LEYLINE_JANUS_COMMAND` when a deployment uses custom executables. On macOS, the app also checks common Homebrew and user-bin locations because GUI-launched apps may not inherit the shell `PATH`.
 
+## 🔑 Hosted keys (an LLM API for other people's coding agents)
+
+Run Leyline in the cloud and hand out API keys that use your provider keys, each with caps you set.
+
+- Turn it on with `LEYLINE_HOSTED_KEYS=on`. Requests then need an issued key (`Authorization: Bearer ll_…` or `x-api-key`) instead of the client auth header.
+- Endpoints:
+  - `POST /v1/chat/completions` (OpenAI; tools are passed through).
+  - `POST /v1/messages` and `/v1/messages/count_tokens` (Anthropic, for Claude Code; streaming and tool use are translated).
+  - `GET /v1/models`.
+- Caps per key: tokens a month, requests a day, requests a minute, and which models. Usage is counted per key and month.
+- Manage keys at `/admin`. Sign in with Aegis (emails in `LEYLINE_ADMIN_EMAILS`), or script it with `Authorization: Bearer $LEYLINE_ADMIN_TOKEN` against `/admin/api/keys` (GET, POST `{name, caps}`, PATCH `/:id` `{caps}`, DELETE `/:id` to revoke).
+
+| Variable | Meaning |
+| --- | --- |
+| `LEYLINE_PUBLIC_URL` | e.g. `https://leyline.theaiinc.com` (admin page, sign-in callback, snippets) |
+| `LEYLINE_KEYS_BUCKET` / `LEYLINE_KEYS_DIR` | Where keys and usage live: a GCS bucket (Cloud Run), else a directory, else memory |
+| `LEYLINE_OFFERED_MODELS` | Comma list of model ids offered (`*` allowed) |
+| `LEYLINE_MODEL_ALIASES` | JSON, e.g. `{"claude-*":"gemini-2.5-pro"}`, so Claude Code's model names map to an offered model |
+| `LEYLINE_ADMIN_EMAILS`, `LEYLINE_ADMIN_TOKEN` | Who may manage keys |
+| `LEYLINE_LOGIN_ISSUER`, `LEYLINE_LOGIN_CLIENT_ID`, `LEYLINE_LOGIN_CLIENT_SECRET`, `LEYLINE_SESSION_SECRET` | Aegis sign-in for `/admin` |
+| `LEYLINE_KEYCHAIN_ENABLED=false` | On Linux/cloud hosts (no Apple Keychain) |
+
+Give a person their key like this:
+
+```sh
+# Claude Code
+export ANTHROPIC_BASE_URL=https://leyline.theaiinc.com
+export ANTHROPIC_AUTH_TOKEN=ll_...
+# OpenAI-compatible agents (Cursor, Codex, OpenCode, Cline): base URL https://leyline.theaiinc.com/v1, API key ll_...
+```
+
 ## 🧠 Architecture
 
 ### Routing Flow

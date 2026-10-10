@@ -126,10 +126,39 @@ export interface LeylineConfig {
   tunnel: TunnelConfig;
   /** Max JSON request body size (express limit string, e.g. 50mb). */
   bodyLimit: string;
+  hosted: HostedConfig;
   aegis: AegisConfig;
 }
 
 // ── Default config ────────────────────────────────────────────────────
+
+/** LEYLINE_MODEL_ALIASES: JSON {"requested model or pattern*": "upstream model"}. */
+function parseAliases(raw: string | undefined): Record<string, string> {
+  if (!raw) return {};
+  try {
+    const v = JSON.parse(raw) as Record<string, unknown>;
+    return Object.fromEntries(Object.entries(v).filter(([, t]) => typeof t === 'string')) as Record<string, string>;
+  } catch {
+    console.error('[Leyline] LEYLINE_MODEL_ALIASES is not JSON; ignored');
+    return {};
+  }
+}
+
+/** Hosted keys mode (src/core/hosted.ts). */
+export interface HostedConfig {
+  enabled: boolean;
+  publicUrl: string;
+  keysBucket: string;
+  keysDir: string;
+  models: string[];
+  aliases: Record<string, string>;
+  adminEmails: string[];
+  adminToken: string;
+  loginIssuer: string;
+  loginClientId: string;
+  loginClientSecret: string;
+  sessionSecret: string;
+}
 
 export const config: LeylineConfig = {
   port: parseInt(process.env.PORT || '3000', 10),
@@ -206,6 +235,20 @@ export const config: LeylineConfig = {
     pairingCode: process.env.LEYLINE_JANUS_PAIRING_CODE || '',
   },
   bodyLimit: process.env.LEYLINE_BODY_LIMIT || '100mb',
+  hosted: {
+    enabled: process.env.LEYLINE_HOSTED_KEYS === 'on',
+    publicUrl: (process.env.LEYLINE_PUBLIC_URL || '').replace(/\/+$/, ''),
+    keysBucket: process.env.LEYLINE_KEYS_BUCKET || '',
+    keysDir: process.env.LEYLINE_KEYS_DIR || '',
+    models: (process.env.LEYLINE_OFFERED_MODELS || '').split(',').map((m) => m.trim()).filter(Boolean),
+    aliases: parseAliases(process.env.LEYLINE_MODEL_ALIASES),
+    adminEmails: (process.env.LEYLINE_ADMIN_EMAILS || '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean),
+    adminToken: process.env.LEYLINE_ADMIN_TOKEN || '',
+    loginIssuer: process.env.LEYLINE_LOGIN_ISSUER || 'https://id.theaiinc.com',
+    loginClientId: process.env.LEYLINE_LOGIN_CLIENT_ID || '',
+    loginClientSecret: process.env.LEYLINE_LOGIN_CLIENT_SECRET || '',
+    sessionSecret: process.env.LEYLINE_SESSION_SECRET || '',
+  },
   aegis: {
     enabled: process.env.LEYLINE_AEGIS_AUTH_ENABLED === 'true',
     issuer: process.env.LEYLINE_AEGIS_ISSUER || '',

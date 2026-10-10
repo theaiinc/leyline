@@ -53,11 +53,7 @@ export class OpenAIProvider implements Provider {
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
     const response = await axios.post(
       `${this.baseUrl}/chat/completions`,
-      {
-        model: request.model || this.model,
-        messages: request.messages,
-        stream: false,
-      },
+      upstreamBody(request, request.model || this.model, false),
       {
         headers: this.headers(),
         timeout: 300000,
@@ -70,11 +66,8 @@ export class OpenAIProvider implements Provider {
   async *completeStream(request: CompletionRequest): AsyncGenerator<StreamChunk, void, unknown> {
     const response = await axios.post(
       `${this.baseUrl}/chat/completions`,
-      {
-        model: request.model || this.model,
-        messages: request.messages,
-        stream: true,
-      },
+      // Ask for the token usage at the end of the stream (per-key metering needs it).
+      { ...upstreamBody(request, request.model || this.model, true), stream_options: { include_usage: true } },
       {
         headers: this.headers(),
         responseType: 'stream',
@@ -82,23 +75,32 @@ export class OpenAIProvider implements Provider {
       },
     );
 
+    // An SSE line can be split across network chunks (tool-call arguments stream in pieces):
+    // keep the unfinished tail and parse it with the next chunk.
     const stream: any = response.data;
+    let pending = '';
     for await (const chunk of stream) {
-      const lines = chunk
-        .toString()
-        .split('\n')
-        .filter((line: string) => line.trim() !== '');
-
-      for (const line of lines) {
-        if (line.includes('[DONE]')) return;
-        if (line.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(line.replace('data: ', ''));
-            yield data;
-          } catch {
-            // skip partial chunks
-          }
+      pending += chunk.toString();
+      const lines = pending.split('\n');
+      pending = lines.pop() ?? '';
+      for (const raw of lines) {
+        const line = raw.trim();
+        if (!line.startsWith('data:')) continue;
+        const data = line.slice(5).trim();
+        if (data === '[DONE]') return;
+        try {
+          yield JSON.parse(data);
+        } catch {
+          // not JSON (a comment or keep-alive)
         }
+      }
+    }
+    const tail = pending.trim();
+    if (tail.startsWith('data:') && tail.slice(5).trim() !== '[DONE]') {
+      try {
+        yield JSON.parse(tail.slice(5).trim());
+      } catch {
+        // incomplete last line
       }
     }
   }
@@ -109,4 +111,22 @@ export class OpenAIProvider implements Provider {
       'Content-Type': 'application/json',
     };
   }
+}
+
+/** Fields of an OpenAI chat request passed through upstream as the client sent them. */
+const PASSTHROUGH = [
+  'tools', 'tool_choice', 'parallel_tool_calls', 'temperature', 'top_p', 'max_tokens', 'max_completion_tokens',
+  'presence_penalty', 'frequency_penalty', 'response_format', 'seed', 'stop', 'user', 'reasoning_effort', 'n',
+] as const;
+
+/**
+ * The upstream body: the model and messages, plus every generation and tool field the client set. Coding agents
+ * depend on tools and tool_choice reaching the model; dropping them silently turns tool calls into plain text.
+ */
+export function upstreamBody(request: CompletionRequest, model: string, stream: boolean): Record<string, unknown> {
+  const body: Record<string, unknown> = { model, messages: request.messages, stream };
+  for (const key of PASSTHROUGH) {
+    if (request[key] !== undefined && request[key] !== null) body[key] = request[key];
+  }
+  return body;
 }

@@ -67,6 +67,9 @@ export type {
 } from './core/secret-store';
 
 // ── Internal imports (for bootstrap) ─────────────────────────────────
+import { FileDocStore, GcsDocStore, IssuedKeys, MemoryDocStore } from './core/issued-keys';
+import { AegisAuth } from './core/admin-login';
+import type { HostedOptions } from './core/hosted';
 import { startServer } from './server';
 import { Router } from './core/router';
 import { ModelRegistry } from './core/model-registry';
@@ -226,6 +229,7 @@ export async function bootstrap() {
     apiKeyStore: secretStore,
     getTunnelInfo: () => tunnel.getInfo(),
     host: process.env.LEYLINE_HOST || '127.0.0.1',
+    ...(config.hosted.enabled ? { hosted: hostedOptions() } : {}),
   });
 
   const shutdown = () => {
@@ -305,4 +309,16 @@ export async function bootstrap() {
 
 if (require.main === module) {
   void bootstrap();
+}
+
+/** Hosted keys mode from the environment (LEYLINE_HOSTED_KEYS=on): where keys live, what's offered, who manages them. */
+function hostedOptions(): HostedOptions {
+  const h = config.hosted;
+  const store = h.keysBucket ? new GcsDocStore(h.keysBucket) : h.keysDir ? new FileDocStore(h.keysDir) : new MemoryDocStore();
+  if (!h.keysBucket && !h.keysDir) console.warn('[Leyline] hosted keys are kept in memory only (set LEYLINE_KEYS_BUCKET or LEYLINE_KEYS_DIR)');
+  const login = h.loginClientId && h.loginClientSecret && h.sessionSecret && h.publicUrl
+    ? new AegisAuth({ issuer: h.loginIssuer, clientId: h.loginClientId, clientSecret: h.loginClientSecret, redirectUri: `${h.publicUrl}/auth/callback`, sessionSecret: h.sessionSecret })
+    : null;
+  if (!login && !h.adminToken) console.warn('[Leyline] hosted keys: no admin sign-in and no LEYLINE_ADMIN_TOKEN; keys can\'t be managed');
+  return { keys: new IssuedKeys(store), models: h.models, aliases: h.aliases, login, adminEmails: h.adminEmails, ...(h.adminToken ? { adminToken: h.adminToken } : {}), publicUrl: h.publicUrl };
 }
