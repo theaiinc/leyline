@@ -29,6 +29,18 @@ let built: Promise<Built> | null = null;
 let checkedAt = 0;
 let nextPort = 8080;
 let liveCtx: Ctx | null = null;
+/** Writes still running after their response (usage, spend, the log); every request keeps them alive too. */
+const pending = new Set<Promise<unknown>>();
+
+function keepAlive(work: Promise<unknown>): void {
+  pending.add(work);
+  void work.finally(() => pending.delete(work));
+  try {
+    liveCtx?.waitUntil(work);
+  } catch {
+    // that request already finished; the next one picks the work up from `pending`
+  }
+}
 
 async function secretsVersion(db: D1Database): Promise<string> {
   const row = await db.prepare('SELECT count(*) AS n, coalesce(max(updated), 0) AS t FROM secrets').first<{ n: number; t: number }>();
@@ -44,13 +56,13 @@ async function build(env: Env): Promise<Built> {
   const docs = new D1DocStore(env.DB);
   const logs = new D1LogStore(env.DB);
   logger.persistTo((entry) => {
-    const write = logs.add(entry).catch((err) => console.error('[Leyline] log write failed', err));
-    liveCtx?.waitUntil(write);
+    keepAlive(logs.add(entry).catch((err) => console.error('[Leyline] log write failed', err)));
   }, () => logs.recent());
 
   const version = await secretsVersion(env.DB);
   const { router, quotaManager } = await buildRouter(secrets);
   const hosted = hostedOptions(docs, { sharedMinute: true, watch: false });
+  hosted.background = keepAlive;
   const saved = await hosted.keys.settings();
   if (saved) applySettings(hosted, saved);
   const app = createServer(router, quotaManager, { apiKeyStore: secrets, hosted, enforceExternalSurface: false });
@@ -96,6 +108,7 @@ function assetPath(path: string): string | null {
 export default {
   async fetch(request: Request, env: Env, ctx: Ctx): Promise<Response> {
     liveCtx = ctx;
+    if (pending.size) ctx.waitUntil(Promise.allSettled([...pending]));
     const url = new URL(request.url);
     if (url.pathname === '/') return Response.redirect(new URL('/dashboard/', url).toString(), 302);
 

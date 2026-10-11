@@ -34,6 +34,11 @@ export type HostedOptions = {
   defaultPrice?: Price;
   /** When the settings were last saved on the dashboard (null: env defaults). */
   settingsSaved?: { at: number; by: string } | null;
+  /**
+   * Keeps work that finishes after the response alive (usage, spend). The Worker passes its waitUntil: Workers
+   * cancels anything a finished request left running.
+   */
+  background?: (work: Promise<unknown>) => void;
 };
 
 type WithKey = Request & { issuedKey?: IssuedKey; requestedModel?: string; ownerRequest?: boolean };
@@ -106,7 +111,8 @@ export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_
   const model = r.requestedModel ?? '';
   const used = resolveModel(opts.aliases, model);
   const usd = costUsd(priceOf({ prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE }, used), counted);
-  void opts.keys.record(r.issuedKey ?? null, model, counted, usd).catch((err) => console.error('[hosted] usage record failed', err));
+  const work = opts.keys.record(r.issuedKey ?? null, model, counted, usd).catch((err) => console.error('[hosted] usage record failed', err));
+  opts.background?.(work);
 }
 
 /** Who is managing this Leyline: their email (Aegis session), 'token' (LEYLINE_ADMIN_TOKEN), or null. */

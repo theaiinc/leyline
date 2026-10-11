@@ -128,5 +128,13 @@ export function upstreamBody(request: CompletionRequest, model: string, stream: 
   for (const key of PASSTHROUGH) {
     if (request[key] !== undefined && request[key] !== null) body[key] = request[key];
   }
+  // OpenAI's reasoning models reject max_tokens and take max_completion_tokens instead; other models (Claude,
+  // DeepSeek … behind a gateway) keep max_tokens.
+  if (body.max_tokens !== undefined && REASONING_MODEL.test(model.split('/').pop() ?? model)) {
+    body.max_completion_tokens ??= body.max_tokens;
+    delete body.max_tokens;
+  }
   return body;
 }
+
+const REASONING_MODEL = /^(gpt-5|gpt-6|o\d)/i;
