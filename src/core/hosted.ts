@@ -2,6 +2,7 @@ import type { Express, NextFunction, Request, Response } from 'express';
 import { timingSafeEqual } from 'crypto';
 import type { Router } from './router';
 import { AegisAuth, cookie, type AdminUser } from './admin-login';
+import { CostAlerts, DEFAULT_ALERTS, type AlertChannels, type AlertSettings } from './alerts';
 import { AnthropicStream, anthropicError, anthropicToOpenAI, estimateTokens, openAIToAnthropic, type AnthropicRequest } from './anthropic';
 import { DEFAULT_PRICE, IssuedKeys, costUsd, modelAllowed, priceOf, type HostedSettings, type IssuedKey, type KeyCaps, type Price } from './issued-keys';
 
@@ -39,6 +40,10 @@ export type HostedOptions = {
   /** The serving provider's published price for a model (the router's model lists; set by mountHosted). */
   publishedPrice?: (provider: string, model: string) => Price | undefined;
   publishedPriceCounts?: () => Record<string, number>;
+  /** Cost alert thresholds and channels (saved with the settings). */
+  alerts?: AlertSettings;
+  /** Sends an alert email (the Worker's Email Sending binding); unset: email isn't available on this host. */
+  sendEmail?: AlertChannels['sendEmail'];
   /** When the settings were last saved on the dashboard (null: env defaults). */
   settingsSaved?: { at: number; by: string } | null;
   /**
@@ -139,8 +144,28 @@ export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_
   const published = opts.usePublishedPrices !== false && r.served ? opts.publishedPrice?.(r.served.provider, used) : undefined;
   const usd = costUsd(priceOf({ prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE }, used, published), counted);
   const work = opts.keys.record(r.issuedKey ?? null, model, counted, usd, { provider: r.served?.provider ?? 'unknown', model: used })
+    .then(() => checkAlerts(opts, r.issuedKey ?? null))
     .catch((err) => console.error('[hosted] usage record failed', err));
   opts.background?.(work);
+}
+
+function alertsFor(opts: HostedOptions): CostAlerts {
+  return new CostAlerts(opts.keys.docs, opts.keys);
+}
+
+function alertContext(opts: HostedOptions) {
+  const settings = opts.alerts ?? DEFAULT_ALERTS;
+  return { to: settings.emails.length ? settings.emails : opts.adminEmails, publicUrl: opts.publicUrl };
+}
+
+/** After a request is counted: alert on thresholds newly crossed (never fails the request). */
+async function checkAlerts(opts: HostedOptions, key: IssuedKey | null): Promise<void> {
+  try {
+    const fired = await alertsFor(opts).check(opts.alerts ?? DEFAULT_ALERTS, opts.monthlyBudgetUsd ?? null, key, alertContext(opts), { sendEmail: opts.sendEmail });
+    for (const a of fired) console.log(JSON.stringify({ event: 'cost_alert', id: a.id, usd: a.usd, limitUsd: a.limitUsd, delivery: a.delivery }));
+  } catch (err) {
+    console.error('[hosted] cost alert check failed', err);
+  }
 }
 
 /** Who is managing this Leyline: their email (Aegis session), 'token' (LEYLINE_ADMIN_TOKEN), or null. */
@@ -175,6 +200,7 @@ export function applySettings(opts: HostedOptions, s: HostedSettings): void {
   opts.prices = s.prices ?? opts.prices ?? {};
   opts.defaultPrice = s.defaultPrice ?? opts.defaultPrice ?? DEFAULT_PRICE;
   opts.usePublishedPrices = s.usePublishedPrices ?? opts.usePublishedPrices ?? true;
+  opts.alerts = s.alerts ?? opts.alerts ?? DEFAULT_ALERTS;
   opts.settingsSaved = s.updatedAt ? { at: s.updatedAt, by: s.updatedBy ?? '' } : null;
 }
 
@@ -188,6 +214,9 @@ async function settingsView(opts: HostedOptions) {
     defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE,
     usePublishedPrices: opts.usePublishedPrices !== false,
     publishedPrices: opts.publishedPriceCounts?.() ?? {},
+    alerts: opts.alerts ?? DEFAULT_ALERTS,
+    alertEmailAvailable: Boolean(opts.sendEmail),
+    adminEmails: opts.adminEmails,
     spend: await opts.keys.spend(),
     saved: opts.settingsSaved ?? null,
     publicUrl: opts.publicUrl,
@@ -303,7 +332,7 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
   app.put('/admin/api/settings', guard, async (req, res) => {
     try {
       // A save changes only what it names; the rest stays as it is.
-      const current = { models: opts.models, aliases: opts.aliases, blockedModels: opts.blockedModels ?? [], monthlyBudgetUsd: opts.monthlyBudgetUsd ?? null, prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE, usePublishedPrices: opts.usePublishedPrices !== false };
+      const current = { models: opts.models, aliases: opts.aliases, blockedModels: opts.blockedModels ?? [], monthlyBudgetUsd: opts.monthlyBudgetUsd ?? null, prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE, usePublishedPrices: opts.usePublishedPrices !== false, alerts: opts.alerts ?? DEFAULT_ALERTS };
       const saved = await opts.keys.saveSettings({ ...current, ...(req.body as Partial<HostedSettings>) }, (req as Request & { admin?: string }).admin!);
       applySettings(opts, saved);
       console.log(JSON.stringify({ event: 'settings_saved', by: saved.updatedBy, models: saved.models, aliases: saved.aliases, monthlyBudgetUsd: saved.monthlyBudgetUsd }));
@@ -312,6 +341,17 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
+  // Cost alerts: this month's (or another month's) log, and a test through every channel.
+  app.get('/admin/api/alerts', guard, async (req, res) => {
+    const month = typeof req.query.month === 'string' && /^\d{4}-\d{2}$/.test(req.query.month) ? req.query.month : undefined;
+    res.json({ log: await alertsFor(opts).log(month), settings: opts.alerts ?? DEFAULT_ALERTS, emailAvailable: Boolean(opts.sendEmail), to: alertContext(opts).to });
+  });
+  app.post('/admin/api/alerts/test', guard, async (_req, res) => {
+    const work = alertsFor(opts).test(opts.alerts ?? DEFAULT_ALERTS, alertContext(opts), { sendEmail: opts.sendEmail });
+    opts.background?.(work);
+    res.json({ alert: await work });
+  });
+
   // Spend by provider and model for a month (default: this one), and which months have any.
   app.get('/admin/api/spend', guard, async (req, res) => {
     const month = typeof req.query.month === 'string' && /^\d{4}-\d{2}$/.test(req.query.month) ? req.query.month : undefined;

@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'crypto';
 import { mkdir, readFile, writeFile } from 'fs/promises';
 import { dirname, join } from 'path';
 import { GcpToken } from './gcp';
+import { cleanAlertSettings, type AlertSettings } from './alerts';
 
 /**
  * API keys handed out to people for their coding agents (hosted Leyline). The owner creates each key with its caps
@@ -213,6 +214,8 @@ export type HostedSettings = {
   defaultPrice: Price;
   /** Use the prices providers publish (llmapi.ai, OpenRouter) for models without one set here. Default on. */
   usePublishedPrices?: boolean;
+  /** Cost alerts: thresholds and where they go (src/core/alerts.ts). */
+  alerts?: AlertSettings;
   updatedAt?: number;
   updatedBy?: string;
 };
@@ -252,6 +255,7 @@ export function cleanSettings(input: Partial<HostedSettings> | null | undefined)
     prices,
     defaultPrice: cleanPrice(input?.defaultPrice) ?? DEFAULT_PRICE,
     usePublishedPrices: input?.usePublishedPrices !== false,
+    alerts: cleanAlertSettings(input?.alerts),
   };
 }
 
@@ -299,6 +303,11 @@ export class IssuedKeys {
   constructor(private readonly store: DocStore, opts: { now?: () => number; sharedMinute?: boolean } = {}) {
     this.now = opts.now ?? Date.now;
     this.sharedMinute = opts.sharedMinute ?? false;
+  }
+
+  /** The store keys live in (cost alerts keep their state next to them). */
+  get docs(): DocStore {
+    return this.store;
   }
 
   /** What hosted Leyline offers (set on the dashboard; null until first saved, then env defaults apply). */

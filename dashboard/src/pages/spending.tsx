@@ -8,6 +8,8 @@ import { EmptyState, PageHeader, ProviderDot, fmt } from '@/components/common';
 import { api, type IssuedKey } from '@/api';
 import { money } from '@/pages/keys';
 import { providerTone } from '@/normalization';
+import { Alert as AlertBox, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { AlertsCard, urgentAlert, type Alert } from '@/pages/alerts-card';
 
 type Line = { usd: number; requests: number; tokens: number };
 type Spend = {
@@ -26,6 +28,8 @@ export function SpendingPage() {
   const [month, setMonth] = useState<string | null>(null);
   const [data, setData] = useState<SpendResponse | null>(null);
   const [keys, setKeys] = useState<IssuedKey[]>([]);
+  const [alertLog, setAlertLog] = useState<Alert[]>([]);
+  const urgent = urgentAlert(alertLog);
 
   useEffect(() => {
     api<SpendResponse>(`/admin/api/spend${month ? `?month=${month}` : ''}`)
@@ -57,6 +61,12 @@ export function SpendingPage() {
         ) : null}
       />
 
+      {urgent ? (
+        <AlertBox variant={urgent.threshold >= 100 ? 'destructive' : 'default'} className="mb-4">
+          <AlertTitle>{urgent.threshold >= 100 ? 'Monthly limit reached' : `${urgent.threshold}% of the monthly limit spent`}</AlertTitle>
+          <AlertDescription>{urgent.message}</AlertDescription>
+        </AlertBox>
+      ) : null}
       {spend ? (
         <>
           <div className="grid gap-4 sm:grid-cols-3">
@@ -77,7 +87,7 @@ export function SpendingPage() {
             </Card>
           </div>
 
-          {spend.requests === 0 ? <div className="mt-6"><EmptyState title={`Nothing spent in ${spend.month}`} /></div> : (
+          {spend.requests === 0 ? <div className="mt-6 grid gap-4"><EmptyState title={`Nothing spent in ${spend.month}`} /><AlertsCard onLog={setAlertLog} /></div> : (
             <div className="mt-6 grid gap-4 xl:grid-cols-2">
               <Card className="gap-3">
                 <CardHeader><CardTitle>By provider</CardTitle></CardHeader>
@@ -145,6 +155,7 @@ export function SpendingPage() {
                   </CardContent>
                 </Card>
               ) : null}
+              <AlertsCard onLog={setAlertLog} />
             </div>
           )}
         </>
