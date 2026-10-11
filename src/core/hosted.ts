@@ -27,6 +27,8 @@ export type HostedOptions = {
   adminEmails: string[];
   adminToken?: string;
   publicUrl: string;
+  /** Models turned off for every key (ids or patterns with *). */
+  blockedModels?: string[];
   /** The most all keys together may spend a month (US dollars); null: no limit. */
   monthlyBudgetUsd?: number | null;
   /** US dollars per million tokens by model (or pattern), and the price for models without one. */
@@ -41,7 +43,14 @@ export type HostedOptions = {
   background?: (work: Promise<unknown>) => void;
 };
 
-type WithKey = Request & { issuedKey?: IssuedKey; requestedModel?: string; ownerRequest?: boolean };
+type WithKey = Request & { issuedKey?: IssuedKey; requestedModel?: string; ownerRequest?: boolean; served?: { provider: string; model: string } };
+
+/** Route option that remembers which provider and model served this request (for spend by provider and model). */
+export function servedBy(req: Request): (provider: string, model: string) => void {
+  return (provider, model) => {
+    (req as WithKey).served = { provider, model };
+  };
+}
 
 /** The model to send upstream for what the client asked (an alias, else as asked). */
 export function resolveModel(aliases: Record<string, string>, model: string): string {
@@ -84,12 +93,23 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
     const requested = typeof req.body?.model === 'string' ? req.body.model : '';
     const offered = !requested || requested === 'auto' || opts.models.length === 0 || opts.models.some((m) => modelAllowed({ models: [m] }, requested)) || !!resolveAlias(opts, requested);
     if (!offered) return fail(404, 'model_not_found', `The model "${requested}" is not offered here; see /v1/models.`);
+    if (requested && isBlocked(opts, requested)) {
+      return fail(403, 'model_disabled', `The model "${requested}" is turned off here; see /v1/models for what you can use.`);
+    }
     const refusal = await opts.keys.admit(key, requested, opts.monthlyBudgetUsd ?? null);
     if (refusal) return fail(refusal.status, refusal.code, refusal.message);
     (req as WithKey).issuedKey = key;
     (req as WithKey).requestedModel = requested;
     next();
   };
+}
+
+/** Turned off: the model asked for, or the one an alias maps it to, matches the blocked list. */
+export function isBlocked(opts: HostedOptions, model: string): boolean {
+  const blocked = opts.blockedModels ?? [];
+  if (!blocked.length) return false;
+  const matches = (m: string) => modelAllowed({ models: blocked }, m);
+  return matches(model) || matches(resolveModel(opts.aliases, model));
 }
 
 function resolveAlias(opts: HostedOptions, model: string): string | null {
@@ -109,9 +129,11 @@ export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_
     ? usage
     : { prompt_tokens: Math.ceil(JSON.stringify(req.body ?? {}).length / 4), completion_tokens: Math.ceil(outChars / 4) };
   const model = r.requestedModel ?? '';
-  const used = resolveModel(opts.aliases, model);
+  // Priced by the model that actually answered (after aliases and routing), credited to the provider that served it.
+  const used = r.served?.model || resolveModel(opts.aliases, model);
   const usd = costUsd(priceOf({ prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE }, used), counted);
-  const work = opts.keys.record(r.issuedKey ?? null, model, counted, usd).catch((err) => console.error('[hosted] usage record failed', err));
+  const work = opts.keys.record(r.issuedKey ?? null, model, counted, usd, { provider: r.served?.provider ?? 'unknown', model: used })
+    .catch((err) => console.error('[hosted] usage record failed', err));
   opts.background?.(work);
 }
 
@@ -143,6 +165,7 @@ export function applySettings(opts: HostedOptions, s: HostedSettings): void {
   opts.aliases = s.aliases;
   // Settings saved before the spending limit existed keep the configured limit.
   if ('monthlyBudgetUsd' in s) opts.monthlyBudgetUsd = s.monthlyBudgetUsd;
+  opts.blockedModels = s.blockedModels ?? opts.blockedModels ?? [];
   opts.prices = s.prices ?? opts.prices ?? {};
   opts.defaultPrice = s.defaultPrice ?? opts.defaultPrice ?? DEFAULT_PRICE;
   opts.settingsSaved = s.updatedAt ? { at: s.updatedAt, by: s.updatedBy ?? '' } : null;
@@ -152,6 +175,7 @@ async function settingsView(opts: HostedOptions) {
   return {
     models: opts.models,
     aliases: opts.aliases,
+    blockedModels: opts.blockedModels ?? [],
     monthlyBudgetUsd: opts.monthlyBudgetUsd ?? null,
     prices: opts.prices ?? {},
     defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE,
@@ -174,7 +198,7 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
   // ── models ──────────────────────────────────────────────────────────────────────────────────────────
   app.get('/v1/models', requireIssuedKeyNoModel(opts), (req, res) => {
     const key = (req as WithKey).issuedKey!;
-    const ids = [...opts.models, ...Object.keys(opts.aliases).filter((a) => !a.includes('*'))].filter((m, i, all) => all.indexOf(m) === i && modelAllowed(key.caps, m));
+    const ids = [...opts.models, ...Object.keys(opts.aliases).filter((a) => !a.includes('*'))].filter((m, i, all) => all.indexOf(m) === i && modelAllowed(key.caps, m) && !isBlocked(opts, m));
     res.json({ object: 'list', data: ids.map((id) => ({ id, object: 'model', created: 0, owned_by: 'leyline', type: 'model', display_name: id })) });
   });
 
@@ -202,7 +226,7 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
           for (const e of events) res.write(`event: ${e.event}\ndata: ${JSON.stringify(e.data)}\n\n`);
         };
         try {
-          for await (const chunk of await router.routeStream(request)) send(out.push(chunk));
+          for await (const chunk of await router.routeStream(request, { onServed: servedBy(req) })) send(out.push(chunk));
           send(out.end());
         } catch (err) {
           console.error('[hosted] /v1/messages stream failed', err);
@@ -212,7 +236,7 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
         recordUsage(opts, req, out.tokens, out.chars);
         return;
       }
-      const response = await router.route(request);
+      const response = await router.route(request, { onServed: servedBy(req) });
       res.json(openAIToAnthropic(response, asked));
       recordUsage(opts, req, response.usage);
     } catch (err) {
@@ -268,7 +292,7 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
   app.put('/admin/api/settings', guard, async (req, res) => {
     try {
       // A save changes only what it names; the rest stays as it is.
-      const current = { models: opts.models, aliases: opts.aliases, monthlyBudgetUsd: opts.monthlyBudgetUsd ?? null, prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE };
+      const current = { models: opts.models, aliases: opts.aliases, blockedModels: opts.blockedModels ?? [], monthlyBudgetUsd: opts.monthlyBudgetUsd ?? null, prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE };
       const saved = await opts.keys.saveSettings({ ...current, ...(req.body as Partial<HostedSettings>) }, (req as Request & { admin?: string }).admin!);
       applySettings(opts, saved);
       console.log(JSON.stringify({ event: 'settings_saved', by: saved.updatedBy, models: saved.models, aliases: saved.aliases, monthlyBudgetUsd: saved.monthlyBudgetUsd }));
@@ -276,6 +300,12 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }
+  });
+  // Spend by provider and model for a month (default: this one), and which months have any.
+  app.get('/admin/api/spend', guard, async (req, res) => {
+    const month = typeof req.query.month === 'string' && /^\d{4}-\d{2}$/.test(req.query.month) ? req.query.month : undefined;
+    const [spend, months] = await Promise.all([opts.keys.spend(month), opts.keys.spendMonths()]);
+    res.json({ spend, months, monthlyBudgetUsd: opts.monthlyBudgetUsd ?? null });
   });
   app.get('/admin/api/keys', guard, async (_req, res) => {
     res.json({ keys: (await opts.keys.list()).map(view) });

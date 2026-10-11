@@ -86,6 +86,8 @@ export interface Provider {
 export interface RouteOptions {
   /** Bypass routing/candidate selection and force this exact provider name. */
   forceProvider?: string;
+  /** Told which provider and model served the request (the last one tried, when an earlier one failed). */
+  onServed?: (provider: string, model: string) => void;
 }
 
 export interface ApiKeyConfigurableProvider extends Provider {

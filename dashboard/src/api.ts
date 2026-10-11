@@ -56,7 +56,7 @@ export type IssuedKey = {
     promptTokens: number;
     completionTokens: number;
     usd?: number;
-    byModel: Record<string, { requests: number; tokens: number }>;
+    byModel: Record<string, { requests: number; tokens: number; usd?: number }>;
   };
 };
 
@@ -65,6 +65,7 @@ export type Price = { input: number; output: number };
 export type HostedSettings = {
   models: string[];
   aliases: Record<string, string>;
+  blockedModels: string[];
   monthlyBudgetUsd: number | null;
   prices: Record<string, Price>;
   defaultPrice: Price;

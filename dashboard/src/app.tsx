@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Activity, FlaskConical, KeyRound, LayoutDashboard, Layers, LogOut, Moon, RefreshCw, Route, Server, Sun } from 'lucide-react';
+import { Activity, FlaskConical, KeyRound, LayoutDashboard, Layers, LogOut, Moon, RefreshCw, Route, Server, Sun, Wallet } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -15,6 +15,7 @@ import { OverviewPage } from '@/pages/overview';
 import { PlaygroundPage } from '@/pages/playground';
 import { ProvidersPage } from '@/pages/providers';
 import { RoutingPage } from '@/pages/routing';
+import { SpendingPage } from '@/pages/spending';
 
 type Nav = { id: string; label: string; icon: typeof Activity; hosted?: true };
 const NAV: Nav[] = [
@@ -22,6 +23,7 @@ const NAV: Nav[] = [
   { id: 'providers', label: 'Providers', icon: Server },
   { id: 'routing', label: 'Routing', icon: Route },
   { id: 'keys', label: 'Access keys', icon: KeyRound, hosted: true },
+  { id: 'spending', label: 'Spending', icon: Wallet, hosted: true },
   { id: 'offered', label: 'Offered models', icon: Layers, hosted: true },
   { id: 'playground', label: 'Playground', icon: FlaskConical },
   { id: 'activity', label: 'Activity', icon: Activity },
@@ -102,6 +104,7 @@ export function App() {
             : current === 'providers' ? <ProvidersPage d={d} />
               : current === 'routing' ? <RoutingPage d={d} />
                 : current === 'keys' ? <KeysPage d={d} />
+                  : current === 'spending' ? <SpendingPage />
                   : current === 'offered' ? <OfferedPage d={d} />
                     : current === 'playground' ? <PlaygroundPage d={d} />
                       : <ActivityPage d={d} />}

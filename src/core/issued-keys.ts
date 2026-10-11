@@ -50,8 +50,19 @@ export type KeyUsage = {
   byModel: Record<string, { requests: number; tokens: number; usd?: number }>;
 };
 
-/** Everything spent this month, across keys (and the owner's playground). */
-export type MonthSpend = { month: string; usd: number; requests: number };
+/** Spend, requests and tokens for one provider or model. */
+export type SpendLine = { usd: number; requests: number; tokens: number };
+
+/** Everything spent this month, across keys (and the owner's playground), by provider and by model. */
+export type MonthSpend = {
+  month: string;
+  usd: number;
+  requests: number;
+  tokens?: number;
+  byProvider?: Record<string, SpendLine>;
+  /** Keyed "provider/model": the model that answered and the provider that served it. */
+  byModel?: Record<string, SpendLine & { provider: string; model: string }>;
+};
 
 export interface DocStore {
   get<T>(key: string): Promise<{ value: T; gen: string } | null>;
@@ -192,6 +203,8 @@ export type HostedSettings = {
   models: string[];
   /** Requested model (exact or pattern with *) -> the model actually used. */
   aliases: Record<string, string>;
+  /** Turned off for every key: model ids or patterns with * (checked on the model asked for and the one it maps to). */
+  blockedModels?: string[];
   /** The most all keys together may spend a month, in US dollars; null: no limit. */
   monthlyBudgetUsd: number | null;
   /** US dollars per million tokens, by model id or pattern with * (the model actually used). */
@@ -226,9 +239,13 @@ export function cleanSettings(input: Partial<HostedSettings> | null | undefined)
     if (m.trim() && price) prices[m.trim()] = price;
   }
   const budget = Number(input?.monthlyBudgetUsd);
+  const blockedModels = Array.isArray(input?.blockedModels)
+    ? [...new Set(input!.blockedModels.map((m) => String(m).trim()).filter(Boolean))].slice(0, 200)
+    : [];
   return {
     models,
     aliases,
+    blockedModels,
     monthlyBudgetUsd: input?.monthlyBudgetUsd === null || input?.monthlyBudgetUsd === undefined || !Number.isFinite(budget) || budget <= 0 ? null : Math.round(budget * 100) / 100,
     prices,
     defaultPrice: cleanPrice(input?.defaultPrice) ?? DEFAULT_PRICE,
@@ -363,6 +380,11 @@ export class IssuedKeys {
     return (await this.store.get<MonthSpend>(`spend/${month}`))?.value ?? { month, usd: 0, requests: 0 };
   }
 
+  /** Months with recorded spend, newest first. */
+  async spendMonths(): Promise<string[]> {
+    return (await this.store.list('spend/')).map((k) => k.slice('spend/'.length)).sort().reverse();
+  }
+
   async admit(key: IssuedKey, model: string, budgetUsd: number | null = null): Promise<Refusal | null> {
     if (key.revokedAt) return { status: 401, code: 'key_revoked', message: 'This API key has been revoked.' };
     if (model && model !== 'auto' && !modelAllowed(key.caps, model)) {
@@ -405,14 +427,31 @@ export class IssuedKeys {
   }
 
   /** Count a finished request against the key. */
-  async record(key: IssuedKey | null, model: string, usage?: { prompt_tokens?: number; completion_tokens?: number }, usd = 0): Promise<void> {
+  async record(
+    key: IssuedKey | null,
+    model: string,
+    usage?: { prompt_tokens?: number; completion_tokens?: number },
+    usd = 0,
+    served: { provider: string; model: string } = { provider: 'unknown', model },
+  ): Promise<void> {
     const now = this.now();
     const month = monthOf(now);
     const prompt = Math.max(0, Math.round(usage?.prompt_tokens ?? 0));
     const completion = Math.max(0, Math.round(usage?.completion_tokens ?? 0));
+    const tokens = prompt + completion;
+    const add = (line: SpendLine | undefined): SpendLine => ({
+      usd: (line?.usd ?? 0) + usd,
+      requests: (line?.requests ?? 0) + 1,
+      tokens: (line?.tokens ?? 0) + tokens,
+    });
     await update<MonthSpend>(this.store, `spend/${month}`, (cur) => {
       const s = cur ?? { month, usd: 0, requests: 0 };
-      return { month, usd: s.usd + usd, requests: s.requests + 1 };
+      const byProvider = { ...(s.byProvider ?? {}) };
+      byProvider[served.provider] = add(byProvider[served.provider]);
+      const byModel = { ...(s.byModel ?? {}) };
+      const id = `${served.provider}/${served.model || 'unknown'}`;
+      byModel[id] = { ...add(byModel[id]), provider: served.provider, model: served.model || 'unknown' };
+      return { month, usd: s.usd + usd, requests: s.requests + 1, tokens: (s.tokens ?? 0) + tokens, byProvider, byModel };
     });
     if (!key) return;
     await update<KeyUsage>(this.store, `usage/${key.id}/${month}`, (cur) => {
