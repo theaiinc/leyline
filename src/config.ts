@@ -154,6 +154,8 @@ export interface HostedConfig {
   aliases: Record<string, string>;
   adminEmails: string[];
   adminToken: string;
+  /** LEYLINE_MONTHLY_BUDGET_USD: what all keys together may spend a month until it's set on the dashboard. */
+  monthlyBudgetUsd: number | null;
   loginIssuer: string;
   loginClientId: string;
   loginClientSecret: string;
@@ -244,6 +246,7 @@ export const config: LeylineConfig = {
     aliases: parseAliases(process.env.LEYLINE_MODEL_ALIASES),
     adminEmails: (process.env.LEYLINE_ADMIN_EMAILS || '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean),
     adminToken: process.env.LEYLINE_ADMIN_TOKEN || '',
+    monthlyBudgetUsd: Number(process.env.LEYLINE_MONTHLY_BUDGET_USD) > 0 ? Number(process.env.LEYLINE_MONTHLY_BUDGET_USD) : null,
     loginIssuer: process.env.LEYLINE_LOGIN_ISSUER || 'https://id.theaiinc.com',
     loginClientId: process.env.LEYLINE_LOGIN_CLIENT_ID || '',
     loginClientSecret: process.env.LEYLINE_LOGIN_CLIENT_SECRET || '',

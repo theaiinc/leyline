@@ -71,7 +71,7 @@ describe('hosted keys', () => {
     await new Promise((r) => setTimeout(r, 10));
     const list = await request(app).get('/admin/api/keys').set(ADMIN);
     expect(list.body.keys[0]).toMatchObject({ name: 'Minh', prefix: key.slice(0, 7), usage: { requests: 1, promptTokens: 100, completionTokens: 20 } });
-    expect(list.body.keys[0].usage.byModel['gpt-5.5']).toEqual({ requests: 1, tokens: 120 });
+    expect(list.body.keys[0].usage.byModel['gpt-5.5']).toMatchObject({ requests: 1, tokens: 120 });
     expect((await keys.list())[0].lastUsedAt).toBeGreaterThan(0);
   });
 
@@ -259,5 +259,43 @@ describe('SecretManagerSecretStore', () => {
     await store.delete('api-key:Gemini');
     expect(await store.get('api-key:Gemini')).toBeUndefined();
     expect(store.status()).toMatchObject({ mode: 'keychain', label: 'Google Secret Manager' });
+  });
+});
+
+describe('spending limit', () => {
+  const chat = (app: ReturnType<typeof setup>['app'], key: string, model = 'gemini-2.5-pro') =>
+    request(app).post('/v1/chat/completions').set({ Authorization: `Bearer ${key}` }).send({ model, messages: [{ role: 'user', content: 'hi' }] });
+  const settle = () => new Promise((r) => setTimeout(r, 10));
+
+  it('stops every key once the month\'s spend reaches the limit, at the prices set', async () => {
+    // 100 prompt tokens at $10,000 per million = $1 a request (the fake upstream reports 100 + 20 tokens).
+    const { app } = setup({ monthlyBudgetUsd: 1.5, prices: { 'gemini-*': { input: 10_000, output: 0 } } });
+    const a = (await request(app).post('/admin/api/keys').set(ADMIN).send({ name: 'a' })).body.key;
+    const b = (await request(app).post('/admin/api/keys').set(ADMIN).send({ name: 'b' })).body.key;
+    expect((await chat(app, a)).status).toBe(200);
+    await settle();
+    expect((await chat(app, b)).status).toBe(200);
+    await settle();
+    const r = await chat(app, a);
+    expect(r.status).toBe(429);
+    expect(r.body.error.code).toBe('budget_exhausted');
+    const s = await request(app).get('/admin/api/settings').set(ADMIN);
+    expect(s.body.spend.usd).toBeCloseTo(2);
+    expect(s.body.monthlyBudgetUsd).toBe(1.5);
+    // Raising the limit lets requests through again; saving only the models keeps the limit.
+    await request(app).put('/admin/api/settings').set(ADMIN).send({ monthlyBudgetUsd: 10 });
+    await request(app).put('/admin/api/settings').set(ADMIN).send({ models: ['gemini-2.5-pro'] });
+    expect((await request(app).get('/admin/api/settings').set(ADMIN)).body.monthlyBudgetUsd).toBe(10);
+    expect((await chat(app, a)).status).toBe(200);
+  });
+
+  it('a key can have its own dollars a month; unpriced models cost the default price', async () => {
+    const { app, keys } = setup({ prices: {}, defaultPrice: { input: 100, output: 400 } });
+    const { key } = (await request(app).post('/admin/api/keys').set(ADMIN).send({ name: 'c', caps: { usdPerMonth: 0.01 } })).body;
+    expect((await chat(app, key)).status).toBe(200);
+    await settle();
+    // $100 / $400 per million: 100 * 100 + 20 * 400 = 18,000 / 1e6 = $0.018.
+    expect((await keys.list())[0].usage.usd).toBeCloseTo(0.018);
+    expect((await chat(app, key)).body.error.code).toBe('monthly_spend_exhausted');
   });
 });

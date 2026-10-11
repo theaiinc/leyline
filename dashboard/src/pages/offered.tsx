@@ -6,23 +6,33 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Progress } from '@/components/ui/progress';
+import { money } from '@/pages/keys';
 import { PageHeader, when } from '@/components/common';
-import { api, type HostedSettings } from '@/api';
+import { api, type HostedSettings, type Price } from '@/api';
 import type { Dashboard } from '@/hooks/use-dashboard';
 
 type Row = { from: string; to: string };
+type PriceRow = { model: string; input: string; output: string };
 
 export function OfferedPage({ d }: { d: Dashboard }) {
   const [settings, setSettings] = useState<HostedSettings | null>(null);
   const [models, setModels] = useState<string[]>([]);
   const [rows, setRows] = useState<Row[]>([]);
   const [draft, setDraft] = useState('');
+  const [budget, setBudget] = useState('');
+  const [priceRows, setPriceRows] = useState<PriceRow[]>([]);
+  const [fallback, setFallback] = useState({ input: '', output: '' });
   const [saving, setSaving] = useState(false);
 
   const apply = (s: HostedSettings) => {
     setSettings(s);
     setModels(s.models);
     setRows(Object.entries(s.aliases).map(([from, to]) => ({ from, to })));
+    setBudget(s.monthlyBudgetUsd ? String(s.monthlyBudgetUsd) : '');
+    setPriceRows(Object.entries(s.prices).map(([model, p]) => ({ model, input: String(p.input), output: String(p.output) })));
+    setFallback({ input: String(s.defaultPrice.input), output: String(s.defaultPrice.output) });
   };
   useEffect(() => {
     api<HostedSettings>('/admin/api/settings').then(apply).catch(error => toast.error(error instanceof Error ? error.message : 'Could not load settings'));
@@ -31,7 +41,18 @@ export function OfferedPage({ d }: { d: Dashboard }) {
   // Every model the providers report, to pick from.
   const known = useMemo(() => [...new Set(d.stats.providers.flatMap(p => p.models.map(m => m.id)))].sort(), [d.stats.providers]);
   const aliases = Object.fromEntries(rows.filter(r => r.from.trim() && r.to.trim()).map(r => [r.from.trim(), r.to.trim()]));
-  const dirty = settings !== null && (JSON.stringify(models) !== JSON.stringify(settings.models) || JSON.stringify(aliases) !== JSON.stringify(settings.aliases));
+  const prices: Record<string, Price> = Object.fromEntries(priceRows
+    .filter(r => r.model.trim() && r.input.trim() !== '' && r.output.trim() !== '')
+    .map(r => [r.model.trim(), { input: Number(r.input), output: Number(r.output) }]));
+  const defaultPrice: Price = { input: Number(fallback.input) || 0, output: Number(fallback.output) || 0 };
+  const monthlyBudgetUsd = budget.trim() ? Number(budget) : null;
+  const dirty = settings !== null && (
+    JSON.stringify(models) !== JSON.stringify(settings.models)
+    || JSON.stringify(aliases) !== JSON.stringify(settings.aliases)
+    || monthlyBudgetUsd !== settings.monthlyBudgetUsd
+    || JSON.stringify(prices) !== JSON.stringify(settings.prices)
+    || JSON.stringify(defaultPrice) !== JSON.stringify(settings.defaultPrice));
+  const unpriced = models.filter(m => !m.includes('*') && !prices[m] && !Object.keys(prices).some(p => p.includes('*') && new RegExp(`^${p.split('*').map(x => x.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`, 'i').test(m)));
 
   function add(model: string) {
     const m = model.trim();
@@ -50,8 +71,8 @@ export function OfferedPage({ d }: { d: Dashboard }) {
   async function save() {
     setSaving(true);
     try {
-      apply(await api<HostedSettings>('/admin/api/settings', { method: 'PUT', body: { models, aliases } }));
-      toast.success('Offered models saved.');
+      apply(await api<HostedSettings>('/admin/api/settings', { method: 'PUT', body: { models, aliases, monthlyBudgetUsd, prices, defaultPrice } }));
+      toast.success('Saved.');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not save');
     } finally {
@@ -65,12 +86,63 @@ export function OfferedPage({ d }: { d: Dashboard }) {
     <>
       <PageHeader
         title="Offered models"
-        description="What access keys can use. A key can be narrowed further on Access keys."
+        description="What access keys can use, what it costs, and the monthly spending limit. A key can be narrowed further on Access keys."
         actions={<Button onClick={save} disabled={!dirty || saving}>{saving ? 'Saving…' : 'Save changes'}</Button>}
       />
       {settings && !settings.saved ? <Alert className="mb-4"><AlertDescription>Showing the defaults from the server's environment. Saving here makes the dashboard the source from now on.</AlertDescription></Alert> : null}
 
       <div className="grid gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Spending</CardTitle>
+            <CardDescription>What every key together may spend a month, at the prices below. Requests stop once it's reached and start again on the 1st (UTC).</CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4">
+            {settings ? (
+              <div className="grid gap-1.5">
+                <div className="flex items-baseline justify-between text-sm">
+                  <span className="text-2xl font-semibold tabular-nums">{money(settings.spend.usd)}</span>
+                  <span className="text-muted-foreground">{settings.monthlyBudgetUsd ? `of $${settings.monthlyBudgetUsd} in ${settings.spend.month}` : `in ${settings.spend.month}, no limit`}</span>
+                </div>
+                {settings.monthlyBudgetUsd ? <Progress value={Math.min(100, (100 * settings.spend.usd) / settings.monthlyBudgetUsd)} className="h-2" /> : null}
+                <p className="text-xs text-muted-foreground">{settings.spend.requests.toLocaleString()} requests this month, including the playground.</p>
+              </div>
+            ) : null}
+            <div className="grid max-w-56 gap-1.5">
+              <Label htmlFor="budget">Monthly limit (US$)</Label>
+              <Input id="budget" type="number" min={1} step={1} placeholder="No limit" value={budget} onChange={e => setBudget(e.target.value)} />
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Prices</CardTitle>
+            <CardDescription>US$ per million tokens for the model actually used (after aliases); <code className="font-mono text-xs">*</code> matches anything. Use your provider's prices.</CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-2">
+            <div className="grid grid-cols-[1fr_5.5rem_5.5rem_2.25rem] gap-2 text-xs text-muted-foreground"><span>Model</span><span>Input</span><span>Output</span><span /></div>
+            {priceRows.map((row, i) => (
+              <div key={i} className="grid grid-cols-[1fr_5.5rem_5.5rem_2.25rem] items-center gap-2">
+                <Input className="font-mono text-xs" value={row.model} placeholder="gpt-5.5" list="offered-models" aria-label="Model" onChange={e => setPriceRows(priceRows.map((r, j) => (j === i ? { ...r, model: e.target.value } : r)))} />
+                <Input type="number" min={0} step="any" value={row.input} aria-label="Input price" onChange={e => setPriceRows(priceRows.map((r, j) => (j === i ? { ...r, input: e.target.value } : r)))} />
+                <Input type="number" min={0} step="any" value={row.output} aria-label="Output price" onChange={e => setPriceRows(priceRows.map((r, j) => (j === i ? { ...r, output: e.target.value } : r)))} />
+                <Button type="button" variant="ghost" size="icon" onClick={() => setPriceRows(priceRows.filter((_, j) => j !== i))} aria-label="Remove price"><X /></Button>
+              </div>
+            ))}
+            <div className="grid grid-cols-[1fr_5.5rem_5.5rem_2.25rem] items-center gap-2">
+              <span className="text-sm text-muted-foreground">Others</span>
+              <Input type="number" min={0} step="any" value={fallback.input} aria-label="Default input price" onChange={e => setFallback({ ...fallback, input: e.target.value })} />
+              <Input type="number" min={0} step="any" value={fallback.output} aria-label="Default output price" onChange={e => setFallback({ ...fallback, output: e.target.value })} />
+              <span />
+            </div>
+            {unpriced.length ? <p className="text-xs text-warning">No price yet (counted at the "Others" price): {unpriced.join(', ')}</p> : null}
+          </CardContent>
+          <CardFooter>
+            <Button type="button" variant="outline" size="sm" onClick={() => setPriceRows([...priceRows, { model: unpriced[0] ?? '', input: '', output: '' }])}><Plus />Price</Button>
+          </CardFooter>
+        </Card>
+
         <Card>
           <CardHeader>
             <CardTitle>Models</CardTitle>

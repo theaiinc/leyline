@@ -36,6 +36,7 @@ export type KeyCaps = {
   tokensPerMonth?: number | null;
   requestsPerDay?: number | null;
   requestsPerMinute?: number | null;
+  usdPerMonth?: number | null;
   models?: string[] | null;
 };
 
@@ -54,13 +55,20 @@ export type IssuedKey = {
     requests: number;
     promptTokens: number;
     completionTokens: number;
+    usd?: number;
     byModel: Record<string, { requests: number; tokens: number }>;
   };
 };
 
+export type Price = { input: number; output: number };
+
 export type HostedSettings = {
   models: string[];
   aliases: Record<string, string>;
+  monthlyBudgetUsd: number | null;
+  prices: Record<string, Price>;
+  defaultPrice: Price;
+  spend: { month: string; usd: number; requests: number };
   saved: { at: number; by: string } | null;
   publicUrl: string;
 };

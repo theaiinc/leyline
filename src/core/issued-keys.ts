@@ -18,6 +18,8 @@ export type KeyCaps = {
   tokensPerMonth?: number | null;
   requestsPerDay?: number | null;
   requestsPerMinute?: number | null;
+  /** US dollars a month this key may spend (at the prices set on the dashboard). */
+  usdPerMonth?: number | null;
   /** Model ids (or glob patterns like "gemini-*") this key may use; unset: every model offered. */
   models?: string[] | null;
 };
@@ -41,10 +43,15 @@ export type KeyUsage = {
   requests: number;
   promptTokens: number;
   completionTokens: number;
+  /** What it cost, in US dollars, at the prices set at the time. */
+  usd?: number;
   /** Requests per day (yyyy-mm-dd), for the daily cap. */
   days: Record<string, number>;
-  byModel: Record<string, { requests: number; tokens: number }>;
+  byModel: Record<string, { requests: number; tokens: number; usd?: number }>;
 };
+
+/** Everything spent this month, across keys (and the owner's playground). */
+export type MonthSpend = { month: string; usd: number; requests: number };
 
 export interface DocStore {
   get<T>(key: string): Promise<{ value: T; gen: string } | null>;
@@ -185,9 +192,25 @@ export type HostedSettings = {
   models: string[];
   /** Requested model (exact or pattern with *) -> the model actually used. */
   aliases: Record<string, string>;
+  /** The most all keys together may spend a month, in US dollars; null: no limit. */
+  monthlyBudgetUsd: number | null;
+  /** US dollars per million tokens, by model id or pattern with * (the model actually used). */
+  prices: Record<string, Price>;
+  /** For models with no price: deliberately high, so a limit errs on the safe side. */
+  defaultPrice: Price;
   updatedAt?: number;
   updatedBy?: string;
 };
+
+export type Price = { input: number; output: number };
+export const DEFAULT_PRICE: Price = { input: 10, output: 40 };
+
+function cleanPrice(p: unknown): Price | null {
+  const o = p && typeof p === 'object' ? (p as Record<string, unknown>) : {};
+  const input = Number(o.input);
+  const output = Number(o.output);
+  return Number.isFinite(input) && Number.isFinite(output) && input >= 0 && output >= 0 ? { input, output } : null;
+}
 
 export function cleanSettings(input: Partial<HostedSettings> | null | undefined): HostedSettings {
   const models = Array.isArray(input?.models) ? [...new Set(input!.models.map((m) => String(m).trim()).filter(Boolean))].slice(0, 200) : [];
@@ -197,7 +220,32 @@ export function cleanSettings(input: Partial<HostedSettings> | null | undefined)
     const b = typeof to === 'string' ? to.trim() : '';
     if (a && b) aliases[a] = b;
   }
-  return { models, aliases };
+  const prices: Record<string, Price> = {};
+  for (const [m, p] of Object.entries(input?.prices && typeof input.prices === 'object' ? input.prices : {})) {
+    const price = cleanPrice(p);
+    if (m.trim() && price) prices[m.trim()] = price;
+  }
+  const budget = Number(input?.monthlyBudgetUsd);
+  return {
+    models,
+    aliases,
+    monthlyBudgetUsd: input?.monthlyBudgetUsd === null || input?.monthlyBudgetUsd === undefined || !Number.isFinite(budget) || budget <= 0 ? null : Math.round(budget * 100) / 100,
+    prices,
+    defaultPrice: cleanPrice(input?.defaultPrice) ?? DEFAULT_PRICE,
+  };
+}
+
+/** The price for a model: exact id, else the first matching pattern, else the default. */
+export function priceOf(settings: Pick<HostedSettings, 'prices' | 'defaultPrice'>, model: string): Price {
+  if (settings.prices[model]) return settings.prices[model];
+  for (const [p, price] of Object.entries(settings.prices)) {
+    if (p.includes('*') && modelAllowed({ models: [p] }, model)) return price;
+  }
+  return settings.defaultPrice;
+}
+
+export function costUsd(price: Price, usage: { prompt_tokens?: number; completion_tokens?: number } | undefined): number {
+  return ((usage?.prompt_tokens ?? 0) * price.input + (usage?.completion_tokens ?? 0) * price.output) / 1_000_000;
 }
 
 export const hashKey = (key: string) => createHash('sha256').update(key).digest('hex');
@@ -217,8 +265,15 @@ export class IssuedKeys {
   private readonly minute = new Map<string, number[]>();
   private readonly now: () => number;
 
-  constructor(private readonly store: DocStore, opts: { now?: () => number } = {}) {
+  private readonly sharedMinute: boolean;
+
+  /**
+   * sharedMinute: count requests a minute in the store (a fixed one-minute window) instead of in memory, for
+   * hosts that run many short-lived instances (Cloudflare Workers).
+   */
+  constructor(private readonly store: DocStore, opts: { now?: () => number; sharedMinute?: boolean } = {}) {
     this.now = opts.now ?? Date.now;
+    this.sharedMinute = opts.sharedMinute ?? false;
   }
 
   /** What hosted Leyline offers (set on the dashboard; null until first saved, then env defaults apply). */
@@ -303,13 +358,26 @@ export class IssuedKeys {
   }
 
   /** Whether this key may make a request for `model` now (and counts it against the per-minute window). */
-  async admit(key: IssuedKey, model: string): Promise<Refusal | null> {
+  /** This month's spend across keys. */
+  async spend(month = monthOf(this.now())): Promise<MonthSpend> {
+    return (await this.store.get<MonthSpend>(`spend/${month}`))?.value ?? { month, usd: 0, requests: 0 };
+  }
+
+  async admit(key: IssuedKey, model: string, budgetUsd: number | null = null): Promise<Refusal | null> {
     if (key.revokedAt) return { status: 401, code: 'key_revoked', message: 'This API key has been revoked.' };
     if (model && model !== 'auto' && !modelAllowed(key.caps, model)) {
       return { status: 403, code: 'model_not_allowed', message: `This key may not use the model "${model}".` };
     }
     const now = this.now();
-    if (key.caps.requestsPerMinute) {
+    if (key.caps.requestsPerMinute && this.sharedMinute) {
+      const limit = key.caps.requestsPerMinute;
+      let over = false;
+      await update<{ n: number }>(this.store, `rpm/${key.id}/${new Date(now).toISOString().slice(0, 16)}`, (cur) => {
+        over = (cur?.n ?? 0) >= limit;
+        return { n: (cur?.n ?? 0) + (over ? 0 : 1) };
+      });
+      if (over) return { status: 429, code: 'rate_limited', message: `This key is limited to ${limit} requests a minute.` };
+    } else if (key.caps.requestsPerMinute) {
       const window = (this.minute.get(key.id) ?? []).filter((t) => now - t < 60_000);
       if (window.length >= key.caps.requestsPerMinute) {
         this.minute.set(key.id, window);
@@ -318,8 +386,14 @@ export class IssuedKeys {
       window.push(now);
       this.minute.set(key.id, window);
     }
-    if (key.caps.tokensPerMonth || key.caps.requestsPerDay) {
+    if (budgetUsd !== null && (await this.spend()).usd >= budgetUsd) {
+      return { status: 429, code: 'budget_exhausted', message: 'This service has reached its spending limit for the month; it resets on the 1st (UTC).' };
+    }
+    if (key.caps.tokensPerMonth || key.caps.requestsPerDay || key.caps.usdPerMonth) {
       const u = await this.usage(key.id);
+      if (key.caps.usdPerMonth && (u.usd ?? 0) >= key.caps.usdPerMonth) {
+        return { status: 429, code: 'monthly_spend_exhausted', message: `This key has used its $${key.caps.usdPerMonth} for this month.` };
+      }
       if (key.caps.tokensPerMonth && u.promptTokens + u.completionTokens >= key.caps.tokensPerMonth) {
         return { status: 429, code: 'monthly_tokens_exhausted', message: `This key has used its ${key.caps.tokensPerMonth.toLocaleString('en-US')} tokens for this month.` };
       }
@@ -331,21 +405,28 @@ export class IssuedKeys {
   }
 
   /** Count a finished request against the key. */
-  async record(key: IssuedKey, model: string, usage?: { prompt_tokens?: number; completion_tokens?: number }): Promise<void> {
+  async record(key: IssuedKey | null, model: string, usage?: { prompt_tokens?: number; completion_tokens?: number }, usd = 0): Promise<void> {
     const now = this.now();
     const month = monthOf(now);
     const prompt = Math.max(0, Math.round(usage?.prompt_tokens ?? 0));
     const completion = Math.max(0, Math.round(usage?.completion_tokens ?? 0));
+    await update<MonthSpend>(this.store, `spend/${month}`, (cur) => {
+      const s = cur ?? { month, usd: 0, requests: 0 };
+      return { month, usd: s.usd + usd, requests: s.requests + 1 };
+    });
+    if (!key) return;
     await update<KeyUsage>(this.store, `usage/${key.id}/${month}`, (cur) => {
       const u = cur ?? emptyUsage(month);
       u.requests++;
       u.promptTokens += prompt;
       u.completionTokens += completion;
+      u.usd = (u.usd ?? 0) + usd;
       const d = dayOf(now);
       u.days[d] = (u.days[d] ?? 0) + 1;
       const m = (u.byModel[model || 'unknown'] ??= { requests: 0, tokens: 0 });
       m.requests++;
       m.tokens += prompt + completion;
+      m.usd = (m.usd ?? 0) + usd;
       return u;
     });
     // Last used: at most once a minute per key, to keep writes down.
@@ -368,12 +449,18 @@ function positive(v: unknown): number | null {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
 }
 
+function dollars(v: unknown): number | null {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : null;
+}
+
 export function cleanCaps(c: KeyCaps): KeyCaps {
   const models = Array.isArray(c.models) ? c.models.map((m) => String(m).trim()).filter(Boolean).slice(0, 50) : null;
   return {
     tokensPerMonth: positive(c.tokensPerMonth),
     requestsPerDay: positive(c.requestsPerDay),
     requestsPerMinute: positive(c.requestsPerMinute),
+    usdPerMonth: dollars(c.usdPerMonth),
     models: models && models.length ? models : null,
   };
 }

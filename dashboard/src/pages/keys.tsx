@@ -13,17 +13,21 @@ import { CodeBlock, EmptyState, PageHeader, SecretValue, ToneBadge, fmt, when } 
 import { api, type HostedSettings, type IssuedKey, type KeyCaps } from '@/api';
 import type { Dashboard } from '@/hooks/use-dashboard';
 
+export const money = (usd: number) => `$${usd < 1 && usd > 0 ? usd.toFixed(4) : usd.toFixed(2)}`;
+
 function capText(c: KeyCaps): string {
   const parts: string[] = [];
   if (c.tokensPerMonth) parts.push(`${fmt(c.tokensPerMonth)} tok/mo`);
   if (c.requestsPerDay) parts.push(`${fmt(c.requestsPerDay)} req/day`);
   if (c.requestsPerMinute) parts.push(`${fmt(c.requestsPerMinute)} req/min`);
+  if (c.usdPerMonth) parts.push(`$${c.usdPerMonth}/mo`);
   if (c.models?.length) parts.push(c.models.join(', '));
   return parts.length ? parts.join(' · ') : 'No limits';
 }
 
-type CapForm = { tokensPerMonth: string; requestsPerDay: string; requestsPerMinute: string; models: string };
+type CapForm = { usdPerMonth: string; tokensPerMonth: string; requestsPerDay: string; requestsPerMinute: string; models: string };
 const toForm = (c: KeyCaps = {}): CapForm => ({
+  usdPerMonth: c.usdPerMonth ? String(c.usdPerMonth) : '',
   tokensPerMonth: c.tokensPerMonth ? String(c.tokensPerMonth) : '',
   requestsPerDay: c.requestsPerDay ? String(c.requestsPerDay) : '',
   requestsPerMinute: c.requestsPerMinute ? String(c.requestsPerMinute) : '',
@@ -32,17 +36,18 @@ const toForm = (c: KeyCaps = {}): CapForm => ({
 const fromForm = (f: CapForm): KeyCaps => {
   const n = (v: string) => (v.trim() ? Number(v) : null);
   const models = f.models.split(',').map(s => s.trim()).filter(Boolean);
-  return { tokensPerMonth: n(f.tokensPerMonth), requestsPerDay: n(f.requestsPerDay), requestsPerMinute: n(f.requestsPerMinute), models: models.length ? models : null };
+  return { usdPerMonth: f.usdPerMonth.trim() ? Number(f.usdPerMonth) : null, tokensPerMonth: n(f.tokensPerMonth), requestsPerDay: n(f.requestsPerDay), requestsPerMinute: n(f.requestsPerMinute), models: models.length ? models : null };
 };
 
 function CapFields({ value, onChange, offered }: { value: CapForm; onChange: (v: CapForm) => void; offered: string[] }) {
   const set = (k: keyof CapForm) => (e: React.ChangeEvent<HTMLInputElement>) => onChange({ ...value, [k]: e.target.value });
   return (
-    <div className="grid gap-4 sm:grid-cols-3">
+    <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid gap-1.5"><Label htmlFor="cap-usd">Dollars a month</Label><Input id="cap-usd" type="number" min={0.01} step={0.01} placeholder="No limit" value={value.usdPerMonth} onChange={set('usdPerMonth')} /></div>
       <div className="grid gap-1.5"><Label htmlFor="cap-tok">Tokens a month</Label><Input id="cap-tok" type="number" min={1} placeholder="No limit" value={value.tokensPerMonth} onChange={set('tokensPerMonth')} /></div>
       <div className="grid gap-1.5"><Label htmlFor="cap-day">Requests a day</Label><Input id="cap-day" type="number" min={1} placeholder="No limit" value={value.requestsPerDay} onChange={set('requestsPerDay')} /></div>
       <div className="grid gap-1.5"><Label htmlFor="cap-min">Requests a minute</Label><Input id="cap-min" type="number" min={1} placeholder="No limit" value={value.requestsPerMinute} onChange={set('requestsPerMinute')} /></div>
-      <div className="grid gap-1.5 sm:col-span-3">
+      <div className="grid gap-1.5 sm:col-span-2">
         <Label htmlFor="cap-models">Models</Label>
         <Input id="cap-models" placeholder={offered.length ? `All offered (${offered.join(', ')})` : 'All offered'} value={value.models} onChange={set('models')} />
         <p className="text-xs text-muted-foreground">Comma-separated; <code className="font-mono">*</code> matches anything, e.g. <code className="font-mono">gemini-*</code>. Empty: every offered model.</p>
@@ -103,7 +108,9 @@ export function KeysPage({ d }: { d: Dashboard }) {
               <TableBody>
                 {visible.map(k => {
                   const tokens = (k.usage?.promptTokens ?? 0) + (k.usage?.completionTokens ?? 0);
-                  const pct = k.caps.tokensPerMonth ? Math.min(100, Math.round((100 * tokens) / k.caps.tokensPerMonth)) : null;
+                  const usd = k.usage?.usd ?? 0;
+                  const pct = k.caps.usdPerMonth ? Math.min(100, Math.round((100 * usd) / k.caps.usdPerMonth))
+                    : k.caps.tokensPerMonth ? Math.min(100, Math.round((100 * tokens) / k.caps.tokensPerMonth)) : null;
                   return (
                     <TableRow key={k.id} className={k.revokedAt ? 'opacity-60' : undefined}>
                       <TableCell className="pl-4">
@@ -115,9 +122,9 @@ export function KeysPage({ d }: { d: Dashboard }) {
                         <div className="mt-1">{k.revokedAt ? <ToneBadge tone="danger">Revoked</ToneBadge> : <ToneBadge tone="success">Active</ToneBadge>}</div>
                       </TableCell>
                       <TableCell>
-                        <div className="text-sm tabular-nums">{fmt(tokens)} tokens{pct !== null ? ` · ${pct}%` : ''}</div>
+                        <div className="text-sm tabular-nums">{money(usd)}{pct !== null ? ` · ${pct}%` : ''}</div>
                         {pct !== null ? <Progress value={pct} className="mt-1.5 h-1.5" /> : null}
-                        <div className="mt-1 text-xs text-muted-foreground tabular-nums">{fmt(k.usage?.requests ?? 0)} requests</div>
+                        <div className="mt-1 text-xs text-muted-foreground tabular-nums">{fmt(tokens)} tokens · {fmt(k.usage?.requests ?? 0)} requests</div>
                       </TableCell>
                       <TableCell className="max-w-64 text-sm whitespace-normal">{capText(k.caps)}</TableCell>
                       <TableCell className="text-sm whitespace-nowrap text-muted-foreground">{when(k.lastUsedAt)}</TableCell>

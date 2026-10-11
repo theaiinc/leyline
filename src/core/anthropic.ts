@@ -127,6 +127,8 @@ export class AnthropicStream {
   private finish: string | null = null;
   private usage = { input_tokens: 0, output_tokens: 0 };
   private sawTool = false;
+  /** Characters of text and tool input streamed, to estimate output tokens when the provider sends no usage. */
+  chars = 0;
 
   constructor(private readonly model: string, private readonly id = `msg_${randomBytes(12).toString('hex')}`) {}
 
@@ -148,6 +150,7 @@ export class AnthropicStream {
     const choice = (chunk.choices?.[0] ?? {}) as { delta?: { content?: string | null; tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }> }; finish_reason?: string | null };
     const delta = choice.delta ?? {};
     if (delta.content) {
+      this.chars += delta.content.length;
       if (this.open?.kind !== 'text') {
         out.push(...this.close());
         this.block++;
@@ -167,6 +170,7 @@ export class AnthropicStream {
         out.push({ event: 'content_block_start', data: { type: 'content_block_start', index: this.block, content_block: { type: 'tool_use', id: call.id ?? `toolu_${randomBytes(8).toString('hex')}`, name: call.function?.name ?? '', input: {} } } });
       }
       if (call.function?.arguments) {
+        this.chars += call.function.arguments.length;
         out.push({ event: 'content_block_delta', data: { type: 'content_block_delta', index: this.toolBlocks.get(i)!, delta: { type: 'input_json_delta', partial_json: call.function.arguments } } });
       }
     }

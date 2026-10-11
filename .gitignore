@@ -8,3 +8,5 @@ src-tauri/target
 src-tauri/gen
 src-tauri/icons/icon.iconset
 src-tauri/sidecar-deps
+.dev.vars
+.wrangler

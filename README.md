@@ -309,6 +309,14 @@ Run Leyline in the cloud and hand out API keys that use your provider keys, each
 | `LEYLINE_LOGIN_ISSUER`, `LEYLINE_LOGIN_CLIENT_ID`, `LEYLINE_LOGIN_CLIENT_SECRET`, `LEYLINE_SESSION_SECRET` | Aegis sign-in for the dashboard |
 | `LEYLINE_KEYCHAIN_ENABLED=false`, `LEYLINE_TUNNEL_ENABLED=false` | On cloud hosts (no Apple Keychain, no tunnel) |
 
+**Spending limit.** On *Offered models*, set what every key together may spend a month (US$), with a price per model in US$ per million tokens. Models with no price are counted at the "Others" price, which defaults high so the limit errs on the safe side. When a provider sends no usage, it's estimated at four characters a token. Requests stop with `429 budget_exhausted` once the limit is reached and start again on the 1st (UTC). A key can also have its own *dollars a month*. `LEYLINE_MONTHLY_BUDGET_USD` is the starting limit.
+
+**On Cloudflare Workers** (`wrangler.jsonc`, `worker/index.ts`): the same Express app runs through workerd's Node HTTP bridge. Keys, usage, spend, provider keys (AES-GCM under `LEYLINE_STORE_KEY`) and the request log live in D1, and the dashboard's files are Workers static assets.
+1. `npx wrangler d1 create leyline` and put the id in `wrangler.jsonc`.
+2. `npx wrangler d1 migrations apply leyline --remote`.
+3. `npm run build && npx wrangler deploy`.
+4. Set the secrets with `wrangler secret put`: `LEYLINE_STORE_KEY` (`openssl rand -base64 32`), `LEYLINE_SESSION_SECRET`, `LEYLINE_LOGIN_CLIENT_SECRET`, `LLM_API_KEY` and, optionally, `LEYLINE_ADMIN_TOKEN`.
+
 Give a person their key like this (the dashboard shows these lines when you create one):
 
 ```sh

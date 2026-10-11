@@ -167,6 +167,9 @@ function requireExternalSurfaceAllowlist(req: Request, res: Response, next: Next
   });
 }
 
+// The built dashboard. (In a Cloudflare Worker there's no __dirname; static assets are served by the Worker.)
+const PUBLIC_DIR = typeof __dirname !== 'undefined' ? path.join(__dirname, '../public') : 'public';
+
 export const createServer = (router: Router, quotaManager: QuotaManager, options: CreateServerOptions = {}) => {
   const app = express();
   const apiKeyStore = options.apiKeyStore || createDefaultSecretStore();
@@ -188,8 +191,8 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       })
     : requireClientApiKey;
 
-  const logTenantUsage = (req: Request, model: string, usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }) => {
-    if (hosted) recordUsage(hosted, req, usage);
+  const logTenantUsage = (req: Request, model: string, usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }, outChars = 0) => {
+    if (hosted) recordUsage(hosted, req, usage, outChars);
     const tenant = (req as Request & { tenant?: AegisTenant }).tenant;
     if (!tenant || !usage) return;
     try {
@@ -235,11 +238,11 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   });
 
   // Serve dashboard static files
-  app.use('/dashboard', express.static(path.join(__dirname, '../public')));
+  app.use('/dashboard', express.static(path.join(PUBLIC_DIR)));
 
   // Serve logo at root level
   app.get('/logo.png', (_req, res) => {
-    res.sendFile(path.join(__dirname, '../public/logo.png'));
+    res.sendFile(path.join(PUBLIC_DIR, 'logo.png'));
   });
 
   // Simple in-memory cache for models
@@ -334,6 +337,8 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   };
 
   const apiKeyInitialization = initializeApiKeys();
+  // Hosts that cancel work left running after a request ends (Cloudflare Workers) wait for this before serving.
+  app.locals.ready = apiKeyInitialization.catch(() => undefined);
 
   // An Arcana phone approval can land after startup/dashboard callers stopped waiting; hydrate
   // providers that are still keyless once it does. The secret value is never logged.
@@ -464,7 +469,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
 
     res.json({
         providers,
-        logs: logger.getLogs(),
+        logs: await logger.recent(),
         tunnel: getTunnelInfo?.() ?? { enabled: false, state: 'disabled' },
         clientAuth: {
           enabled: Boolean(config.clientApiKey),
@@ -880,14 +885,19 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
 
         const stream = await router.routeStream(request, routeOptions);
         let streamUsage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined;
+        let streamChars = 0;
 
         for await (const chunk of stream) {
             if (chunk.usage) streamUsage = chunk.usage;
+            for (const choice of (chunk.choices ?? []) as Array<{ delta?: { content?: string | null; tool_calls?: Array<{ function?: { arguments?: string } }> } }>) {
+              streamChars += choice.delta?.content?.length ?? 0;
+              for (const call of choice.delta?.tool_calls ?? []) streamChars += call.function?.arguments?.length ?? 0;
+            }
             res.write(`data: ${JSON.stringify(chunk)}\n\n`);
         }
         res.write('data: [DONE]\n\n');
         res.end();
-        logTenantUsage(req, request.model, streamUsage);
+        logTenantUsage(req, request.model, streamUsage, streamChars);
 
       } else {
         const response = await router.route(request, routeOptions);
