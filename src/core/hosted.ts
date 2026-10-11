@@ -27,6 +27,8 @@ export type HostedOptions = {
   adminEmails: string[];
   adminToken?: string;
   publicUrl: string;
+  /** Models turned off for every key (ids or patterns with *). */
+  blockedModels?: string[];
   /** The most all keys together may spend a month (US dollars); null: no limit. */
   monthlyBudgetUsd?: number | null;
   /** US dollars per million tokens by model (or pattern), and the price for models without one. */
@@ -91,12 +93,23 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
     const requested = typeof req.body?.model === 'string' ? req.body.model : '';
     const offered = !requested || requested === 'auto' || opts.models.length === 0 || opts.models.some((m) => modelAllowed({ models: [m] }, requested)) || !!resolveAlias(opts, requested);
     if (!offered) return fail(404, 'model_not_found', `The model "${requested}" is not offered here; see /v1/models.`);
+    if (requested && isBlocked(opts, requested)) {
+      return fail(403, 'model_disabled', `The model "${requested}" is turned off here; see /v1/models for what you can use.`);
+    }
     const refusal = await opts.keys.admit(key, requested, opts.monthlyBudgetUsd ?? null);
     if (refusal) return fail(refusal.status, refusal.code, refusal.message);
     (req as WithKey).issuedKey = key;
     (req as WithKey).requestedModel = requested;
     next();
   };
+}
+
+/** Turned off: the model asked for, or the one an alias maps it to, matches the blocked list. */
+export function isBlocked(opts: HostedOptions, model: string): boolean {
+  const blocked = opts.blockedModels ?? [];
+  if (!blocked.length) return false;
+  const matches = (m: string) => modelAllowed({ models: blocked }, m);
+  return matches(model) || matches(resolveModel(opts.aliases, model));
 }
 
 function resolveAlias(opts: HostedOptions, model: string): string | null {
@@ -152,6 +165,7 @@ export function applySettings(opts: HostedOptions, s: HostedSettings): void {
   opts.aliases = s.aliases;
   // Settings saved before the spending limit existed keep the configured limit.
   if ('monthlyBudgetUsd' in s) opts.monthlyBudgetUsd = s.monthlyBudgetUsd;
+  opts.blockedModels = s.blockedModels ?? opts.blockedModels ?? [];
   opts.prices = s.prices ?? opts.prices ?? {};
   opts.defaultPrice = s.defaultPrice ?? opts.defaultPrice ?? DEFAULT_PRICE;
   opts.settingsSaved = s.updatedAt ? { at: s.updatedAt, by: s.updatedBy ?? '' } : null;
@@ -161,6 +175,7 @@ async function settingsView(opts: HostedOptions) {
   return {
     models: opts.models,
     aliases: opts.aliases,
+    blockedModels: opts.blockedModels ?? [],
     monthlyBudgetUsd: opts.monthlyBudgetUsd ?? null,
     prices: opts.prices ?? {},
     defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE,
@@ -183,7 +198,7 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
   // ── models ──────────────────────────────────────────────────────────────────────────────────────────
   app.get('/v1/models', requireIssuedKeyNoModel(opts), (req, res) => {
     const key = (req as WithKey).issuedKey!;
-    const ids = [...opts.models, ...Object.keys(opts.aliases).filter((a) => !a.includes('*'))].filter((m, i, all) => all.indexOf(m) === i && modelAllowed(key.caps, m));
+    const ids = [...opts.models, ...Object.keys(opts.aliases).filter((a) => !a.includes('*'))].filter((m, i, all) => all.indexOf(m) === i && modelAllowed(key.caps, m) && !isBlocked(opts, m));
     res.json({ object: 'list', data: ids.map((id) => ({ id, object: 'model', created: 0, owned_by: 'leyline', type: 'model', display_name: id })) });
   });
 
@@ -277,7 +292,7 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
   app.put('/admin/api/settings', guard, async (req, res) => {
     try {
       // A save changes only what it names; the rest stays as it is.
-      const current = { models: opts.models, aliases: opts.aliases, monthlyBudgetUsd: opts.monthlyBudgetUsd ?? null, prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE };
+      const current = { models: opts.models, aliases: opts.aliases, blockedModels: opts.blockedModels ?? [], monthlyBudgetUsd: opts.monthlyBudgetUsd ?? null, prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE };
       const saved = await opts.keys.saveSettings({ ...current, ...(req.body as Partial<HostedSettings>) }, (req as Request & { admin?: string }).admin!);
       applySettings(opts, saved);
       console.log(JSON.stringify({ event: 'settings_saved', by: saved.updatedBy, models: saved.models, aliases: saved.aliases, monthlyBudgetUsd: saved.monthlyBudgetUsd }));

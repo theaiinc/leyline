@@ -317,3 +317,26 @@ describe('spend by provider and model', () => {
     expect(spend.byModel['Fake/gpt-5.5']).toMatchObject({ requests: 1, usd: 0 });
   });
 });
+
+describe('turned-off models', () => {
+  it('refuses them for every key (also through an alias) and hides them from /v1/models', async () => {
+    const { app } = setup({ models: ['gemini-2.5-pro', 'gpt-5.5'], aliases: { 'claude-*': 'gemini-2.5-pro' } });
+    const { key } = (await request(app).post('/admin/api/keys').set(ADMIN).send({ name: 'k' })).body;
+    await request(app).put('/admin/api/settings').set(ADMIN).send({ blockedModels: ['gemini-*', ' ', 'gemini-*'] });
+    const settings = (await request(app).get('/admin/api/settings').set(ADMIN)).body;
+    expect(settings.blockedModels).toEqual(['gemini-*']);
+    const direct = await request(app).post('/v1/chat/completions').set({ Authorization: `Bearer ${key}` }).send({ model: 'gemini-2.5-pro', messages: [{ role: 'user', content: 'hi' }] });
+    expect(direct.status).toBe(403);
+    expect(direct.body.error.code).toBe('model_disabled');
+    const viaAlias = await request(app).post('/v1/messages').set({ 'x-api-key': key }).send({ model: 'claude-sonnet-4-5', max_tokens: 5, messages: [{ role: 'user', content: 'hi' }] });
+    expect(viaAlias.status).toBe(403);
+    expect((await request(app).post('/v1/chat/completions').set({ Authorization: `Bearer ${key}` }).send({ model: 'gpt-5.5', messages: [{ role: 'user', content: 'hi' }] })).status).toBe(200);
+    const models = (await request(app).get('/v1/models').set({ Authorization: `Bearer ${key}` })).body.data.map((m: { id: string }) => m.id);
+    expect(models).toEqual(['gpt-5.5']);
+    // Saving something else keeps the list; turning it back on works.
+    await request(app).put('/admin/api/settings').set(ADMIN).send({ monthlyBudgetUsd: 5 });
+    expect((await request(app).get('/admin/api/settings').set(ADMIN)).body.blockedModels).toEqual(['gemini-*']);
+    await request(app).put('/admin/api/settings').set(ADMIN).send({ blockedModels: [] });
+    expect((await request(app).post('/v1/chat/completions').set({ Authorization: `Bearer ${key}` }).send({ model: 'gemini-2.5-pro', messages: [{ role: 'user', content: 'hi' }] })).status).toBe(200);
+  });
+});

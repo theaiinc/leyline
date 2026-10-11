@@ -203,6 +203,8 @@ export type HostedSettings = {
   models: string[];
   /** Requested model (exact or pattern with *) -> the model actually used. */
   aliases: Record<string, string>;
+  /** Turned off for every key: model ids or patterns with * (checked on the model asked for and the one it maps to). */
+  blockedModels?: string[];
   /** The most all keys together may spend a month, in US dollars; null: no limit. */
   monthlyBudgetUsd: number | null;
   /** US dollars per million tokens, by model id or pattern with * (the model actually used). */
@@ -237,9 +239,13 @@ export function cleanSettings(input: Partial<HostedSettings> | null | undefined)
     if (m.trim() && price) prices[m.trim()] = price;
   }
   const budget = Number(input?.monthlyBudgetUsd);
+  const blockedModels = Array.isArray(input?.blockedModels)
+    ? [...new Set(input!.blockedModels.map((m) => String(m).trim()).filter(Boolean))].slice(0, 200)
+    : [];
   return {
     models,
     aliases,
+    blockedModels,
     monthlyBudgetUsd: input?.monthlyBudgetUsd === null || input?.monthlyBudgetUsd === undefined || !Number.isFinite(budget) || budget <= 0 ? null : Math.round(budget * 100) / 100,
     prices,
     defaultPrice: cleanPrice(input?.defaultPrice) ?? DEFAULT_PRICE,

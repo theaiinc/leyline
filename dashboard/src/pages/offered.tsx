@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowRight, Plus, Sparkles, X } from 'lucide-react';
+import { ArrowRight, Ban, Plus, Search, Sparkles, X } from 'lucide-react';
+import { Switch } from '@/components/ui/switch';
 import { toast } from 'sonner';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -24,6 +25,8 @@ export function OfferedPage({ d }: { d: Dashboard }) {
   const [budget, setBudget] = useState('');
   const [priceRows, setPriceRows] = useState<PriceRow[]>([]);
   const [fallback, setFallback] = useState({ input: '', output: '' });
+  const [blocked, setBlocked] = useState<string[]>([]);
+  const [blockSearch, setBlockSearch] = useState('');
   const [saving, setSaving] = useState(false);
 
   const apply = (s: HostedSettings) => {
@@ -33,6 +36,7 @@ export function OfferedPage({ d }: { d: Dashboard }) {
     setBudget(s.monthlyBudgetUsd ? String(s.monthlyBudgetUsd) : '');
     setPriceRows(Object.entries(s.prices).map(([model, p]) => ({ model, input: String(p.input), output: String(p.output) })));
     setFallback({ input: String(s.defaultPrice.input), output: String(s.defaultPrice.output) });
+    setBlocked(s.blockedModels ?? []);
   };
   useEffect(() => {
     api<HostedSettings>('/admin/api/settings').then(apply).catch(error => toast.error(error instanceof Error ? error.message : 'Could not load settings'));
@@ -51,7 +55,26 @@ export function OfferedPage({ d }: { d: Dashboard }) {
     || JSON.stringify(aliases) !== JSON.stringify(settings.aliases)
     || monthlyBudgetUsd !== settings.monthlyBudgetUsd
     || JSON.stringify(prices) !== JSON.stringify(settings.prices)
-    || JSON.stringify(defaultPrice) !== JSON.stringify(settings.defaultPrice));
+    || JSON.stringify(defaultPrice) !== JSON.stringify(settings.defaultPrice)
+    || JSON.stringify(blocked) !== JSON.stringify(settings.blockedModels ?? []));
+  const globMatch = (pattern: string, m: string) => (pattern.includes('*')
+    ? new RegExp(`^${pattern.split('*').map(x => x.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`, 'i').test(m)
+    : pattern.toLowerCase() === m.toLowerCase());
+  const isOff = (m: string) => blocked.some(p => globMatch(p, m));
+  const blockQuery = blockSearch.trim().toLowerCase();
+  const blockList = (blockQuery ? known.filter(m => m.toLowerCase().includes(blockQuery)) : known.filter(isOff)).slice(0, 60);
+  const toggleModel = (m: string, on: boolean) => {
+    if (on) {
+      // Turning one back on: drop its exact entry; a pattern that still covers it stays (shown below).
+      setBlocked(blocked.filter(p => p.toLowerCase() !== m.toLowerCase()));
+    } else if (!isOff(m)) {
+      setBlocked([...blocked, m]);
+    }
+  };
+  const addBlock = (value: string) => {
+    const v = value.trim();
+    if (v && !blocked.includes(v)) setBlocked([...blocked, v]);
+  };
   const unpriced = models.filter(m => !m.includes('*') && !prices[m] && !Object.keys(prices).some(p => p.includes('*') && new RegExp(`^${p.split('*').map(x => x.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`, 'i').test(m)));
 
   function add(model: string) {
@@ -71,7 +94,7 @@ export function OfferedPage({ d }: { d: Dashboard }) {
   async function save() {
     setSaving(true);
     try {
-      apply(await api<HostedSettings>('/admin/api/settings', { method: 'PUT', body: { models, aliases, monthlyBudgetUsd, prices, defaultPrice } }));
+      apply(await api<HostedSettings>('/admin/api/settings', { method: 'PUT', body: { models, aliases, blockedModels: blocked, monthlyBudgetUsd, prices, defaultPrice } }));
       toast.success('Saved.');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not save');
@@ -90,6 +113,51 @@ export function OfferedPage({ d }: { d: Dashboard }) {
         actions={<Button onClick={save} disabled={!dirty || saving}>{saving ? 'Saving…' : 'Save changes'}</Button>}
       />
       {settings && !settings.saved ? <Alert className="mb-4"><AlertDescription>Showing the defaults from the server's environment. Saving here makes the dashboard the source from now on.</AlertDescription></Alert> : null}
+
+      <Card className="mb-4">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2"><Ban className="size-4" />Turned off</CardTitle>
+          <CardDescription>Models no access key can use, even through an alias, and that agents won't see in <code className="font-mono text-xs">/v1/models</code>. Your own playground isn't affected.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4">
+          <div className="flex flex-wrap items-center gap-2">
+            {blocked.length ? blocked.map(p => (
+              <Badge key={p} variant="outline" className="gap-1 border-destructive/30 bg-destructive/10 py-1 pr-1 font-mono text-destructive">
+                {p}{p.includes('*') ? <span className="font-sans text-[10px] opacity-70">({known.filter(m => globMatch(p, m)).length})</span> : null}
+                <button type="button" className="rounded-sm p-0.5 hover:bg-background" onClick={() => setBlocked(blocked.filter(x => x !== p))} aria-label={`Turn ${p} back on`}><X className="size-3" /></button>
+              </Badge>
+            )) : <span className="text-sm text-muted-foreground">Nothing turned off.</span>}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {['*claude-opus*', '*claude-sonnet*'].filter(p => !blocked.includes(p)).map(p => (
+              <Button key={p} type="button" variant="outline" size="sm" className="font-mono text-xs" onClick={() => addBlock(p)}><Plus />{p}</Button>
+            ))}
+          </div>
+          <div className="relative max-w-md">
+            <Search className="absolute top-2.5 left-2.5 size-4 text-muted-foreground" />
+            <Input className="pl-8" value={blockSearch} onChange={e => setBlockSearch(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && blockSearch.includes('*')) { addBlock(blockSearch); setBlockSearch(''); } }}
+              placeholder="Find a model to turn off (or type a pattern like claude-* and press Enter)" aria-label="Find a model" />
+          </div>
+          {blockList.length ? (
+            <div className="grid max-h-80 gap-1 overflow-y-auto sm:grid-cols-2">
+              {blockList.map(m => {
+                const off = isOff(m);
+                const byPattern = off && !blocked.some(p => p.toLowerCase() === m.toLowerCase());
+                return (
+                  <label key={m} className="flex items-center justify-between gap-3 rounded-md px-2 py-1.5 hover:bg-muted/50">
+                    <span className="min-w-0">
+                      <span className={off ? 'font-mono text-xs text-muted-foreground line-through' : 'font-mono text-xs'}>{m}</span>
+                      {byPattern ? <span className="block text-[11px] text-muted-foreground">off by a pattern above</span> : null}
+                    </span>
+                    <Switch checked={!off} disabled={byPattern} onCheckedChange={on => toggleModel(m, on)} aria-label={`${m} ${off ? 'off' : 'on'}`} />
+                  </label>
+                );
+              })}
+            </div>
+          ) : blockQuery ? <p className="text-sm text-muted-foreground">No model matches "{blockSearch}".</p> : null}
+        </CardContent>
+      </Card>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
