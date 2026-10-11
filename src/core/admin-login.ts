@@ -85,8 +85,8 @@ export class AegisAuth {
     return this.discovery;
   }
 
-  /** Where to send the browser, and the cookie that remembers this attempt. */
-  async start(next: string): Promise<{ url: string; cookie: string }> {
+  /** Where to send the browser, and the cookie that remembers this attempt. switchAccount: ask Aegis to sign in again. */
+  async start(next: string, opts: { switchAccount?: boolean } = {}): Promise<{ url: string; cookie: string }> {
     const d = await this.discover();
     const pending: PendingLogin = {
       state: b64u(randomBytes(16)),
@@ -105,6 +105,7 @@ export class AegisAuth {
       nonce: pending.nonce,
       code_challenge: b64u(createHash('sha256').update(pending.verifier).digest()),
       code_challenge_method: 'S256',
+      ...(opts.switchAccount ? { prompt: 'login' } : {}),
     }).toString();
     return { url: url.toString(), cookie: cookie('leyline_login', sign(pending, this.cfg.sessionSecret), 600) };
   }

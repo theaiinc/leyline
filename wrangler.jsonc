@@ -23,7 +23,7 @@
     "LEYLINE_TUNNEL_ENABLED": "false",
     "LEYLINE_LOGIN_ISSUER": "https://id.theaiinc.com",
     "LEYLINE_LOGIN_CLIENT_ID": "leyline-dashboard",
-    "LEYLINE_ADMIN_EMAILS": "stevetran.dev@gmail.com",
+    "LEYLINE_ADMIN_EMAILS": "stevetran.dev@gmail.com,steve.tran@theaiinc.com",
     // What all keys together may spend a month until it's changed on the dashboard (Offered models → Spending).
     "LEYLINE_MONTHLY_BUDGET_USD": "50",
     "LLM_API_BASE_URL": "https://api.llmapi.ai/v1"

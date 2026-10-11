@@ -118,7 +118,7 @@ export function adminOf(opts: HostedOptions, req: Request): string | null {
     if (a.length === b.length && timingSafeEqual(a, b)) return 'token';
   }
   const s = opts.login?.session(req.headers.cookie);
-  return s && opts.adminEmails.includes(s.email) ? s.email : null;
+  return s && opts.adminEmails.includes(s.email.toLowerCase()) ? s.email : null;
 }
 
 export function sameOrigin(opts: HostedOptions, req: Request): boolean {
@@ -220,7 +220,7 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
   if (login) {
     app.get('/auth/login', async (req, res) => {
       try {
-        const { url, cookie: c } = await login.start(typeof req.query.next === 'string' ? req.query.next : '/admin');
+        const { url, cookie: c } = await login.start(typeof req.query.next === 'string' ? req.query.next : '/dashboard/', { switchAccount: req.query.switch === '1' });
         res.setHeader('Set-Cookie', c);
         res.redirect(302, url);
       } catch (err) {
@@ -230,9 +230,9 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
     app.get('/auth/callback', async (req, res) => {
       try {
         const done = await login.finish(new URLSearchParams(req.url.split('?')[1] ?? ''), req.headers.cookie);
-        if (!opts.adminEmails.includes(done.session.email)) {
+        if (!opts.adminEmails.includes(done.session.email.toLowerCase())) {
           res.setHeader('Set-Cookie', cookie('leyline_login', '', 0));
-          return res.status(403).send(`${done.session.email} can't manage this Leyline.`);
+          return res.status(403).type('html').send(refusedPage(done.session.email));
         }
         res.setHeader('Set-Cookie', [done.cookie, cookie('leyline_login', '', 0)]);
         res.redirect(302, done.next);
@@ -300,6 +300,17 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
       res.status(404).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
+}
+
+/** Signed in, but not one of the owners: say so, and offer another account. */
+function refusedPage(email: string): string {
+  const esc = (t: string) => t.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Leyline</title>
+<style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;font:15px/1.5 system-ui,sans-serif;background:#0b0d12;color:#eef1f7}
+@media (prefers-color-scheme: light){body{background:#f6f7fb;color:#141824}}main{max-width:420px;padding:24px;text-align:center}
+a{display:inline-block;margin-top:16px;padding:9px 16px;border-radius:9px;background:#3557e8;color:#fff;text-decoration:none}</style></head>
+<body><main><h1 style="font-size:20px">Not an owner of this Leyline</h1><p>You signed in as <strong>${esc(email)}</strong>, which can't manage it.</p>
+<a href="/auth/login?next=/dashboard/&amp;switch=1">Use a different account</a></main></body></html>`;
 }
 
 /** The key check for endpoints with no model in the body (models list, token counting). */
