@@ -1,3 +1,4 @@
+import { sanitizeToolSchemas } from './tool-schema';
 import type { ChatMessage, CompletionRequest } from '../core/types';
 import { ensureMessageArray } from '../core/normalize-request';
 
@@ -208,7 +209,7 @@ export function prepareAzureChatParams(
   }
 
   if (tools !== undefined) {
-    params.tools = sanitizeAzureTools(tools);
+    params.tools = sanitizeToolSchemas(sanitizeAzureTools(tools));
     if (!params.tools) {
       delete params.tool_choice;
       delete params.parallel_tool_calls;
