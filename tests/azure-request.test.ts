@@ -174,3 +174,51 @@ describe('token limit on Azure', () => {
     expect(p.max_tokens).toBeUndefined();
   });
 });
+
+describe('tool schemas some providers reject', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { stripUnsupportedPatterns } = require('../src/providers/tool-schema') as typeof import('../src/providers/tool-schema');
+  it('drops regex patterns with lookaround, keeps the rest (and properties named "pattern")', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        email: { type: 'string', pattern: '^(?!.*\\.\\.)[^@]+@[^@]+$' },
+        code: { type: 'string', pattern: '^[A-Z]{3}$' },
+        pattern: { type: 'string', description: 'a glob' },
+        nested: { type: 'array', items: { type: 'string', pattern: '(?<=x)y' } },
+      },
+    };
+    expect(stripUnsupportedPatterns(schema)).toEqual({
+      type: 'object',
+      properties: {
+        email: { type: 'string' },
+        code: { type: 'string', pattern: '^[A-Z]{3}$' },
+        pattern: { type: 'string', description: 'a glob' },
+        nested: { type: 'array', items: { type: 'string' } },
+      },
+    });
+  });
+});
+
+describe('Azure: reasoning with tools', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { withToolReasoningFallback } = require('../src/providers/azure-openai') as typeof import('../src/providers/azure-openai');
+  it('retries once with reasoning off when the deployment refuses reasoning with tools', async () => {
+    const params: Record<string, unknown> = { model: 'gpt-5.6-luna', tools: [{}], reasoning_effort: 'medium' };
+    const seen: unknown[] = [];
+    const out = await withToolReasoningFallback(params, async () => {
+      seen.push(params.reasoning_effort);
+      if (params.reasoning_effort !== 'none') {
+        throw Object.assign(new Error("400 Function tools with reasoning_effort are not supported for gpt-5.6-luna. Set reasoning_effort to 'none'."), { status: 400 });
+      }
+      return 'ok';
+    });
+    expect(out).toBe('ok');
+    expect(seen).toEqual(['medium', 'none']);
+  });
+  it('other errors pass through untouched', async () => {
+    const params: Record<string, unknown> = { model: 'm', tools: [{}], reasoning_effort: 'medium' };
+    await expect(withToolReasoningFallback(params, async () => { throw Object.assign(new Error('429 slow down'), { status: 429 }); })).rejects.toThrow('429');
+    expect(params.reasoning_effort).toBe('medium');
+  });
+});

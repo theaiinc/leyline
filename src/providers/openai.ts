@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { sanitizeToolSchemas } from './tool-schema';
 import { Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail } from '../core/types';
 import { config } from '../config';
 
@@ -145,6 +146,7 @@ export function upstreamBody(request: CompletionRequest, model: string, stream: 
   for (const key of PASSTHROUGH) {
     if (request[key] !== undefined && request[key] !== null) body[key] = request[key];
   }
+  if (body.tools) body.tools = sanitizeToolSchemas(body.tools);
   // OpenAI's reasoning models reject max_tokens and take max_completion_tokens instead; other models (Claude,
   // DeepSeek … behind a gateway) keep max_tokens.
   if (body.max_tokens !== undefined && REASONING_MODEL.test(model.split('/').pop() ?? model)) {

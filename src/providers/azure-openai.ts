@@ -32,6 +32,26 @@ function toProviderError(error: unknown): unknown {
  * `AzureOpenAI` for legacy deployment URLs) so streaming, tool calls,
  * and Cursor passthrough fields are handled by the library — not raw axios.
  */
+/**
+ * Deployments that refused reasoning together with function tools on /chat/completions (gpt-5.6-luna: "Function
+ * tools with reasoning_effort are not supported … set reasoning_effort to 'none'"). Coding agents send both.
+ */
+const NO_REASONING_WITH_TOOLS = new Set<string>();
+
+/** Run a chat call; if the deployment refuses reasoning with tools, remember it and retry once with reasoning off. */
+export async function withToolReasoningFallback<T>(params: Record<string, unknown>, call: () => Promise<T>, deployment = String(params.model ?? '')): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const refused = (error as { status?: number }).status === 400 && /reasoning_effort/i.test(message) && /tool/i.test(message);
+    if (!refused || !params.tools || params.reasoning_effort === 'none') throw error;
+    NO_REASONING_WITH_TOOLS.add(deployment);
+    params.reasoning_effort = 'none';
+    return call();
+  }
+}
+
 export class AzureOpenAIProvider implements Provider {
   name = 'AzureOpenAI';
   family = 'AzureOpenAI' as const;
@@ -102,33 +122,36 @@ export class AzureOpenAIProvider implements Provider {
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
     try {
       const client = this.getClient();
-      const params = prepareAzureChatParams(
-        request,
-        false,
-        this.deployment || request.model,
-        this.useOpenAICompatibleEndpoint,
-      );
-      const response = await client.chat.completions.create(
+      const params = this.chatParams(request, false);
+      const response = await withToolReasoningFallback(params, () => client.chat.completions.create(
         params as unknown as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
-      );
+      ), this.deploymentFor(request));
       return response as unknown as CompletionResponse;
     } catch (error) {
       throw toProviderError(error);
     }
   }
 
+  private deploymentFor(request: CompletionRequest): string {
+    return this.deployment || request.model;
+  }
+
+  /** The chat params for this deployment; reasoning off up front for models known to reject it with tools. */
+  private chatParams(request: CompletionRequest, stream: boolean): Record<string, unknown> {
+    const params = prepareAzureChatParams(request, stream, this.deployment || request.model, this.useOpenAICompatibleEndpoint);
+    if (params.tools && params.reasoning_effort && NO_REASONING_WITH_TOOLS.has(this.deploymentFor(request))) {
+      params.reasoning_effort = 'none';
+    }
+    return params;
+  }
+
   async *completeStream(request: CompletionRequest): AsyncGenerator<StreamChunk, void, unknown> {
     try {
       const client = this.getClient();
-      const params = prepareAzureChatParams(
-        request,
-        true,
-        this.deployment || request.model,
-        this.useOpenAICompatibleEndpoint,
-      );
-      const stream = await client.chat.completions.create(
+      const params = this.chatParams(request, true);
+      const stream = await withToolReasoningFallback(params, () => client.chat.completions.create(
         params as unknown as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming,
-      );
+      ), this.deploymentFor(request));
 
       for await (const chunk of stream) {
         yield chunk as unknown as StreamChunk;
@@ -137,6 +160,7 @@ export class AzureOpenAIProvider implements Provider {
       throw toProviderError(error);
     }
   }
+
 
   private getClient(): OpenAI {
     if (!this.client) {
