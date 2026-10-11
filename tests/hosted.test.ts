@@ -340,3 +340,52 @@ describe('turned-off models', () => {
     expect((await request(app).post('/v1/chat/completions').set({ Authorization: `Bearer ${key}` }).send({ model: 'gemini-2.5-pro', messages: [{ role: 'user', content: 'hi' }] })).status).toBe(200);
   });
 });
+
+describe('published prices', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { parsePublishedPricing } = require('../src/core/pricing') as typeof import('../src/core/pricing');
+
+  it('reads per-token prices (llmapi / OpenRouter) as dollars per million tokens', () => {
+    expect(parsePublishedPricing({ prompt: '0.0000002', completion: '0.0000012' })).toEqual({ input: 0.2, output: 1.2 });
+    expect(parsePublishedPricing({ prompt: '0', completion: '0' })).toEqual({ input: 0, output: 0 });
+    expect(parsePublishedPricing({ prompt: 'n/a' })).toBeUndefined();
+    expect(parsePublishedPricing(undefined)).toBeUndefined();
+  });
+
+  /** The fake upstream, publishing a price for gemini-2.5-pro: $10,000 per million input tokens. */
+  class PricedUpstream extends FakeUpstream {
+    async getModels() { return [{ id: 'gemini-2.5-pro', pricing: { input: 10_000, output: 0 } }, { id: 'gpt-5.5' }]; }
+  }
+  const pricedSetup = async (over: Partial<HostedOptions> = {}) => {
+    const quotaManager = new QuotaManager();
+    const router = new Router({ quotaManager, modelRegistry: new ModelRegistry() });
+    router.addProvider(new PricedUpstream());
+    await router.reindexAll();
+    const hosted: HostedOptions = { keys: new IssuedKeys(new MemoryDocStore()), models: [], aliases: {}, login: null, adminEmails: [], adminToken: 'admin-secret-token', publicUrl: 'https://leyline.test', defaultPrice: { input: 0, output: 0 }, ...over };
+    const app = createServer(router, quotaManager, { hosted, enforceExternalSurface: false, apiKeyStore: new MemorySecretStore() });
+    const { key } = (await request(app).post('/admin/api/keys').set(ADMIN).send({ name: 'k' })).body;
+    const call = async (model: string) => {
+      await request(app).post('/v1/chat/completions').set({ Authorization: `Bearer ${key}` }).send({ model, messages: [{ role: 'user', content: 'hi' }] });
+      await new Promise((r) => setTimeout(r, 10));
+    };
+    const spend = async () => (await request(app).get('/admin/api/spend').set(ADMIN)).body.spend;
+    return { app, call, spend };
+  };
+
+  it('prices a model at what its provider publishes (100 prompt tokens at $10,000/M = $1)', async () => {
+    const { app, call, spend } = await pricedSetup();
+    await call('gemini-2.5-pro');
+    expect((await spend()).byModel['Fake/gemini-2.5-pro'].usd).toBeCloseTo(1);
+    expect((await request(app).get('/admin/api/settings').set(ADMIN)).body).toMatchObject({ usePublishedPrices: true, publishedPrices: { Fake: 1 } });
+  });
+
+  it('a price set by hand wins; switched off, the default applies', async () => {
+    const { app, call, spend } = await pricedSetup();
+    await request(app).put('/admin/api/settings').set(ADMIN).send({ prices: { 'gemini-2.5-pro': { input: 1_000, output: 0 } } });
+    await call('gemini-2.5-pro');
+    expect((await spend()).byModel['Fake/gemini-2.5-pro'].usd).toBeCloseTo(0.1);
+    await request(app).put('/admin/api/settings').set(ADMIN).send({ prices: {}, usePublishedPrices: false });
+    await call('gemini-2.5-pro');
+    expect((await spend()).byModel['Fake/gemini-2.5-pro'].usd).toBeCloseTo(0.1); // the second request cost the $0 default
+  });
+});

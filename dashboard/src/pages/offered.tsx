@@ -26,6 +26,7 @@ export function OfferedPage({ d }: { d: Dashboard }) {
   const [priceRows, setPriceRows] = useState<PriceRow[]>([]);
   const [fallback, setFallback] = useState({ input: '', output: '' });
   const [blocked, setBlocked] = useState<string[]>([]);
+  const [usePublished, setUsePublished] = useState(true);
   const [blockSearch, setBlockSearch] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -37,6 +38,7 @@ export function OfferedPage({ d }: { d: Dashboard }) {
     setPriceRows(Object.entries(s.prices).map(([model, p]) => ({ model, input: String(p.input), output: String(p.output) })));
     setFallback({ input: String(s.defaultPrice.input), output: String(s.defaultPrice.output) });
     setBlocked(s.blockedModels ?? []);
+    setUsePublished(s.usePublishedPrices !== false);
   };
   useEffect(() => {
     api<HostedSettings>('/admin/api/settings').then(apply).catch(error => toast.error(error instanceof Error ? error.message : 'Could not load settings'));
@@ -56,7 +58,9 @@ export function OfferedPage({ d }: { d: Dashboard }) {
     || monthlyBudgetUsd !== settings.monthlyBudgetUsd
     || JSON.stringify(prices) !== JSON.stringify(settings.prices)
     || JSON.stringify(defaultPrice) !== JSON.stringify(settings.defaultPrice)
-    || JSON.stringify(blocked) !== JSON.stringify(settings.blockedModels ?? []));
+    || JSON.stringify(blocked) !== JSON.stringify(settings.blockedModels ?? [])
+    || usePublished !== (settings.usePublishedPrices !== false));
+  const publishedTotal = Object.values(settings?.publishedPrices ?? {}).reduce((a, b) => a + b, 0);
   const globMatch = (pattern: string, m: string) => (pattern.includes('*')
     ? new RegExp(`^${pattern.split('*').map(x => x.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`, 'i').test(m)
     : pattern.toLowerCase() === m.toLowerCase());
@@ -94,7 +98,7 @@ export function OfferedPage({ d }: { d: Dashboard }) {
   async function save() {
     setSaving(true);
     try {
-      apply(await api<HostedSettings>('/admin/api/settings', { method: 'PUT', body: { models, aliases, blockedModels: blocked, monthlyBudgetUsd, prices, defaultPrice } }));
+      apply(await api<HostedSettings>('/admin/api/settings', { method: 'PUT', body: { models, aliases, blockedModels: blocked, monthlyBudgetUsd, prices, defaultPrice, usePublishedPrices: usePublished } }));
       toast.success('Saved.');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not save');
@@ -186,9 +190,20 @@ export function OfferedPage({ d }: { d: Dashboard }) {
         <Card>
           <CardHeader>
             <CardTitle>Prices</CardTitle>
-            <CardDescription>US$ per million tokens for the model actually used (after aliases); <code className="font-mono text-xs">*</code> matches anything. Use your provider's prices.</CardDescription>
+            <CardDescription>US$ per million tokens for the model that answered. A price set here wins; otherwise the provider's published price; otherwise "Others". <code className="font-mono text-xs">*</code> matches anything.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-2">
+            <label className="mb-2 flex items-start justify-between gap-3 rounded-lg border p-3">
+              <span className="grid gap-0.5">
+                <span className="text-sm font-medium">Use providers' published prices</span>
+                <span className="text-xs text-muted-foreground">
+                  {publishedTotal
+                    ? `${publishedTotal.toLocaleString()} models priced automatically: ${Object.entries(settings?.publishedPrices ?? {}).map(([p, n]) => `${p} ${n}`).join(', ')}. Updated with each provider's model list.`
+                    : 'llmapi.ai and OpenRouter publish prices with their model lists; none loaded yet.'}
+                </span>
+              </span>
+              <Switch checked={usePublished} onCheckedChange={setUsePublished} aria-label="Use providers' published prices" />
+            </label>
             <div className="grid grid-cols-[1fr_5.5rem_5.5rem_2.25rem] gap-2 text-xs text-muted-foreground"><span>Model</span><span>Input</span><span>Output</span><span /></div>
             {priceRows.map((row, i) => (
               <div key={i} className="grid grid-cols-[1fr_5.5rem_5.5rem_2.25rem] items-center gap-2">
@@ -204,7 +219,7 @@ export function OfferedPage({ d }: { d: Dashboard }) {
               <Input type="number" min={0} step="any" value={fallback.output} aria-label="Default output price" onChange={e => setFallback({ ...fallback, output: e.target.value })} />
               <span />
             </div>
-            {unpriced.length ? <p className="text-xs text-warning">No price yet (counted at the "Others" price): {unpriced.join(', ')}</p> : null}
+            {unpriced.length ? <p className="text-xs text-muted-foreground">No price set here{usePublished ? ' (the provider\'s published price applies, else "Others")' : ' (counted at "Others")'}: {unpriced.join(', ')}</p> : null}
           </CardContent>
           <CardFooter>
             <Button type="button" variant="outline" size="sm" onClick={() => setPriceRows([...priceRows, { model: unpriced[0] ?? '', input: '', output: '' }])}><Plus />Price</Button>

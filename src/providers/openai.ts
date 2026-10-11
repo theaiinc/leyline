@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { sanitizeToolSchemas } from './tool-schema';
+import { parsePublishedPricing } from '../core/pricing';
 import { Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail } from '../core/types';
 import { config } from '../config';
 
@@ -44,6 +45,8 @@ export class OpenAIProvider implements Provider {
       return (response.data?.data || []).map((m: any) => ({
         id: m.id,
         name: m.id,
+        // OpenAI itself publishes none; gateways on this API (llmapi.ai) do.
+        ...(parsePublishedPricing(m.pricing) ? { pricing: parsePublishedPricing(m.pricing) } : {}),
       }));
     } catch (error) {
       console.error('[OpenAI] Failed to list models:', error);
