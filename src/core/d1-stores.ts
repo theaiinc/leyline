@@ -1,6 +1,6 @@
 import { Conflict, type DocStore } from './issued-keys';
 import type { LogEntry } from './logger';
-import type { ApiKeySource, SecretStore, SecretStoreStatus } from './secret-store';
+import { ArcanaCloudFallbackSecretStore, ArcanaCloudSecretStore, type ApiKeySource, type ArcanaCloudConfig, type SecretStore, type SecretStoreStatus } from './secret-store';
 
 /**
  * Storage for Leyline on Cloudflare Workers, in one D1 database (migrations in worker/migrations):
@@ -101,6 +101,12 @@ export class D1SecretStore implements SecretStore {
     this.cache.set(account, undefined);
   }
 
+  /** Accounts stored under a prefix. */
+  async accounts(prefix: string): Promise<string[]> {
+    const { results = [] } = await this.db.prepare('SELECT account FROM secrets WHERE substr(account, 1, ?) = ?').bind(prefix.length, prefix).all<{ account: string }>();
+    return results.map((r) => r.account);
+  }
+
   /** Forget cached values (another instance may have changed them). */
   forget(): void {
     this.cache.clear();
@@ -112,6 +118,60 @@ export class D1SecretStore implements SecretStore {
 
   async getSource(account: string): Promise<ApiKeySource> {
     return (await this.get(account)) ? 'keychain' : 'none';
+  }
+}
+
+const REF_PREFIX = 'arcana-reference:';
+
+/**
+ * Provider keys from Arcana Cloud when the dashboard names a reference for them, else the encrypted D1 store. The
+ * references chosen on the dashboard are saved (encrypted) in D1 too, so every instance and restart uses them.
+ * Saving a key directly, or clearing it, drops the provider's reference.
+ */
+export class D1ArcanaCloudStore extends ArcanaCloudFallbackSecretStore {
+  private pending: Promise<unknown> = Promise.resolve();
+
+  private constructor(private readonly d1: D1SecretStore, cloud: ArcanaCloudSecretStore) {
+    super(cloud, d1);
+  }
+
+  static async open(d1: D1SecretStore, config: ArcanaCloudConfig, envReferences: Record<string, string>): Promise<D1ArcanaCloudStore> {
+    const references = { ...envReferences };
+    for (const key of await d1.accounts(REF_PREFIX)) {
+      const reference = await d1.get(key);
+      if (reference) references[key.slice(REF_PREFIX.length)] = reference;
+    }
+    return new D1ArcanaCloudStore(d1, new ArcanaCloudSecretStore(references, config));
+  }
+
+  private later(work: () => Promise<unknown>): void {
+    this.pending = this.pending.then(work).catch((err) => console.error('[Leyline] saving an Arcana reference failed', err));
+  }
+
+  async get(account: string): Promise<string | undefined> {
+    await this.pending;
+    return super.get(account);
+  }
+
+  setArcanaReference(account: string, reference: string): void {
+    super.setArcanaReference(account, reference);
+    this.later(() => this.d1.set(REF_PREFIX + account, reference));
+  }
+
+  async set(account: string, secret: string): Promise<void> {
+    await this.pending;
+    await this.d1.delete(REF_PREFIX + account);
+    return super.set(account, secret);
+  }
+
+  async delete(account: string): Promise<void> {
+    await this.pending;
+    await this.d1.delete(REF_PREFIX + account);
+    return super.delete(account);
+  }
+
+  status(): SecretStoreStatus {
+    return this.d1.status();
   }
 }
 

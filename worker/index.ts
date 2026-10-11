@@ -3,7 +3,8 @@ import type { Server } from 'node:http';
 import { buildRouter, hostedOptions } from '../src/index';
 import { createServer } from '../src/server';
 import { adminOf, applySettings, type HostedOptions } from '../src/core/hosted';
-import { D1DocStore, D1LogStore, D1SecretStore, type D1Database } from '../src/core/d1-stores';
+import { D1ArcanaCloudStore, D1DocStore, D1LogStore, D1SecretStore, type D1Database } from '../src/core/d1-stores';
+import { arcanaCloudConfigFromEnv, parseArcanaCloudReferences, type SecretStore } from '../src/core/secret-store';
 import { logger } from '../src/core/logger';
 
 /**
@@ -35,7 +36,11 @@ async function secretsVersion(db: D1Database): Promise<string> {
 }
 
 async function build(env: Env): Promise<Built> {
-  const secrets = new D1SecretStore(env.DB, env.LEYLINE_STORE_KEY);
+  const d1Secrets = new D1SecretStore(env.DB, env.LEYLINE_STORE_KEY);
+  // With an Arcana Cloud service client configured (LEYLINE_ARCANA_CLOUD_*), providers can take their keys from
+  // Arcana references chosen on the dashboard.
+  const arcana = arcanaCloudConfigFromEnv();
+  const secrets: SecretStore = arcana ? await D1ArcanaCloudStore.open(d1Secrets, arcana, parseArcanaCloudReferences()) : d1Secrets;
   const docs = new D1DocStore(env.DB);
   const logs = new D1LogStore(env.DB);
   logger.persistTo((entry) => {
