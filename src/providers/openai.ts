@@ -64,44 +64,61 @@ export class OpenAIProvider implements Provider {
   }
 
   async *completeStream(request: CompletionRequest): AsyncGenerator<StreamChunk, void, unknown> {
-    const response = await axios.post(
-      `${this.baseUrl}/chat/completions`,
-      // Ask for the token usage at the end of the stream (per-key metering needs it).
-      { ...upstreamBody(request, request.model || this.model, true), stream_options: { include_usage: true } },
-      {
+    // fetch, not axios: axios's stream responses don't exist on Cloudflare Workers (hosted Leyline), fetch's
+    // streams work there and in Node alike.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 300000);
+    try {
+      const response = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: 'POST',
         headers: this.headers(),
-        responseType: 'stream',
-        timeout: 300000,
-      },
-    );
+        // Ask for the token usage at the end of the stream (per-key metering needs it).
+        body: JSON.stringify({ ...upstreamBody(request, request.model || this.model, true), stream_options: { include_usage: true } }),
+        signal: controller.signal,
+      });
+      if (!response.ok || !response.body) {
+        const detail = (await response.text().catch(() => '')).slice(0, 500);
+        const error = new Error(`${this.name} stream failed with HTTP ${response.status}: ${detail}`) as Error & { status?: number };
+        error.status = response.status;
+        throw error;
+      }
 
-    // An SSE line can be split across network chunks (tool-call arguments stream in pieces):
-    // keep the unfinished tail and parse it with the next chunk.
-    const stream: any = response.data;
-    let pending = '';
-    for await (const chunk of stream) {
-      pending += chunk.toString();
-      const lines = pending.split('\n');
-      pending = lines.pop() ?? '';
-      for (const raw of lines) {
-        const line = raw.trim();
-        if (!line.startsWith('data:')) continue;
-        const data = line.slice(5).trim();
-        if (data === '[DONE]') return;
-        try {
-          yield JSON.parse(data);
-        } catch {
-          // not JSON (a comment or keep-alive)
+      // An SSE line can be split across network chunks (tool-call arguments stream in pieces):
+      // keep the unfinished tail and parse it with the next chunk.
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let pending = '';
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        pending += decoder.decode(value, { stream: true });
+        const lines = pending.split('\n');
+        pending = lines.pop() ?? '';
+        for (const raw of lines) {
+          const line = raw.trim();
+          if (!line.startsWith('data:')) continue;
+          const data = line.slice(5).trim();
+          if (data === '[DONE]') {
+            await reader.cancel().catch(() => undefined);
+            return;
+          }
+          try {
+            yield JSON.parse(data);
+          } catch {
+            // not JSON (a comment or keep-alive)
+          }
         }
       }
-    }
-    const tail = pending.trim();
-    if (tail.startsWith('data:') && tail.slice(5).trim() !== '[DONE]') {
-      try {
-        yield JSON.parse(tail.slice(5).trim());
-      } catch {
-        // incomplete last line
+      const tail = (pending + decoder.decode()).trim();
+      if (tail.startsWith('data:') && tail.slice(5).trim() !== '[DONE]') {
+        try {
+          yield JSON.parse(tail.slice(5).trim());
+        } catch {
+          // incomplete last line
+        }
       }
+    } finally {
+      clearTimeout(timer);
     }
   }
 

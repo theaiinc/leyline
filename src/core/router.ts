@@ -304,13 +304,16 @@ export class Router {
         matches.push(provider);
       }
     }
+    // Nobody lists it (a deployment name, a model a provider doesn't advertise): try them all, as before.
     if (matches.length === 0) return this.providers;
     if (matches.length > 1) {
       const pinned = this.modelPins.get(model);
       const pinnedIndex = pinned ? matches.findIndex(p => p.name === pinned) : -1;
       if (pinnedIndex > 0) matches.unshift(matches.splice(pinnedIndex, 1)[0]);
     }
-    return [...matches, ...this.providers.filter(provider => !matches.includes(provider))];
+    // Only the providers that serve this model: falling through to the others would answer with a different
+    // model (an Azure deployment answers whatever it's asked) while the client thinks it got the one it named.
+    return matches;
   }
 
   // ── Route execution (existing) ──────────────────────────────────

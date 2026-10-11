@@ -5,12 +5,6 @@ jest.mock('axios');
 
 const mockedAxios = axios as jest.Mocked<typeof axios>;
 
-async function* streamChunks(chunks: string[]) {
-  for (const chunk of chunks) {
-    yield Buffer.from(chunk);
-  }
-}
-
 describe('OpenAIProvider', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -63,25 +57,43 @@ describe('OpenAIProvider', () => {
     );
   });
 
-  it('should parse OpenAI streaming SSE chunks', async () => {
-    mockedAxios.post.mockResolvedValueOnce({
-      data: streamChunks([
-        'data: {"id":"1","object":"chat.completion.chunk","created":1,"model":"gpt-5.5","choices":[{"index":0,"delta":{"content":"hel"},"finish_reason":null}]}\n\n',
-        'data: {"id":"2","object":"chat.completion.chunk","created":1,"model":"gpt-5.5","choices":[{"index":0,"delta":{"content":"lo"},"finish_reason":null}]}\n\n',
-        'data: [DONE]\n\n',
-      ]),
-    });
-    const provider = new OpenAIProvider('key');
-
-    const chunks = [];
-    for await (const chunk of provider.completeStream({
-      model: 'gpt-5.5',
-      messages: [{ role: 'user', content: 'hi' }],
-    })) {
-      chunks.push(chunk.choices[0].delta.content);
+  it('should parse OpenAI streaming SSE chunks (fetch, lines split across chunks)', async () => {
+    const encoder = new TextEncoder();
+    const parts = [
+      'data: {"id":"1","object":"chat.completion.chunk","created":1,"model":"gpt-5.5","choices":[{"index":0,"delta":{"content":"hel"},"finish_reason":null}]}\n\ndata: {"id":"2","object":"chat.co',
+      'mpletion.chunk","created":1,"model":"gpt-5.5","choices":[{"index":0,"delta":{"content":"lo"},"finish_reason":null}]}\n\n',
+      'data: [DONE]\n\n',
+    ];
+    const realFetch = global.fetch;
+    let sent: { url: string; body: Record<string, unknown> } | null = null;
+    global.fetch = (async (url: string, init: RequestInit) => {
+      sent = { url, body: JSON.parse(String(init.body)) };
+      return new Response(new ReadableStream({ start(c) { for (const p of parts) c.enqueue(encoder.encode(p)); c.close(); } }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const provider = new OpenAIProvider('key');
+      const chunks = [];
+      for await (const chunk of provider.completeStream({ model: 'gpt-5.5', messages: [{ role: 'user', content: 'hi' }] })) {
+        chunks.push(chunk.choices[0].delta.content);
+      }
+      expect(chunks.join('')).toBe('hello');
+      expect(sent!.url).toBe('https://api.openai.com/v1/chat/completions');
+      expect(sent!.body).toMatchObject({ model: 'gpt-5.5', stream: true, stream_options: { include_usage: true } });
+    } finally {
+      global.fetch = realFetch;
     }
+  });
 
-    expect(chunks.join('')).toBe('hello');
+  it('a failed stream throws with the provider\'s status and message', async () => {
+    const realFetch = global.fetch;
+    global.fetch = (async () => new Response('{"error":{"message":"bad key"}}', { status: 401 })) as typeof fetch;
+    try {
+      const provider = new OpenAIProvider('key');
+      const run = async () => { for await (const _ of provider.completeStream({ model: 'gpt-5.5', messages: [] })) { /* none */ } };
+      await expect(run()).rejects.toThrow(/HTTP 401.*bad key/);
+    } finally {
+      global.fetch = realFetch;
+    }
   });
 });
 
