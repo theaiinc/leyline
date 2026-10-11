@@ -16,6 +16,9 @@
     { "binding": "DB", "database_name": "leyline", "database_id": "b7050bcf-f9ed-40bb-9042-b78ceb88fb22", "migrations_dir": "worker/migrations" }
   ],
   "triggers": { "crons": ["23 4 * * *"] },
+  // Cost alerts by email (Cloudflare Email Sending, onboarded for notify.theaiinc.com: theaiinc.com's own mail is
+  // Google's, so alerts come from a subdomain of their own).
+  "send_email": [{ "name": "EMAIL", "allowed_sender_addresses": ["alerts@notify.theaiinc.com"] }],
   "vars": {
     "LEYLINE_HOSTED_KEYS": "on",
     "LEYLINE_PUBLIC_URL": "https://llm.theaiinc.com",
@@ -26,6 +29,7 @@
     "LEYLINE_ADMIN_EMAILS": "stevetran.dev@gmail.com,steve.tran@theaiinc.com",
     // What all keys together may spend a month until it's changed on the dashboard (Offered models → Spending).
     "LEYLINE_MONTHLY_BUDGET_USD": "50",
+    "LEYLINE_ALERT_FROM": "Leyline <alerts@notify.theaiinc.com>",
     "LLM_API_BASE_URL": "https://api.llmapi.ai/v1",
     // Arcana Cloud: providers can take keys from arcana://<project>/<name> references (project "leyline" is granted
     // to the Aegis machine client leyline-arcana, Arcana tenant). arcana-cloud sits behind Cloudflare Access; the

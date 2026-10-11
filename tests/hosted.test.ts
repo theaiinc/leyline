@@ -389,3 +389,61 @@ describe('published prices', () => {
     expect((await spend()).byModel['Fake/gemini-2.5-pro'].usd).toBeCloseTo(0.1); // the second request cost the $0 default
   });
 });
+
+describe('cost alerts', () => {
+  const settle = () => new Promise((r) => setTimeout(r, 30));
+
+  it('alerts once per threshold of the monthly limit and of a key cap, by email and webhook', async () => {
+    const emails: Array<{ to: string[]; subject: string; text: string }> = [];
+    const hooks: Array<{ url: string; body: { text: string; content: string; alert: { id: string } } }> = [];
+    const realFetch = global.fetch;
+    global.fetch = (async (url: string, init: RequestInit) => {
+      hooks.push({ url, body: JSON.parse(String(init.body)) });
+      return new Response('ok', { status: 200 });
+    }) as typeof fetch;
+    try {
+      // $1 a request (100 prompt tokens at $10,000/M); limit $4: 50% after 2, 80% after 4 (that's 100%, so 100% fires).
+      const { app } = setup({
+        monthlyBudgetUsd: 4,
+        prices: { 'gemini-*': { input: 10_000, output: 0 } },
+        adminEmails: ['owner@example.com'],
+        sendEmail: async (to, subject, text) => { emails.push({ to, subject, text }); },
+      });
+      await request(app).put('/admin/api/settings').set(ADMIN).send({ alerts: { thresholds: [50, 80, 100], keyThresholds: [80, 100], webhookUrl: 'https://hooks.example.com/x' } });
+      const { key } = (await request(app).post('/admin/api/keys').set(ADMIN).send({ name: 'Minh', caps: { usdPerMonth: 2 } })).body;
+      const call = async () => {
+        await request(app).post('/v1/chat/completions').set({ Authorization: `Bearer ${key}` }).send({ model: 'gemini-2.5-pro', messages: [{ role: 'user', content: 'hi' }] });
+        await settle();
+      };
+      await call(); // $1: key at 50% (no key alert), total 25%
+      expect(emails).toHaveLength(0);
+      await call(); // $2: key at 100% → key:100; total 50% → budget:50
+      const ids = (await request(app).get('/admin/api/alerts').set(ADMIN)).body.log.map((a: { id: string }) => a.id);
+      expect(ids).toHaveLength(2);
+      expect(ids).toContain('budget:50');
+      expect(ids.some((id: string) => /^key:key_.*:100$/.test(id))).toBe(true);
+      expect(emails.map((e) => e.subject).sort()).toEqual(['Leyline: 50% of the monthly limit spent', 'Leyline: key "Minh" limit reached'].sort());
+      expect(emails[0]!.to).toEqual(['owner@example.com']);
+      expect(hooks).toHaveLength(2);
+      expect(hooks[0]!.url).toBe('https://hooks.example.com/x');
+      expect(hooks[0]!.body.text).toContain('Leyline');
+      // The key is now refused (its cap), so nothing more is counted and nothing is sent twice.
+      await call();
+      expect(emails).toHaveLength(2);
+      const log = (await request(app).get('/admin/api/alerts').set(ADMIN)).body.log;
+      expect(log.every((a: { delivery: { email: string; webhook: string } }) => a.delivery.email === 'sent' && a.delivery.webhook === 'sent')).toBe(true);
+    } finally {
+      global.fetch = realFetch;
+    }
+  });
+
+  it('a test alert goes through every channel; email is reported unavailable without a sender', async () => {
+    const { app } = setup({ adminEmails: ['owner@example.com'] });
+    const r = await request(app).post('/admin/api/alerts/test').set(ADMIN);
+    expect(r.body.alert).toMatchObject({ kind: 'test', delivery: { email: 'not available on this host', webhook: 'off' } });
+    const s = (await request(app).get('/admin/api/settings').set(ADMIN)).body;
+    expect(s.alerts).toEqual({ thresholds: [50, 80, 100], keyThresholds: [80, 100], emails: [], webhookUrl: null, email: true });
+    await request(app).put('/admin/api/settings').set(ADMIN).send({ alerts: { thresholds: [90, 'x', 20], emails: ['A@B.co', 'nope'], webhookUrl: 'http://insecure' } });
+    expect((await request(app).get('/admin/api/settings').set(ADMIN)).body.alerts).toMatchObject({ thresholds: [20, 90], emails: ['a@b.co'], webhookUrl: null });
+  });
+});

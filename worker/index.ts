@@ -18,6 +18,9 @@ import { logger } from '../src/core/logger';
 
 interface Env {
   DB: D1Database;
+  /** Cloudflare Email Sending (cost alerts), from LEYLINE_ALERT_FROM on an onboarded domain. */
+  EMAIL?: { send(message: { from: string; to: string[]; subject: string; text: string }): Promise<{ messageId: string }> };
+  LEYLINE_ALERT_FROM?: string;
   ASSETS: { fetch(request: Request): Promise<Response> };
   LEYLINE_STORE_KEY: string;
 }
@@ -63,6 +66,13 @@ async function build(env: Env): Promise<Built> {
   const { router, quotaManager } = await buildRouter(secrets);
   const hosted = hostedOptions(docs, { sharedMinute: true, watch: false });
   hosted.background = keepAlive;
+  const email = env.EMAIL;
+  if (email) {
+    const from = env.LEYLINE_ALERT_FROM || 'Leyline <alerts@notify.theaiinc.com>';
+    hosted.sendEmail = async (to, subject, text) => {
+      await email.send({ from, to, subject, text });
+    };
+  }
   const saved = await hosted.keys.settings();
   if (saved) applySettings(hosted, saved);
   const app = createServer(router, quotaManager, { apiKeyStore: secrets, hosted, enforceExternalSurface: false });
