@@ -56,7 +56,7 @@ export type IssuedKey = {
     promptTokens: number;
     completionTokens: number;
     usd?: number;
-    byModel: Record<string, { requests: number; tokens: number }>;
+    byModel: Record<string, { requests: number; tokens: number; usd?: number }>;
   };
 };
 

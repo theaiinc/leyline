@@ -41,7 +41,14 @@ export type HostedOptions = {
   background?: (work: Promise<unknown>) => void;
 };
 
-type WithKey = Request & { issuedKey?: IssuedKey; requestedModel?: string; ownerRequest?: boolean };
+type WithKey = Request & { issuedKey?: IssuedKey; requestedModel?: string; ownerRequest?: boolean; served?: { provider: string; model: string } };
+
+/** Route option that remembers which provider and model served this request (for spend by provider and model). */
+export function servedBy(req: Request): (provider: string, model: string) => void {
+  return (provider, model) => {
+    (req as WithKey).served = { provider, model };
+  };
+}
 
 /** The model to send upstream for what the client asked (an alias, else as asked). */
 export function resolveModel(aliases: Record<string, string>, model: string): string {
@@ -109,9 +116,11 @@ export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_
     ? usage
     : { prompt_tokens: Math.ceil(JSON.stringify(req.body ?? {}).length / 4), completion_tokens: Math.ceil(outChars / 4) };
   const model = r.requestedModel ?? '';
-  const used = resolveModel(opts.aliases, model);
+  // Priced by the model that actually answered (after aliases and routing), credited to the provider that served it.
+  const used = r.served?.model || resolveModel(opts.aliases, model);
   const usd = costUsd(priceOf({ prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE }, used), counted);
-  const work = opts.keys.record(r.issuedKey ?? null, model, counted, usd).catch((err) => console.error('[hosted] usage record failed', err));
+  const work = opts.keys.record(r.issuedKey ?? null, model, counted, usd, { provider: r.served?.provider ?? 'unknown', model: used })
+    .catch((err) => console.error('[hosted] usage record failed', err));
   opts.background?.(work);
 }
 
@@ -202,7 +211,7 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
           for (const e of events) res.write(`event: ${e.event}\ndata: ${JSON.stringify(e.data)}\n\n`);
         };
         try {
-          for await (const chunk of await router.routeStream(request)) send(out.push(chunk));
+          for await (const chunk of await router.routeStream(request, { onServed: servedBy(req) })) send(out.push(chunk));
           send(out.end());
         } catch (err) {
           console.error('[hosted] /v1/messages stream failed', err);
@@ -212,7 +221,7 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
         recordUsage(opts, req, out.tokens, out.chars);
         return;
       }
-      const response = await router.route(request);
+      const response = await router.route(request, { onServed: servedBy(req) });
       res.json(openAIToAnthropic(response, asked));
       recordUsage(opts, req, response.usage);
     } catch (err) {
@@ -276,6 +285,12 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }
+  });
+  // Spend by provider and model for a month (default: this one), and which months have any.
+  app.get('/admin/api/spend', guard, async (req, res) => {
+    const month = typeof req.query.month === 'string' && /^\d{4}-\d{2}$/.test(req.query.month) ? req.query.month : undefined;
+    const [spend, months] = await Promise.all([opts.keys.spend(month), opts.keys.spendMonths()]);
+    res.json({ spend, months, monthlyBudgetUsd: opts.monthlyBudgetUsd ?? null });
   });
   app.get('/admin/api/keys', guard, async (_req, res) => {
     res.json({ keys: (await opts.keys.list()).map(view) });

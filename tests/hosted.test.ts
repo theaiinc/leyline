@@ -299,3 +299,21 @@ describe('spending limit', () => {
     expect((await chat(app, key)).body.error.code).toBe('monthly_spend_exhausted');
   });
 });
+
+describe('spend by provider and model', () => {
+  it('credits the provider that served and the model that answered, at that model\'s price', async () => {
+    const { app } = setup({ prices: { 'gemini-2.5-pro': { input: 10_000, output: 0 } }, defaultPrice: { input: 0, output: 0 } });
+    const { key } = (await request(app).post('/admin/api/keys').set(ADMIN).send({ name: 'k' })).body;
+    // An alias (claude-* -> gemini-2.5-pro) through Anthropic's API, and a direct OpenAI-style request.
+    await request(app).post('/v1/messages').set({ 'x-api-key': key }).send({ model: 'claude-sonnet-4-5', max_tokens: 10, messages: [{ role: 'user', content: 'hi' }] });
+    await request(app).post('/v1/chat/completions').set({ Authorization: `Bearer ${key}` }).send({ model: 'gpt-5.5', messages: [{ role: 'user', content: 'hi' }] });
+    await new Promise((r) => setTimeout(r, 20));
+    const { spend, months } = (await request(app).get('/admin/api/spend').set(ADMIN)).body;
+    expect(months).toEqual([spend.month]);
+    expect(spend.requests).toBe(2);
+    expect(spend.byProvider.Fake).toMatchObject({ requests: 2, tokens: 240 });
+    expect(spend.byModel['Fake/gemini-2.5-pro']).toMatchObject({ provider: 'Fake', model: 'gemini-2.5-pro', requests: 1 });
+    expect(spend.byModel['Fake/gemini-2.5-pro'].usd).toBeCloseTo(1); // 100 prompt tokens at $10,000 per million
+    expect(spend.byModel['Fake/gpt-5.5']).toMatchObject({ requests: 1, usd: 0 });
+  });
+});

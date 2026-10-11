@@ -332,6 +332,7 @@ export class Router {
       if (!provider) {
         throw new Error(`Provider "${opts.forceProvider}" is not registered.`);
       }
+      opts.onServed?.(provider.name, routedRequest.model);
       return this.runForcedProvider(provider, routedRequest, requestId, start);
     }
 
@@ -351,6 +352,7 @@ export class Router {
 
         console.log(`[Router] Single-model mode: routing to ${provider.name} with model: ${model}`);
         const response = await provider.complete({ ...routedRequest, model });
+        opts?.onServed?.(provider.name, model);
         this.quotaManager.incrementUsage(provider.name);
         logger.log({
           requestId,
@@ -417,6 +419,7 @@ export class Router {
         console.log(`[Router] Routing to ${provider.name} with model: ${effectiveModel}`);
 
         const response = await provider.complete({ ...routedRequest, model: effectiveModel });
+        opts?.onServed?.(provider.name, effectiveModel);
         this.quotaManager.incrementUsage(provider.name);
         logger.log({
             requestId,
@@ -449,6 +452,7 @@ export class Router {
       if (!provider) {
         throw new Error(`Provider "${opts.forceProvider}" is not registered.`);
       }
+      opts.onServed?.(provider.name, routedRequest.model);
       yield* this.runForcedProviderStream(provider, routedRequest, requestId, start);
       return;
     }
@@ -472,6 +476,7 @@ export class Router {
 
         console.log(`[Router] Single-model mode: routing stream to ${provider.name} with model: ${model}`);
         const stream = provider.completeStream({ ...routedRequest, model });
+        opts?.onServed?.(provider.name, model);
         this.quotaManager.incrementUsage(provider.name);
 
         for await (const chunk of stream) {
@@ -565,6 +570,7 @@ export class Router {
           console.log(`[Router] Routing stream to ${provider.name} with model: ${effectiveModel}`);
 
           const stream = provider.completeStream({ ...routedRequest, messages: currentMessages, model: effectiveModel });
+          opts?.onServed?.(provider.name, effectiveModel);
           this.quotaManager.incrementUsage(provider.name);
 
           for await (const chunk of stream) {

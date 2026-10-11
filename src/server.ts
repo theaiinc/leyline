@@ -10,7 +10,7 @@ import { QuotaManager } from './core/quota-manager';
 import { getModelScore } from './core/leaderboard-data';
 import { config } from './config';
 import { requireClientApiKey } from './core/client-auth';
-import { adminOf, mountHosted, recordUsage, requireIssuedKey, resolveModel, sameOrigin, type HostedOptions } from './core/hosted';
+import { adminOf, mountHosted, recordUsage, servedBy, requireIssuedKey, resolveModel, sameOrigin, type HostedOptions } from './core/hosted';
 import { createRequireAegisToken, AegisTenant } from './core/aegis-auth';
 import { chatCompletionErrorResponse, formatProviderError, hydrateAxiosError } from './core/api-errors';
 import { normalizeCompletionRequest } from './core/normalize-request';
@@ -875,7 +875,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
         },
       });
     }
-    const routeOptions = forceProvider ? { forceProvider } : undefined;
+    const routeOptions = { ...(forceProvider ? { forceProvider } : {}), onServed: servedBy(req) };
 
     try {
       if (request.stream) {

@@ -50,8 +50,19 @@ export type KeyUsage = {
   byModel: Record<string, { requests: number; tokens: number; usd?: number }>;
 };
 
-/** Everything spent this month, across keys (and the owner's playground). */
-export type MonthSpend = { month: string; usd: number; requests: number };
+/** Spend, requests and tokens for one provider or model. */
+export type SpendLine = { usd: number; requests: number; tokens: number };
+
+/** Everything spent this month, across keys (and the owner's playground), by provider and by model. */
+export type MonthSpend = {
+  month: string;
+  usd: number;
+  requests: number;
+  tokens?: number;
+  byProvider?: Record<string, SpendLine>;
+  /** Keyed "provider/model": the model that answered and the provider that served it. */
+  byModel?: Record<string, SpendLine & { provider: string; model: string }>;
+};
 
 export interface DocStore {
   get<T>(key: string): Promise<{ value: T; gen: string } | null>;
@@ -363,6 +374,11 @@ export class IssuedKeys {
     return (await this.store.get<MonthSpend>(`spend/${month}`))?.value ?? { month, usd: 0, requests: 0 };
   }
 
+  /** Months with recorded spend, newest first. */
+  async spendMonths(): Promise<string[]> {
+    return (await this.store.list('spend/')).map((k) => k.slice('spend/'.length)).sort().reverse();
+  }
+
   async admit(key: IssuedKey, model: string, budgetUsd: number | null = null): Promise<Refusal | null> {
     if (key.revokedAt) return { status: 401, code: 'key_revoked', message: 'This API key has been revoked.' };
     if (model && model !== 'auto' && !modelAllowed(key.caps, model)) {
@@ -405,14 +421,31 @@ export class IssuedKeys {
   }
 
   /** Count a finished request against the key. */
-  async record(key: IssuedKey | null, model: string, usage?: { prompt_tokens?: number; completion_tokens?: number }, usd = 0): Promise<void> {
+  async record(
+    key: IssuedKey | null,
+    model: string,
+    usage?: { prompt_tokens?: number; completion_tokens?: number },
+    usd = 0,
+    served: { provider: string; model: string } = { provider: 'unknown', model },
+  ): Promise<void> {
     const now = this.now();
     const month = monthOf(now);
     const prompt = Math.max(0, Math.round(usage?.prompt_tokens ?? 0));
     const completion = Math.max(0, Math.round(usage?.completion_tokens ?? 0));
+    const tokens = prompt + completion;
+    const add = (line: SpendLine | undefined): SpendLine => ({
+      usd: (line?.usd ?? 0) + usd,
+      requests: (line?.requests ?? 0) + 1,
+      tokens: (line?.tokens ?? 0) + tokens,
+    });
     await update<MonthSpend>(this.store, `spend/${month}`, (cur) => {
       const s = cur ?? { month, usd: 0, requests: 0 };
-      return { month, usd: s.usd + usd, requests: s.requests + 1 };
+      const byProvider = { ...(s.byProvider ?? {}) };
+      byProvider[served.provider] = add(byProvider[served.provider]);
+      const byModel = { ...(s.byModel ?? {}) };
+      const id = `${served.provider}/${served.model || 'unknown'}`;
+      byModel[id] = { ...add(byModel[id]), provider: served.provider, model: served.model || 'unknown' };
+      return { month, usd: s.usd + usd, requests: s.requests + 1, tokens: (s.tokens ?? 0) + tokens, byProvider, byModel };
     });
     if (!key) return;
     await update<KeyUsage>(this.store, `usage/${key.id}/${month}`, (cur) => {
