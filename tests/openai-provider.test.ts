@@ -84,3 +84,21 @@ describe('OpenAIProvider', () => {
     expect(chunks.join('')).toBe('hello');
   });
 });
+
+describe('token limit for reasoning models', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { upstreamBody } = require('../src/providers/openai') as typeof import('../src/providers/openai');
+  const req = (model: string) => ({ model, messages: [{ role: 'user' as const, content: 'hi' }], max_tokens: 300 });
+  it('renames max_tokens for gpt-5 / gpt-6 / o-series', () => {
+    for (const m of ['gpt-5.5', 'openai/gpt-6', 'o4-mini']) {
+      const b = upstreamBody(req(m) as never, m, false);
+      expect(b).toMatchObject({ max_completion_tokens: 300 });
+      expect(b.max_tokens).toBeUndefined();
+    }
+  });
+  it('leaves other models alone', () => {
+    for (const m of ['claude-sonnet-5-5', 'deepseek-v4-pro', 'gpt-4o-mini']) {
+      expect(upstreamBody(req(m) as never, m, false)).toMatchObject({ max_tokens: 300 });
+    }
+  });
+});

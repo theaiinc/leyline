@@ -278,6 +278,54 @@ npm run tauri:build
 
 The current sidecar strategy expects Node and the `janus` command to be available on the host. Set `LEYLINE_SIDECAR_COMMAND`, `LEYLINE_SIDECAR_ENTRYPOINT`, or `LEYLINE_JANUS_COMMAND` when a deployment uses custom executables. On macOS, the app also checks common Homebrew and user-bin locations because GUI-launched apps may not inherit the shell `PATH`.
 
+## 🔑 Hosted keys (an LLM API for other people's coding agents)
+
+Run Leyline in the cloud and hand out API keys that use your provider keys, each with caps you set. In the cloud, the same dashboard as the desktop app runs at `/dashboard`, behind Aegis sign-in.
+
+**Turning it on and calling it**
+- Set `LEYLINE_HOSTED_KEYS=on`. Requests then need an issued key (`Authorization: Bearer ll_…` or `x-api-key`) instead of the client auth header.
+- Endpoints:
+  - `POST /v1/chat/completions` (OpenAI; tools are passed through).
+  - `POST /v1/messages` and `/v1/messages/count_tokens` (Anthropic, for Claude Code; streaming and tool use are translated).
+  - `GET /v1/models`.
+
+**The dashboard (for emails in `LEYLINE_ADMIN_EMAILS`)**
+- Providers: provider keys and runtime settings. With `LEYLINE_SECRET_STORE=gcp` they're kept in Google Secret Manager.
+- Routing, Playground and Activity: the same as on the desktop.
+- **Access keys:** create keys and set their caps (tokens a month, requests a day and a minute, models). Usage is shown per key and month; revoke keys here.
+- **Offered models:** the models keys may use, and aliases. For example, map `claude-*` to the models you want Claude Code to use.
+
+**Scripting:** use `Authorization: Bearer $LEYLINE_ADMIN_TOKEN` against `/admin/api/keys` and `/admin/api/settings`:
+- `GET /admin/api/keys`; `POST /admin/api/keys` with `{name, caps}`; `PATCH /admin/api/keys/:id` with `{caps}`; `DELETE /admin/api/keys/:id` to revoke.
+- `GET` or `PUT /admin/api/settings` with `{models, aliases}`.
+
+| Variable | Meaning |
+| --- | --- |
+| `LEYLINE_PUBLIC_URL` | e.g. `https://leyline.theaiinc.com` (sign-in callback, snippets) |
+| `LEYLINE_KEYS_BUCKET` / `LEYLINE_KEYS_DIR` | Where keys, usage and the offered models live: a GCS bucket (Cloud Run), else a directory, else memory |
+| `LEYLINE_SECRET_STORE=gcp`, `LEYLINE_GCP_PROJECT` | Keep provider keys and dashboard settings in Secret Manager (project defaults to the one Cloud Run runs in) |
+| `LEYLINE_OFFERED_MODELS`, `LEYLINE_MODEL_ALIASES` | Defaults for Offered models until it's first saved on the dashboard |
+| `LEYLINE_ADMIN_EMAILS`, `LEYLINE_ADMIN_TOKEN` | Who may manage this Leyline |
+| `LEYLINE_LOGIN_ISSUER`, `LEYLINE_LOGIN_CLIENT_ID`, `LEYLINE_LOGIN_CLIENT_SECRET`, `LEYLINE_SESSION_SECRET` | Aegis sign-in for the dashboard |
+| `LEYLINE_KEYCHAIN_ENABLED=false`, `LEYLINE_TUNNEL_ENABLED=false` | On cloud hosts (no Apple Keychain, no tunnel) |
+
+**Spending limit.** On *Offered models*, set what every key together may spend a month (US$), with a price per model in US$ per million tokens. Models with no price are counted at the "Others" price, which defaults high so the limit errs on the safe side. When a provider sends no usage, it's estimated at four characters a token. Requests stop with `429 budget_exhausted` once the limit is reached and start again on the 1st (UTC). A key can also have its own *dollars a month*. `LEYLINE_MONTHLY_BUDGET_USD` is the starting limit.
+
+**On Cloudflare Workers** (`wrangler.jsonc`, `worker/index.ts`): the same Express app runs through workerd's Node HTTP bridge. Keys, usage, spend, provider keys (AES-GCM under `LEYLINE_STORE_KEY`) and the request log live in D1, and the dashboard's files are Workers static assets.
+1. `npx wrangler d1 create leyline` and put the id in `wrangler.jsonc`.
+2. `npx wrangler d1 migrations apply leyline --remote`.
+3. `npm run build && npx wrangler deploy`.
+4. Set the secrets with `wrangler secret put`: `LEYLINE_STORE_KEY` (`openssl rand -base64 32`), `LEYLINE_SESSION_SECRET`, `LEYLINE_LOGIN_CLIENT_SECRET`, `LLM_API_KEY` and, optionally, `LEYLINE_ADMIN_TOKEN`.
+
+Give a person their key like this (the dashboard shows these lines when you create one):
+
+```sh
+# Claude Code
+export ANTHROPIC_BASE_URL=https://leyline.theaiinc.com
+export ANTHROPIC_AUTH_TOKEN=ll_...
+# OpenAI-compatible agents (Cursor, Codex, OpenCode, Cline): base URL https://leyline.theaiinc.com/v1, API key ll_...
+```
+
 ## 🧠 Architecture
 
 ### Routing Flow

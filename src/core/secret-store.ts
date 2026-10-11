@@ -1,5 +1,4 @@
 import { execFile, type ExecFileException } from 'child_process';
-import axios from 'axios';
 
 export type ApiKeyPersistenceMode = 'keychain' | 'memory' | 'localStorage' | 'arcana';
 export type ApiKeySource = ApiKeyPersistenceMode | 'arcana' | 'env' | 'none';
@@ -9,6 +8,8 @@ export interface SecretStoreStatus {
   available: boolean;
   service: string;
   warning?: string;
+  /** What the persistent store is, for people (e.g. "Apple Keychain", "Google Secret Manager"). */
+  label?: string;
 }
 
 export interface SecretStore {
@@ -700,6 +701,17 @@ interface CachedAegisToken {
  * scope); if Cloudflare Access sits in front of arcana-cloud, accessClientId/
  * accessClientSecret are sent as service-token headers alongside it.
  */
+/** fetch with a time limit (called through a wrapper: Workers rejects a bare fetch called as a method). */
+async function fetchWithTimeout(url: string, timeoutMs: number, init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export class ArcanaCloudSecretStore implements SecretStore {
   private token: CachedAegisToken | undefined;
 
@@ -716,8 +728,7 @@ export class ArcanaCloudSecretStore implements SecretStore {
     try {
       const token = await this.getAccessToken();
       const url = `${this.config.baseUrl}/v1/workspaces/${encodeURIComponent(this.config.workspaceId)}/projects/${encodeURIComponent(parsed.project)}/secrets/${encodeURIComponent(parsed.secretName)}`;
-      const response = await axios.get(url, {
-        timeout: this.config.timeoutMs,
+      const response = await fetchWithTimeout(url, this.config.timeoutMs, {
         headers: {
           Authorization: `Bearer ${token}`,
           ...(this.config.accessClientId && this.config.accessClientSecret
@@ -728,9 +739,14 @@ export class ArcanaCloudSecretStore implements SecretStore {
             : {}),
         },
       });
-      const value = response.data?.value;
+      if (!response.ok) {
+        console.warn(`[Leyline] Arcana Cloud ${response.status} for ${reference}`);
+        return undefined;
+      }
+      const value = ((await response.json()) as { value?: unknown }).value;
       return typeof value === 'string' && value ? value : undefined;
-    } catch {
+    } catch (err) {
+      console.warn(`[Leyline] Arcana Cloud unavailable for ${reference}: ${err instanceof Error ? err.message : String(err)}`);
       return undefined;
     }
   }
@@ -739,8 +755,9 @@ export class ArcanaCloudSecretStore implements SecretStore {
     throw new Error('Arcana Cloud references are read-only; push the secret via the Arcana operator API instead.');
   }
 
-  async delete(): Promise<void> {
-    // Arcana Cloud references are configuration, not locally persisted values.
+  /** Stop resolving this account from Arcana Cloud (the secret itself stays in Arcana). */
+  async delete(account?: string): Promise<void> {
+    if (account) delete this.references[account];
   }
 
   status(): SecretStoreStatus {
@@ -774,26 +791,23 @@ export class ArcanaCloudSecretStore implements SecretStore {
     const now = Date.now();
     if (this.token && this.token.expiresAt > now) return this.token.token;
 
-    const response = await axios.post(
-      `${this.config.aegisUrl}/token`,
-      new URLSearchParams({
+    const response = await fetchWithTimeout(`${this.config.aegisUrl}/token`, this.config.timeoutMs, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
         grant_type: 'client_credentials',
         client_id: this.config.clientId,
         client_secret: this.config.clientSecret,
         scope: 'arcana:pull',
       }).toString(),
-      {
-        timeout: this.config.timeoutMs,
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      },
-    );
-
-    const accessToken = response.data?.access_token;
+    });
+    const data = (await response.json().catch(() => ({}))) as { access_token?: unknown; expires_in?: unknown };
+    if (!response.ok) throw new Error(`Aegis token ${response.status}`);
+    const accessToken = data.access_token;
     if (typeof accessToken !== 'string' || !accessToken) {
       throw new Error('Aegis did not return an access token');
     }
-
-    const expiresIn = Number(response.data?.expires_in) || 300;
+    const expiresIn = Number(data.expires_in) || 300;
     this.token = { token: accessToken, expiresAt: now + Math.max(expiresIn - 30, 30) * 1000 };
     return this.token.token;
   }
@@ -809,12 +823,14 @@ export class ArcanaCloudFallbackSecretStore implements SecretStore {
     return (await this.cloud.get(account)) ?? this.persistent.get(account);
   }
 
+  /** Storing a key here means it no longer comes from Arcana. */
   async set(account: string, secret: string): Promise<void> {
+    await this.cloud.delete(account);
     return this.persistent.set(account, secret);
   }
 
   async delete(account: string): Promise<void> {
-    await this.cloud.delete();
+    await this.cloud.delete(account);
     await this.persistent.delete(account);
   }
 
@@ -904,7 +920,7 @@ function parseArcanaReferences(): Record<string, string> {
   return references;
 }
 
-function parseArcanaCloudReferences(): Record<string, string> {
+export function parseArcanaCloudReferences(): Record<string, string> {
   const references: Record<string, string> = {};
   const raw = process.env.LEYLINE_ARCANA_CLOUD_SECRET_REFS;
   if (raw) {
@@ -945,7 +961,7 @@ function parseArcanaCloudReferences(): Record<string, string> {
   return references;
 }
 
-function arcanaCloudConfigFromEnv(): ArcanaCloudConfig | undefined {
+export function arcanaCloudConfigFromEnv(): ArcanaCloudConfig | undefined {
   const workspaceId = process.env.LEYLINE_ARCANA_CLOUD_WORKSPACE_ID;
   const clientId = process.env.LEYLINE_ARCANA_CLOUD_CLIENT_ID;
   const clientSecret = process.env.LEYLINE_ARCANA_CLOUD_CLIENT_SECRET;

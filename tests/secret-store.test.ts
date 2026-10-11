@@ -1,5 +1,4 @@
 import { execFile } from 'child_process';
-import axios from 'axios';
 import {
   ArcanaCloudFallbackSecretStore,
   ArcanaCloudSecretStore,
@@ -18,10 +17,8 @@ import {
 jest.mock('child_process', () => ({
   execFile: jest.fn(),
 }));
-jest.mock('axios');
 
 const mockedExecFile = execFile as unknown as jest.Mock;
-const mockedAxios = axios as jest.Mocked<typeof axios>;
 const originalPlatform = process.platform;
 
 const arcanaCloudConfig = {
@@ -208,36 +205,44 @@ describe('secret store', () => {
   });
 
   describe('ArcanaCloudSecretStore', () => {
-    beforeEach(() => {
-      mockedAxios.get.mockReset();
-      mockedAxios.post.mockReset();
-    });
+    type Call = { url: string; init: RequestInit };
+    let calls: Call[];
+    const realFetch = global.fetch;
+    /** Aegis's token endpoint and arcana-cloud's pull endpoint, faked on fetch. */
+    const mockCloud = (opts: { token?: unknown; secret?: unknown; tokenError?: Error } = {}) => {
+      calls = [];
+      global.fetch = (async (input: string | URL, init: RequestInit = {}) => {
+        const url = String(input);
+        calls.push({ url, init });
+        if (url.endsWith('/token')) {
+          if (opts.tokenError) throw opts.tokenError;
+          return new Response(JSON.stringify(opts.token ?? { access_token: 'jwt-1', expires_in: 300 }), { status: 200 });
+        }
+        return new Response(JSON.stringify(opts.secret ?? { value: 'sk-from-cloud', version: 1 }), { status: 200 });
+      }) as typeof fetch;
+    };
+    const tokenCalls = () => calls.filter((c) => c.url.endsWith('/token'));
+    const pullCalls = () => calls.filter((c) => !c.url.endsWith('/token'));
+    const headers = (c: Call) => c.init.headers as Record<string, string>;
+    afterEach(() => { global.fetch = realFetch; });
 
     it('mints an Aegis token then pulls the secret from arcana-cloud', async () => {
-      mockedAxios.post.mockResolvedValue({ data: { access_token: 'jwt-1', expires_in: 300 } });
-      mockedAxios.get.mockResolvedValue({ data: { value: 'sk-from-cloud', version: 1 } });
-
+      mockCloud();
       const store = new ArcanaCloudSecretStore(
         { 'api-key:OpenAI': 'arcana://leyline/openai-api-key' },
         arcanaCloudConfig,
       );
 
       await expect(store.get('api-key:OpenAI')).resolves.toBe('sk-from-cloud');
-      expect(mockedAxios.post).toHaveBeenCalledWith(
-        'https://id.theaiinc.com/token',
-        expect.stringContaining('grant_type=client_credentials'),
-        expect.objectContaining({ headers: expect.objectContaining({ 'Content-Type': 'application/x-www-form-urlencoded' }) }),
-      );
-      expect(mockedAxios.get).toHaveBeenCalledWith(
-        'https://arcana-cloud.theaiinc.com/v1/workspaces/ws-1/projects/leyline/secrets/openai-api-key',
-        expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer jwt-1' }) }),
-      );
+      expect(tokenCalls()[0]!.url).toBe('https://id.theaiinc.com/token');
+      expect(String(tokenCalls()[0]!.init.body)).toContain('grant_type=client_credentials');
+      expect(headers(tokenCalls()[0]!)['Content-Type']).toBe('application/x-www-form-urlencoded');
+      expect(pullCalls()[0]!.url).toBe('https://arcana-cloud.theaiinc.com/v1/workspaces/ws-1/projects/leyline/secrets/openai-api-key');
+      expect(headers(pullCalls()[0]!).Authorization).toBe('Bearer jwt-1');
     });
 
     it('reuses a cached Aegis token instead of minting one per pull', async () => {
-      mockedAxios.post.mockResolvedValue({ data: { access_token: 'jwt-1', expires_in: 300 } });
-      mockedAxios.get.mockResolvedValue({ data: { value: 'sk-from-cloud' } });
-
+      mockCloud();
       const store = new ArcanaCloudSecretStore(
         { 'api-key:OpenAI': 'arcana://leyline/openai-api-key' },
         arcanaCloudConfig,
@@ -246,14 +251,12 @@ describe('secret store', () => {
       await store.get('api-key:OpenAI');
       await store.get('api-key:OpenAI');
 
-      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
-      expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+      expect(tokenCalls()).toHaveLength(1);
+      expect(pullCalls()).toHaveLength(2);
     });
 
     it('sends Cloudflare Access service token headers when configured', async () => {
-      mockedAxios.post.mockResolvedValue({ data: { access_token: 'jwt-1', expires_in: 300 } });
-      mockedAxios.get.mockResolvedValue({ data: { value: 'sk-from-cloud' } });
-
+      mockCloud();
       const store = new ArcanaCloudSecretStore(
         { 'api-key:OpenAI': 'arcana://leyline/openai-api-key' },
         { ...arcanaCloudConfig, accessClientId: 'cf-id', accessClientSecret: 'cf-secret' },
@@ -261,20 +264,11 @@ describe('secret store', () => {
 
       await store.get('api-key:OpenAI');
 
-      expect(mockedAxios.get).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.objectContaining({
-          headers: expect.objectContaining({
-            'CF-Access-Client-Id': 'cf-id',
-            'CF-Access-Client-Secret': 'cf-secret',
-          }),
-        }),
-      );
+      expect(headers(pullCalls()[0]!)).toMatchObject({ 'CF-Access-Client-Id': 'cf-id', 'CF-Access-Client-Secret': 'cf-secret' });
     });
 
     it('resolves undefined without throwing when arcana-cloud is unreachable', async () => {
-      mockedAxios.post.mockRejectedValue(new Error('network error'));
-
+      mockCloud({ tokenError: new Error('network error') });
       const store = new ArcanaCloudSecretStore(
         { 'api-key:OpenAI': 'arcana://leyline/openai-api-key' },
         arcanaCloudConfig,
@@ -291,9 +285,7 @@ describe('secret store', () => {
     });
 
     it('falls back to the persistent store when arcana-cloud has no value', async () => {
-      mockedAxios.post.mockResolvedValue({ data: { access_token: 'jwt-1', expires_in: 300 } });
-      mockedAxios.get.mockResolvedValue({ data: {} });
-
+      mockCloud({ secret: {} });
       const persistent = new MemorySecretStore();
       await persistent.set('api-key:OpenAI', 'local-fallback-key');
 
@@ -303,6 +295,22 @@ describe('secret store', () => {
       );
 
       await expect(store.get('api-key:OpenAI')).resolves.toBe('local-fallback-key');
+    });
+
+    it('a key saved directly replaces the Arcana reference; clearing drops both', async () => {
+      mockCloud();
+      const persistent = new MemorySecretStore();
+      const cloud = new ArcanaCloudSecretStore({ 'api-key:OpenAI': 'arcana://leyline/openai-api-key' }, arcanaCloudConfig);
+      const store = new ArcanaCloudFallbackSecretStore(cloud, persistent);
+
+      await store.set('api-key:OpenAI', 'typed-key');
+      expect(store.getArcanaReference('api-key:OpenAI')).toBeUndefined();
+      await expect(store.get('api-key:OpenAI')).resolves.toBe('typed-key');
+
+      store.setArcanaReference('api-key:OpenAI', 'arcana://leyline/openai-api-key');
+      await store.delete('api-key:OpenAI');
+      expect(store.getArcanaReference('api-key:OpenAI')).toBeUndefined();
+      await expect(store.get('api-key:OpenAI')).resolves.toBeUndefined();
     });
   });
 

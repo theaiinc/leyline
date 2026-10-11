@@ -10,6 +10,7 @@ import { QuotaManager } from './core/quota-manager';
 import { getModelScore } from './core/leaderboard-data';
 import { config } from './config';
 import { requireClientApiKey } from './core/client-auth';
+import { adminOf, mountHosted, recordUsage, requireIssuedKey, resolveModel, sameOrigin, type HostedOptions } from './core/hosted';
 import { createRequireAegisToken, AegisTenant } from './core/aegis-auth';
 import { chatCompletionErrorResponse, formatProviderError, hydrateAxiosError } from './core/api-errors';
 import { normalizeCompletionRequest } from './core/normalize-request';
@@ -56,6 +57,8 @@ export interface CreateServerOptions {
   enforceExternalSurface?: boolean;
   /** Per-tenant quota manager for Aegis-verified hosted mode. Defaults to a fresh instance. */
   aegisQuotaManager?: QuotaManager;
+  /** Hosted keys mode (hosted.ts): issued API keys with caps, /v1/messages, /v1/models, the admin page. */
+  hosted?: HostedOptions;
 }
 
 type ProviderKeyMetadata = {
@@ -116,15 +119,38 @@ function requireLocalDashboardAccess(req: Request, res: Response, next: NextFunc
   });
 }
 
+function requireHostedAdmin(hosted: HostedOptions) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const who = adminOf(hosted, req);
+    if (!who) {
+      const page = req.method === 'GET' && (req.path === '/' || req.path.endsWith('.html'));
+      if (page && hosted.login) {
+        res.redirect(302, '/auth/login?next=/dashboard/');
+        return;
+      }
+      res.status(401).json({ error: 'Sign in to manage this Leyline.' });
+      return;
+    }
+    if (req.method !== 'GET' && req.method !== 'HEAD' && who !== 'token' && !sameOrigin(hosted, req)) {
+      res.status(403).json({ error: 'forbidden' });
+      return;
+    }
+    next();
+  };
+}
+
 // Public operational endpoints must remain reachable through hosted proxies so
 // Render/Cloudflare can perform health checks and Argus can distinguish a
 // sleeping service from an API-surface policy response.
-const EXTERNAL_ROUTES = new Set(['/healthz', '/readyz', '/v1/chat/completions', '/v1/route', '/mcp']);
+const EXTERNAL_ROUTES = new Set(['/healthz', '/readyz', '/v1/chat/completions', '/v1/route', '/mcp', '/v1/models', '/v1/messages', '/v1/messages/count_tokens']);
+/** Hosted keys mode: the admin page and its sign-in (each is still guarded by its own route). */
+const EXTERNAL_PREFIXES = ['/admin', '/auth/'];
 
 function requireExternalSurfaceAllowlist(req: Request, res: Response, next: NextFunction): void {
   if (
     !hasPublicProxyHeaders(req)
     || EXTERNAL_ROUTES.has(req.path)
+    || EXTERNAL_PREFIXES.some((p) => req.path === p || req.path.startsWith(p.endsWith('/') ? p : `${p}/`))
     || req.path === '/dashboard'
     || req.path.startsWith('/dashboard/')
   ) {
@@ -141,6 +167,9 @@ function requireExternalSurfaceAllowlist(req: Request, res: Response, next: Next
   });
 }
 
+// The built dashboard. (In a Cloudflare Worker there's no __dirname; static assets are served by the Worker.)
+const PUBLIC_DIR = typeof __dirname !== 'undefined' ? path.join(__dirname, '../public') : 'public';
+
 export const createServer = (router: Router, quotaManager: QuotaManager, options: CreateServerOptions = {}) => {
   const app = express();
   const apiKeyStore = options.apiKeyStore || createDefaultSecretStore();
@@ -149,7 +178,10 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
 
   // Aegis-verified hosted mode is opt-in and additive: when disabled (the default), this is
   // exactly `requireClientApiKey`, so local/desktop behavior is unchanged.
-  const authMiddleware = config.aegis.enabled
+  const hosted = options.hosted;
+  const authMiddleware = hosted
+    ? requireIssuedKey(hosted, 'openai')
+    : config.aegis.enabled
     ? createRequireAegisToken({
         issuer: config.aegis.issuer,
         audience: config.aegis.clientId,
@@ -159,7 +191,8 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       })
     : requireClientApiKey;
 
-  const logTenantUsage = (req: Request, model: string, usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }) => {
+  const logTenantUsage = (req: Request, model: string, usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }, outChars = 0) => {
+    if (hosted) recordUsage(hosted, req, usage, outChars);
     const tenant = (req as Request & { tenant?: AegisTenant }).tenant;
     if (!tenant || !usage) return;
     try {
@@ -196,14 +229,20 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     });
   });
 
-  app.use('/dashboard', requireLocalDashboardAccess);
+  // Local: the dashboard is for this machine only. Hosted: it's for the owner, signed in with Aegis (or the admin token).
+  app.use('/dashboard', hosted ? requireHostedAdmin(hosted) : requireLocalDashboardAccess);
+  app.get('/dashboard/session', (req, res) => {
+    res.json(hosted
+      ? { hosted: true, email: adminOf(hosted, req), publicUrl: hosted.publicUrl, signIn: Boolean(hosted.login) }
+      : { hosted: false });
+  });
 
   // Serve dashboard static files
-  app.use('/dashboard', express.static(path.join(__dirname, '../public')));
+  app.use('/dashboard', express.static(path.join(PUBLIC_DIR)));
 
   // Serve logo at root level
   app.get('/logo.png', (_req, res) => {
-    res.sendFile(path.join(__dirname, '../public/logo.png'));
+    res.sendFile(path.join(PUBLIC_DIR, 'logo.png'));
   });
 
   // Simple in-memory cache for models
@@ -298,6 +337,8 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   };
 
   const apiKeyInitialization = initializeApiKeys();
+  // Hosts that cancel work left running after a request ends (Cloudflare Workers) wait for this before serving.
+  app.locals.ready = apiKeyInitialization.catch(() => undefined);
 
   // An Arcana phone approval can land after startup/dashboard callers stopped waiting; hydrate
   // providers that are still keyless once it does. The secret value is never logged.
@@ -428,7 +469,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
 
     res.json({
         providers,
-        logs: logger.getLogs(),
+        logs: await logger.recent(),
         tunnel: getTunnelInfo?.() ?? { enabled: false, state: 'disabled' },
         clientAuth: {
           enabled: Boolean(config.clientApiKey),
@@ -808,6 +849,8 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   app.post('/v1/chat/completions', authMiddleware, async (req, res) => {
     await apiKeyInitialization;
     const request = normalizeCompletionRequest(req.body);
+    // Hosted: a requested model can be an alias for what the owner's providers serve.
+    if (hosted) request.model = resolveModel(hosted.aliases, request.model);
 
     if (request.messages.length === 0) {
       return res.status(400).json({
@@ -842,14 +885,19 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
 
         const stream = await router.routeStream(request, routeOptions);
         let streamUsage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined;
+        let streamChars = 0;
 
         for await (const chunk of stream) {
             if (chunk.usage) streamUsage = chunk.usage;
+            for (const choice of (chunk.choices ?? []) as Array<{ delta?: { content?: string | null; tool_calls?: Array<{ function?: { arguments?: string } }> } }>) {
+              streamChars += choice.delta?.content?.length ?? 0;
+              for (const call of choice.delta?.tool_calls ?? []) streamChars += call.function?.arguments?.length ?? 0;
+            }
             res.write(`data: ${JSON.stringify(chunk)}\n\n`);
         }
         res.write('data: [DONE]\n\n');
         res.end();
-        logTenantUsage(req, request.model, streamUsage);
+        logTenantUsage(req, request.model, streamUsage, streamChars);
 
       } else {
         const response = await router.route(request, routeOptions);
@@ -889,6 +937,8 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       });
     }
   });
+
+  if (hosted) mountHosted(app, router, hosted);
 
   app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
     const payloadError = err as { type?: string; status?: number; message?: string };

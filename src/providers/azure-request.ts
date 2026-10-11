@@ -219,6 +219,13 @@ export function prepareAzureChatParams(
     params.model = model;
   }
 
+  // Newer Azure models (gpt-5.x, gpt-6, o-series) reject max_tokens; max_completion_tokens works for every
+  // deployment on current API versions. Coding agents (Claude Code above all) always send a limit.
+  if (params.max_tokens !== undefined && params.max_completion_tokens === undefined) {
+    params.max_completion_tokens = params.max_tokens;
+  }
+  delete params.max_tokens;
+
   return params;
 }
 

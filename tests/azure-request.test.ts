@@ -161,3 +161,16 @@ describe('azure-request sanitization', () => {
     ]);
   });
 });
+
+describe('token limit on Azure', () => {
+  it('sends max_completion_tokens (newer models reject max_tokens)', () => {
+    const p = prepareAzureChatParams({ model: 'x', messages: [{ role: 'user', content: 'hi' }], max_tokens: 512 } as never, false, 'gpt-5.6-luna', true);
+    expect(p.max_completion_tokens).toBe(512);
+    expect(p.max_tokens).toBeUndefined();
+  });
+  it('keeps a max_completion_tokens the client chose', () => {
+    const p = prepareAzureChatParams({ model: 'x', messages: [], max_tokens: 512, max_completion_tokens: 100 } as never, false, 'gpt-6-astra', true);
+    expect(p.max_completion_tokens).toBe(100);
+    expect(p.max_tokens).toBeUndefined();
+  });
+});

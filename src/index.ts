@@ -67,6 +67,11 @@ export type {
 } from './core/secret-store';
 
 // ── Internal imports (for bootstrap) ─────────────────────────────────
+import { FileDocStore, GcsDocStore, IssuedKeys, MemoryDocStore, type DocStore } from './core/issued-keys';
+import type { SecretStore } from './core/secret-store';
+import { AegisAuth } from './core/admin-login';
+import { watchSettings, type HostedOptions } from './core/hosted';
+import { SecretManagerSecretStore } from './core/secret-manager-store';
 import { startServer } from './server';
 import { Router } from './core/router';
 import { ModelRegistry } from './core/model-registry';
@@ -97,7 +102,8 @@ import { INSTANCE_FAMILIES } from './core/provider-instances';
 
 // ── Standalone server bootstrap ──────────────────────────────────────
 
-export async function bootstrap() {
+/** The router with every configured provider (shared by the Node server and the Cloudflare Worker). */
+export async function buildRouter(secretStore: SecretStore): Promise<{ router: Router; quotaManager: QuotaManager }> {
   const quotaManager = new QuotaManager();
 
   // Configure optional Leyline-side quotas (off by default — Cursor bursts exceed low RPM caps)
@@ -172,7 +178,6 @@ export async function bootstrap() {
     enabledModels,
   });
 
-  const secretStore = createDefaultSecretStore();
   if (!process.env.LLM_API_BASE_URL) {
     const arcanaLlmApiUrl = await secretStore.get(runtimeConfigAccount('LLM API'));
     if (arcanaLlmApiUrl) {
@@ -186,7 +191,8 @@ export async function bootstrap() {
   router.addProvider(new OpenAIProvider());
   router.addProvider(new OpenRouterProvider());
   if (
-    process.env.LLM_API_BASE_URL
+    config.hosted.enabled
+    || process.env.LLM_API_BASE_URL
     || process.env.LLM_API_DEFAULT_MODEL
     || process.env.LLM_API_KEY
     || process.env.LEYLINE_ARCANA_OPENAI_API_KEY_REF
@@ -216,6 +222,17 @@ export async function bootstrap() {
     }
   }
 
+  return { router, quotaManager };
+}
+
+export async function bootstrap() {
+  // On Cloud Run there's no Keychain: LEYLINE_SECRET_STORE=gcp keeps provider keys and dashboard settings in
+  // Google Secret Manager instead.
+  const secretStore = process.env.LEYLINE_SECRET_STORE === 'gcp'
+    ? new SecretManagerSecretStore(process.env.LEYLINE_GCP_PROJECT || null)
+    : createDefaultSecretStore();
+  const { router, quotaManager } = await buildRouter(secretStore);
+
   const tunnel = new JanusTunnel({
     ...config.tunnel,
     secretStore,
@@ -226,6 +243,7 @@ export async function bootstrap() {
     apiKeyStore: secretStore,
     getTunnelInfo: () => tunnel.getInfo(),
     host: process.env.LEYLINE_HOST || '127.0.0.1',
+    ...(config.hosted.enabled ? { hosted: hostedOptions() } : {}),
   });
 
   const shutdown = () => {
@@ -270,7 +288,7 @@ export async function bootstrap() {
       } else {
         console.warn('[Leyline] Fixed model mode enabled but LEYLINE_FIXED_MODEL is unset — /v1/route will fail until configured');
       }
-    } else if (classifier) {
+    } else if (config.routerModel.model && config.routerModel.baseUrl) {
       console.log(`[Leyline] /v1/route available (classifier mode: ${config.routerModel.model})`);
     } else {
       console.log('[Leyline] /v1/route available (tier defaults — no classifier configured)');
@@ -303,6 +321,20 @@ export async function bootstrap() {
   })();
 }
 
-if (require.main === module) {
+if (typeof module !== 'undefined' && require.main === module) {
   void bootstrap();
+}
+
+/** Hosted keys mode from the environment (LEYLINE_HOSTED_KEYS=on). `docs` overrides where keys live (the Worker passes D1). */
+export function hostedOptions(docs?: DocStore, opts: { sharedMinute?: boolean; watch?: boolean } = {}): HostedOptions {
+  const h = config.hosted;
+  const store = docs ?? (h.keysBucket ? new GcsDocStore(h.keysBucket) : h.keysDir ? new FileDocStore(h.keysDir) : new MemoryDocStore());
+  if (!docs && !h.keysBucket && !h.keysDir) console.warn('[Leyline] hosted keys are kept in memory only (set LEYLINE_KEYS_BUCKET or LEYLINE_KEYS_DIR)');
+  const login = h.loginClientId && h.loginClientSecret && h.sessionSecret && h.publicUrl
+    ? new AegisAuth({ issuer: h.loginIssuer, clientId: h.loginClientId, clientSecret: h.loginClientSecret, redirectUri: `${h.publicUrl}/auth/callback`, sessionSecret: h.sessionSecret })
+    : null;
+  if (!login && !h.adminToken) console.warn('[Leyline] hosted keys: no admin sign-in and no LEYLINE_ADMIN_TOKEN; keys can\'t be managed');
+  const hosted: HostedOptions = { keys: new IssuedKeys(store, { sharedMinute: opts.sharedMinute }), models: h.models, aliases: h.aliases, login, adminEmails: h.adminEmails, monthlyBudgetUsd: h.monthlyBudgetUsd, ...(h.adminToken ? { adminToken: h.adminToken } : {}), publicUrl: h.publicUrl };
+  if (opts.watch !== false) watchSettings(hosted);
+  return hosted;
 }

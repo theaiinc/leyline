@@ -1,0 +1,40 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // Hosted Leyline: the LLM API people's coding agents use with keys the owner hands out, and the dashboard.
+  // worker/index.ts runs the same Express app as the Node server; README "Hosted keys" has the setup.
+  "name": "leyline",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  // Not leyline.theaiinc.com (the Leyline Aegis tenant's issuer domain) or leyline-api.theaiinc.com (the Render
+  // deployment, render.yaml).
+  "routes": [{ "pattern": "llm.theaiinc.com", "custom_domain": true }],
+  // The dashboard's files (vite build). The Worker runs first so it can keep the page behind sign-in.
+  "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": true },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "leyline", "database_id": "b7050bcf-f9ed-40bb-9042-b78ceb88fb22", "migrations_dir": "worker/migrations" }
+  ],
+  "triggers": { "crons": ["23 4 * * *"] },
+  "vars": {
+    "LEYLINE_HOSTED_KEYS": "on",
+    "LEYLINE_PUBLIC_URL": "https://llm.theaiinc.com",
+    "LEYLINE_KEYCHAIN_ENABLED": "false",
+    "LEYLINE_TUNNEL_ENABLED": "false",
+    "LEYLINE_LOGIN_ISSUER": "https://id.theaiinc.com",
+    "LEYLINE_LOGIN_CLIENT_ID": "leyline-dashboard",
+    "LEYLINE_ADMIN_EMAILS": "stevetran.dev@gmail.com,steve.tran@theaiinc.com",
+    // What all keys together may spend a month until it's changed on the dashboard (Offered models → Spending).
+    "LEYLINE_MONTHLY_BUDGET_USD": "50",
+    "LLM_API_BASE_URL": "https://api.llmapi.ai/v1",
+    // Arcana Cloud: providers can take keys from arcana://<project>/<name> references (project "leyline" is granted
+    // to the Aegis machine client leyline-arcana, Arcana tenant). arcana-cloud sits behind Cloudflare Access; the
+    // service token leyline-arcana-cloud gets through.
+    "LEYLINE_ARCANA_CLOUD_WORKSPACE_ID": "a8006a7d-86fc-4d31-8610-9abbee59df8c",
+    "LEYLINE_ARCANA_CLOUD_CLIENT_ID": "leyline-arcana",
+    "LEYLINE_ARCANA_CLOUD_ACCESS_CLIENT_ID": "244a58ae2f80c912e197671796f88573.access"
+  }
+  // Secrets (wrangler secret put): LEYLINE_STORE_KEY (32 random bytes, base64), LEYLINE_SESSION_SECRET,
+  // LEYLINE_LOGIN_CLIENT_SECRET, LLM_API_KEY, LEYLINE_ARCANA_CLOUD_CLIENT_SECRET,
+  // LEYLINE_ARCANA_CLOUD_ACCESS_CLIENT_SECRET; optionally LEYLINE_ADMIN_TOKEN.
+}
