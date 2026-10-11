@@ -34,6 +34,11 @@ export type HostedOptions = {
   /** US dollars per million tokens by model (or pattern), and the price for models without one. */
   prices?: Record<string, Price>;
   defaultPrice?: Price;
+  /** Price models without a manual price at what their provider publishes (default on). */
+  usePublishedPrices?: boolean;
+  /** The serving provider's published price for a model (the router's model lists; set by mountHosted). */
+  publishedPrice?: (provider: string, model: string) => Price | undefined;
+  publishedPriceCounts?: () => Record<string, number>;
   /** When the settings were last saved on the dashboard (null: env defaults). */
   settingsSaved?: { at: number; by: string } | null;
   /**
@@ -131,7 +136,8 @@ export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_
   const model = r.requestedModel ?? '';
   // Priced by the model that actually answered (after aliases and routing), credited to the provider that served it.
   const used = r.served?.model || resolveModel(opts.aliases, model);
-  const usd = costUsd(priceOf({ prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE }, used), counted);
+  const published = opts.usePublishedPrices !== false && r.served ? opts.publishedPrice?.(r.served.provider, used) : undefined;
+  const usd = costUsd(priceOf({ prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE }, used, published), counted);
   const work = opts.keys.record(r.issuedKey ?? null, model, counted, usd, { provider: r.served?.provider ?? 'unknown', model: used })
     .catch((err) => console.error('[hosted] usage record failed', err));
   opts.background?.(work);
@@ -168,6 +174,7 @@ export function applySettings(opts: HostedOptions, s: HostedSettings): void {
   opts.blockedModels = s.blockedModels ?? opts.blockedModels ?? [];
   opts.prices = s.prices ?? opts.prices ?? {};
   opts.defaultPrice = s.defaultPrice ?? opts.defaultPrice ?? DEFAULT_PRICE;
+  opts.usePublishedPrices = s.usePublishedPrices ?? opts.usePublishedPrices ?? true;
   opts.settingsSaved = s.updatedAt ? { at: s.updatedAt, by: s.updatedBy ?? '' } : null;
 }
 
@@ -179,6 +186,8 @@ async function settingsView(opts: HostedOptions) {
     monthlyBudgetUsd: opts.monthlyBudgetUsd ?? null,
     prices: opts.prices ?? {},
     defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE,
+    usePublishedPrices: opts.usePublishedPrices !== false,
+    publishedPrices: opts.publishedPriceCounts?.() ?? {},
     spend: await opts.keys.spend(),
     saved: opts.settingsSaved ?? null,
     publicUrl: opts.publicUrl,
@@ -195,6 +204,8 @@ export function watchSettings(opts: HostedOptions, everyMs = 60_000): () => void
 }
 
 export function mountHosted(app: Express, router: Router, opts: HostedOptions): void {
+  opts.publishedPrice ??= (provider, model) => router.publishedPrice(provider, model);
+  opts.publishedPriceCounts ??= () => router.publishedPriceCounts();
   // ── models ──────────────────────────────────────────────────────────────────────────────────────────
   app.get('/v1/models', requireIssuedKeyNoModel(opts), (req, res) => {
     const key = (req as WithKey).issuedKey!;
@@ -292,7 +303,7 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
   app.put('/admin/api/settings', guard, async (req, res) => {
     try {
       // A save changes only what it names; the rest stays as it is.
-      const current = { models: opts.models, aliases: opts.aliases, blockedModels: opts.blockedModels ?? [], monthlyBudgetUsd: opts.monthlyBudgetUsd ?? null, prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE };
+      const current = { models: opts.models, aliases: opts.aliases, blockedModels: opts.blockedModels ?? [], monthlyBudgetUsd: opts.monthlyBudgetUsd ?? null, prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE, usePublishedPrices: opts.usePublishedPrices !== false };
       const saved = await opts.keys.saveSettings({ ...current, ...(req.body as Partial<HostedSettings>) }, (req as Request & { admin?: string }).admin!);
       applySettings(opts, saved);
       console.log(JSON.stringify({ event: 'settings_saved', by: saved.updatedBy, models: saved.models, aliases: saved.aliases, monthlyBudgetUsd: saved.monthlyBudgetUsd }));

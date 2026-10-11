@@ -68,6 +68,8 @@ export interface ModelDetail {
   name?: string;
   description?: string;
   score?: number;
+  /** The price the provider publishes for this model, in US dollars per million tokens. */
+  pricing?: { input: number; output: number };
 }
 
 export interface Provider {

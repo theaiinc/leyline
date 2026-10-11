@@ -69,6 +69,9 @@ export type HostedSettings = {
   monthlyBudgetUsd: number | null;
   prices: Record<string, Price>;
   defaultPrice: Price;
+  usePublishedPrices: boolean;
+  /** Models with a published price, per provider. */
+  publishedPrices: Record<string, number>;
   spend: { month: string; usd: number; requests: number };
   saved: { at: number; by: string } | null;
   publicUrl: string;

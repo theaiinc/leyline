@@ -211,6 +211,8 @@ export type HostedSettings = {
   prices: Record<string, Price>;
   /** For models with no price: deliberately high, so a limit errs on the safe side. */
   defaultPrice: Price;
+  /** Use the prices providers publish (llmapi.ai, OpenRouter) for models without one set here. Default on. */
+  usePublishedPrices?: boolean;
   updatedAt?: number;
   updatedBy?: string;
 };
@@ -249,16 +251,22 @@ export function cleanSettings(input: Partial<HostedSettings> | null | undefined)
     monthlyBudgetUsd: input?.monthlyBudgetUsd === null || input?.monthlyBudgetUsd === undefined || !Number.isFinite(budget) || budget <= 0 ? null : Math.round(budget * 100) / 100,
     prices,
     defaultPrice: cleanPrice(input?.defaultPrice) ?? DEFAULT_PRICE,
+    usePublishedPrices: input?.usePublishedPrices !== false,
   };
 }
 
-/** The price for a model: exact id, else the first matching pattern, else the default. */
-export function priceOf(settings: Pick<HostedSettings, 'prices' | 'defaultPrice'>, model: string): Price {
-  if (settings.prices[model]) return settings.prices[model];
-  for (const [p, price] of Object.entries(settings.prices)) {
+/** A price set by hand for a model: exact id, else the first matching pattern. */
+export function manualPriceOf(prices: Record<string, Price>, model: string): Price | undefined {
+  if (prices[model]) return prices[model];
+  for (const [p, price] of Object.entries(prices)) {
     if (p.includes('*') && modelAllowed({ models: [p] }, model)) return price;
   }
-  return settings.defaultPrice;
+  return undefined;
+}
+
+/** The price for a model: set by hand, else what the serving provider publishes, else the default. */
+export function priceOf(settings: Pick<HostedSettings, 'prices' | 'defaultPrice'>, model: string, published?: Price): Price {
+  return manualPriceOf(settings.prices, model) ?? published ?? settings.defaultPrice;
 }
 
 export function costUsd(price: Price, usage: { prompt_tokens?: number; completion_tokens?: number } | undefined): number {

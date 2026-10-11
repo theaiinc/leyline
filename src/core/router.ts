@@ -153,7 +153,7 @@ export class Router {
   private serviceTiers: Record<string, string>;
   private singleModel?: SingleModelRouterConfig;
   private enabledModels?: Record<string, string[]>;
-  private providerModelIds = new Map<string, { ids: Set<string>; timestamp: number }>();
+  private providerModelIds = new Map<string, { ids: Set<string>; timestamp: number; prices?: Map<string, { input: number; output: number }> }>();
   private modelPins = new Map<string, string>();
 
   constructor(quotaManagerOrOptions?: QuotaManager | RouterOptions) {
@@ -252,12 +252,27 @@ export class Router {
   /** Refresh the cached model-id list for one provider (used eagerly and lazily). */
   async reindexProvider(provider: Provider): Promise<void> {
     let ids = new Set<string>();
+    const prices = new Map<string, { input: number; output: number }>();
     try {
-      ids = new Set((await provider.getModels()).map(detail => detail.id));
+      const details = await provider.getModels();
+      ids = new Set(details.map(detail => detail.id));
+      for (const detail of details) if (detail.pricing) prices.set(detail.id, detail.pricing);
     } catch {
       // Provider offline or unlistable — treat as unknown and retry later.
     }
-    this.providerModelIds.set(provider.name, { ids, timestamp: Date.now() });
+    this.providerModelIds.set(provider.name, { ids, timestamp: Date.now(), prices });
+  }
+
+  /** The price a provider publishes for a model (US$ per million tokens), from its last model list. */
+  publishedPrice(providerName: string, model: string): { input: number; output: number } | undefined {
+    return this.providerModelIds.get(providerName)?.prices?.get(model);
+  }
+
+  /** How many models have a published price, per provider. */
+  publishedPriceCounts(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const [name, entry] of this.providerModelIds) if (entry.prices?.size) out[name] = entry.prices.size;
+    return out;
   }
 
   /** Eagerly refresh the model-id index for every registered provider. */

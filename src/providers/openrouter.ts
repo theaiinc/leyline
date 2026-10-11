@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { parsePublishedPricing } from '../core/pricing';
 import { Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail } from '../core/types';
 import dotenv from 'dotenv';
 import { config } from '../config';
@@ -35,7 +36,8 @@ export class OpenRouterProvider implements Provider {
           return response.data.data.map((m: any) => ({
               id: m.id,
               name: m.name,
-              description: m.description
+              description: m.description,
+              ...(parsePublishedPricing(m.pricing) ? { pricing: parsePublishedPricing(m.pricing) } : {}),
           }));
       } catch (error) {
           console.error('[OpenRouter] Failed to list models:', error);
