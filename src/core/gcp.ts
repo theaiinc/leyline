@@ -4,7 +4,7 @@ const METADATA = 'http://metadata.google.internal/computeMetadata/v1';
 
 export class GcpToken {
   private token: { value: string; until: number } | null = null;
-  constructor(private readonly fetchImpl: typeof fetch = fetch) {}
+  constructor(private readonly fetchImpl: typeof fetch = (input, init) => fetch(input, init)) {}
 
   async get(): Promise<string> {
     if (this.token && Date.now() < this.token.until) return this.token.value;

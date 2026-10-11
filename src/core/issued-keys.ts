@@ -127,7 +127,7 @@ export class FileDocStore implements DocStore {
 /** Cloud Storage, with generation preconditions; the token comes from the Cloud Run metadata server. */
 export class GcsDocStore implements DocStore {
   private readonly token: GcpToken;
-  constructor(private readonly bucket: string, private readonly fetchImpl: typeof fetch = fetch) {
+  constructor(private readonly bucket: string, private readonly fetchImpl: typeof fetch = (input, init) => fetch(input, init)) {
     this.token = new GcpToken(fetchImpl);
   }
 

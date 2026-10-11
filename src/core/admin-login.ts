@@ -68,7 +68,8 @@ export class AegisAuth {
   private readonly fetchImpl: typeof fetch;
 
   constructor(private readonly cfg: AuthConfig) {
-    this.fetchImpl = cfg.fetchImpl ?? fetch;
+    // Called through a wrapper: Workers throws "Illegal invocation" for a bare fetch called as a method.
+    this.fetchImpl = cfg.fetchImpl ?? ((input, init) => fetch(input, init));
   }
 
   private discover(): Promise<Discovery> {

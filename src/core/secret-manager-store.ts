@@ -13,7 +13,7 @@ export class SecretManagerSecretStore implements SecretStore {
   private project: string | null;
   private lastError: string | undefined;
 
-  constructor(project: string | null, private readonly prefix = 'leyline-', private readonly fetchImpl: typeof fetch = fetch) {
+  constructor(project: string | null, private readonly prefix = 'leyline-', private readonly fetchImpl: typeof fetch = (input, init) => fetch(input, init)) {
     this.project = project || null;
     this.token = new GcpToken(fetchImpl);
   }
