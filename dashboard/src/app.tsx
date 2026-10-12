@@ -57,7 +57,7 @@ export function App() {
     <div className="min-h-svh md:grid md:grid-cols-[15rem_1fr]">
       <aside className="border-b bg-sidebar md:sticky md:top-0 md:flex md:h-svh md:flex-col md:border-r md:border-b-0">
         <div className="flex items-center gap-2 px-4 py-3 md:py-5">
-          <img src={`${import.meta.env.BASE_URL}logo.png`} alt="" className="size-7 rounded-md" />
+          <img src={`${import.meta.env.BASE_URL}icon.svg`} alt="" className="size-8" />
           <div className="leading-tight">
             <div className="font-semibold">Leyline</div>
             <div className="text-xs text-muted-foreground">{hosted ? 'Cloud' : 'Local router'}</div>

@@ -107,11 +107,14 @@ async function current(env: Env): Promise<Built> {
   return b;
 }
 
+const DASHBOARD_FILES = new Set(['/logo.png', '/icon.svg', '/favicon-32.png', '/favicon.ico', '/apple-touch-icon.png']);
+
 /** The dashboard's own files (built into public/ by vite, base /dashboard/). */
 function assetPath(path: string): string | null {
   if (path === '/dashboard' || path === '/dashboard/' || path === '/dashboard/index.html') return '/';
-  if (path.startsWith('/dashboard/assets/') || path === '/dashboard/logo.png') return path.slice('/dashboard'.length);
-  if (path === '/logo.png' || path === '/favicon.ico') return '/logo.png';
+  if (path.startsWith('/dashboard/assets/') || DASHBOARD_FILES.has(path.slice('/dashboard'.length))) return path.slice('/dashboard'.length);
+  // Browsers and agents ask the site root for these.
+  if (path === '/favicon.ico' || path === '/icon.svg' || path === '/apple-touch-icon.png' || path === '/logo.png') return path;
   return null;
 }
 
