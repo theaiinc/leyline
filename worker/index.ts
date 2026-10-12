@@ -6,6 +6,7 @@ import { adminOf, applySettings, type HostedOptions } from '../src/core/hosted';
 import { D1ArcanaCloudStore, D1DocStore, D1LogStore, D1SecretStore, type D1Database } from '../src/core/d1-stores';
 import { arcanaCloudConfigFromEnv, parseArcanaCloudReferences, type SecretStore } from '../src/core/secret-store';
 import { logger } from '../src/core/logger';
+import type { WorkersAiBinding } from '../src/providers/workers-ai';
 
 /**
  * Hosted Leyline on Cloudflare Workers. The same Express app as the Node server (src/server.ts), in hosted keys
@@ -22,6 +23,8 @@ interface Env {
   EMAIL?: { send(message: { from: string; to: string[]; subject: string; text: string }): Promise<{ messageId: string }> };
   LEYLINE_ALERT_FROM?: string;
   ASSETS: { fetch(request: Request): Promise<Response> };
+  /** Workers AI ("ai": {"binding": "AI"}): chat, embeddings and audio on @cf/ models, billed to this account. */
+  AI?: WorkersAiBinding;
   LEYLINE_STORE_KEY: string;
 }
 interface Ctx { waitUntil(p: Promise<unknown>): void }
@@ -63,7 +66,7 @@ async function build(env: Env): Promise<Built> {
   }, () => logs.recent());
 
   const version = await secretsVersion(env.DB);
-  const { router, quotaManager } = await buildRouter(secrets);
+  const { router, quotaManager } = await buildRouter(secrets, { workersAi: env.AI });
   const hosted = hostedOptions(docs, { sharedMinute: true, watch: false });
   hosted.background = keepAlive;
   const email = env.EMAIL;

@@ -288,6 +288,7 @@ Run Leyline in the cloud and hand out API keys that use your provider keys, each
   - `POST /v1/chat/completions` (OpenAI; tools are passed through).
   - `POST /v1/messages` and `/v1/messages/count_tokens` (Anthropic, for Claude Code; streaming and tool use are translated).
   - `GET /v1/models`.
+  - `POST /v1/embeddings`, `POST /v1/audio/transcriptions`, `POST /v1/audio/speech` (OpenAI; see *Embeddings and audio* below).
 
 **The dashboard (for emails in `LEYLINE_ADMIN_EMAILS`)**
 - Providers: provider keys and runtime settings. With `LEYLINE_SECRET_STORE=gcp` they're kept in Google Secret Manager.
@@ -316,6 +317,22 @@ Run Leyline in the cloud and hand out API keys that use your provider keys, each
 2. `npx wrangler d1 migrations apply leyline --remote`.
 3. `npm run build && npx wrangler deploy`.
 4. Set the secrets with `wrangler secret put`: `LEYLINE_STORE_KEY` (`openssl rand -base64 32`), `LEYLINE_SESSION_SECRET`, `LEYLINE_LOGIN_CLIENT_SECRET`, `LLM_API_KEY` and, optionally, `LEYLINE_ADMIN_TOKEN`.
+
+**Embeddings and audio.** Same keys, caps, offered/turned-off models, aliases and budget as chat; `model: "auto"` (or none) takes the first configured provider's default (OpenAI first), and `x-leyline-force-provider` picks one. A request is only ever answered by the model it named: embeddings never fail over to a different model (its vectors wouldn't match an index built with the first).
+
+| Endpoint | Request | Models (provider) |
+| --- | --- | --- |
+| `POST /v1/embeddings` | JSON `{model, input: string \| string[], dimensions?, encoding_format?: float \| base64}` -> `{object: "list", data: [{embedding, index}], model, usage}` | `text-embedding-3-small/-large`, `text-embedding-ada-002` (OpenAI); `gemini-embedding-001` (Gemini); `vendor/…embed…` e.g. `openai/text-embedding-3-small` (OpenRouter); the `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` name (Azure); `@cf/baai/bge-m3`, `@cf/baai/bge-{small,base,large}-en-v1.5` (Workers AI); embedding models the LLM API lists |
+| `POST /v1/audio/transcriptions` | multipart `file`, `model`, `language?`, `prompt?`, `response_format?` (`json`, `text`, `verbose_json`, `srt`, `vtt`), `temperature?`, `timestamp_granularities[]?` | `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe` (OpenAI); `nova-3`, `nova-2`, `deepgram/<model>` (Deepgram, prerecorded); `@cf/openai/whisper-large-v3-turbo`, `@cf/openai/whisper`, `@cf/openai/whisper-tiny-en` (Workers AI) |
+| `POST /v1/audio/speech` | JSON `{model, input, voice?, response_format?, speed?, instructions?}` -> audio bytes | `tts-1`, `tts-1-hd`, `gpt-4o-mini-tts` (OpenAI); `@cf/myshell-ai/melotts` (Workers AI; MP3 only, `voice` = `en`/`es`/`fr`/`zh`/`jp`/`kr`) |
+
+Workers AI chat models (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`, …) go through `/v1/chat/completions` like any other model, streaming included. Embeddings count tokens at the model's price (built-in list prices for embedding models); transcription costs the audio's minutes and speech its characters at list prices (`src/core/media.ts`; unknown models at a deliberately high default).
+
+| Variable | Meaning |
+| --- | --- |
+| `DEEPGRAM_API_KEY` | Deepgram speech-to-text (or the dashboard, or `LEYLINE_ARCANA_[CLOUD_]DEEPGRAM_REF`) |
+| `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` | Workers AI over the REST API (Node). The hosted Worker uses its `AI` binding instead and needs neither. Token also via `LEYLINE_ARCANA_[CLOUD_]CLOUDFLARE_REF` |
+| `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` | An embeddings deployment on the Azure resource |
 
 Give a person their key like this (the dashboard shows these lines when you create one):
 

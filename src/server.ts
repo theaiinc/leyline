@@ -4,7 +4,8 @@ import type { Server as HttpServer } from 'http';
 import cors from 'cors';
 import path from 'path';
 import { Router } from './core/router';
-import { CompletionRequest, ClassifyRequest, Provider, ApiKeyConfigurableProvider, RuntimeConfigurableProvider } from './core/types';
+import { CompletionRequest, ClassifyRequest, Provider, ApiKeyConfigurableProvider, RuntimeConfigurableProvider, servesChat } from './core/types';
+import { mountMediaRoutes } from './core/media-routes';
 import { logger } from './core/logger';
 import { QuotaManager } from './core/quota-manager';
 import { getModelScore } from './core/leaderboard-data';
@@ -72,6 +73,11 @@ function isApiKeyPersistenceMode(value: unknown): value is ApiKeyPersistenceMode
 function providerRuntimeReady(provider: Provider): boolean | undefined {
   if (!isRuntimeConfigurableProvider(provider)) return undefined;
   return Boolean(provider.getRuntimeConfig().baseUrlConfigured);
+}
+
+/** What a provider serves, for the dashboard (providers that don't say serve chat only). */
+function providerCapabilities(provider: Provider): string[] {
+  return provider.capabilities ?? ['chat'];
 }
 
 function dashboardRoutingStatus(router: Router) {
@@ -142,7 +148,10 @@ function requireHostedAdmin(hosted: HostedOptions) {
 // Public operational endpoints must remain reachable through hosted proxies so
 // Render/Cloudflare can perform health checks and Argus can distinguish a
 // sleeping service from an API-surface policy response.
-const EXTERNAL_ROUTES = new Set(['/healthz', '/readyz', '/v1/chat/completions', '/v1/route', '/mcp', '/v1/models', '/v1/messages', '/v1/messages/count_tokens']);
+const EXTERNAL_ROUTES = new Set([
+  '/healthz', '/readyz', '/v1/chat/completions', '/v1/route', '/mcp', '/v1/models', '/v1/messages', '/v1/messages/count_tokens',
+  '/v1/embeddings', '/v1/audio/transcriptions', '/v1/audio/speech',
+]);
 /** Hosted keys mode: the admin page and its sign-in (each is still guarded by its own route). */
 const EXTERNAL_PREFIXES = ['/admin', '/auth/'];
 
@@ -379,7 +388,9 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     const source = keyMetadata.get(provider.name)?.source || (provider.hasApiKey() ? 'env' : 'none');
     const storeStatus = apiKeyStore.status();
     const runtimeConfig = isRuntimeConfigurableProvider(provider) ? provider.getRuntimeConfig() : undefined;
+    // A provider served through a platform binding (Workers AI's AI binding on the hosted Worker) needs no key.
     const runtimeReady = !isRuntimeConfigurableProvider(provider)
+      || runtimeConfig?.binding === true
       || Boolean(runtimeConfig?.baseUrlConfigured && provider.hasApiKey());
 
     return {
@@ -460,6 +471,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
             runtimeConfigurable: isRuntimeConfigurableProvider(p),
             runtimeConfig: isRuntimeConfigurableProvider(p) ? p.getRuntimeConfig() : undefined,
             runtimeReady: providerRuntimeReady(p),
+            capabilities: providerCapabilities(p),
             models,
             quota: pStats?.quota,
             usage: {
@@ -501,6 +513,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
           runtimeConfigurable: isRuntimeConfigurableProvider(provider),
           runtimeConfig: isRuntimeConfigurableProvider(provider) ? provider.getRuntimeConfig() : undefined,
           runtimeReady: providerRuntimeReady(provider),
+          capabilities: providerCapabilities(provider),
         })),
     });
   });
@@ -703,7 +716,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
 
   function findNamingProvider(): Provider | undefined {
     return router.getProviders().find(p => {
-      if (!isApiKeyConfigurableProvider(p) || !p.hasApiKey()) return false;
+      if (!servesChat(p) || !isApiKeyConfigurableProvider(p) || !p.hasApiKey()) return false;
       const runtimeReady = providerRuntimeReady(p);
       return runtimeReady !== false;
     });
@@ -938,6 +951,19 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
         error: 'Routing failed: ' + error.message,
       });
     }
+  });
+
+  // Embeddings, speech-to-text, text-to-speech (src/core/media-routes.ts).
+  mountMediaRoutes(app, router, {
+    auth: authMiddleware,
+    hosted,
+    ready: apiKeyInitialization,
+    bodyLimit: config.bodyLimit,
+    record: (req, model, usage, usd) => {
+      if (hosted) recordUsage(hosted, req, usage, 0, usd);
+      const tenant = (req as Request & { tenant?: AegisTenant }).tenant;
+      if (tenant) console.log(JSON.stringify({ event: 'tenant_usage', clientId: tenant.clientId, model, promptTokens: usage.prompt_tokens ?? 0, completionTokens: usage.completion_tokens ?? 0, ...(usd !== undefined ? { usd } : {}) }));
+    },
   });
 
   if (hosted) mountHosted(app, router, hosted);

@@ -13,6 +13,7 @@ import { api } from '@/api';
 import { localKey, localModeKey, localRuntimeKey, type Dashboard } from '@/hooks/use-dashboard';
 import { cn } from '@/lib/utils';
 import {
+  CAPABILITY_LABELS,
   familyOf,
   type InstanceFamily,
   type PersistenceMode,
@@ -71,6 +72,7 @@ export function ProvidersPage({ d }: { d: Dashboard }) {
   const keyDirty = Boolean(active && (apiKey.trim() || mode !== savedMode || (mode === 'arcana' && arcanaReference.trim() !== (active.arcanaReference || ''))));
   const runtimeDirty = Boolean(active?.runtimeConfigurable && (baseUrl.trim() !== (active.runtimeConfig?.baseUrl || '') || model.trim() !== (active.runtimeConfig?.model || active.defaultModel || '')));
   const isAzure = active ? familyOf(active.name, active.family) === 'AzureOpenAI' : false;
+  const isWorkersAi = active?.name === 'WorkersAI';
 
   async function saveKey(event: FormEvent) {
     event.preventDefault();
@@ -171,6 +173,11 @@ export function ProvidersPage({ d }: { d: Dashboard }) {
                 <ToneBadge tone={s.tone} className="ml-auto">{s.label}</ToneBadge>
               </div>
               <p className="text-xs text-muted-foreground">{providerDescription(provider.name, provider.family) || sourceLabel(provider.source, storeLabel)}</p>
+              {provider.capabilities.some(c => c !== 'chat') ? (
+                <div className="flex flex-wrap gap-1">
+                  {provider.capabilities.map(c => <ToneBadge key={c} tone="neutral">{CAPABILITY_LABELS[c]}</ToneBadge>)}
+                </div>
+              ) : null}
               {removable && family ? (
                 <span
                   role="button"
@@ -198,6 +205,7 @@ export function ProvidersPage({ d }: { d: Dashboard }) {
             <CardContent>
               <form onSubmit={saveKey} className="grid gap-4">
                 {active.name === 'OpenAI' ? <Alert><AlertDescription>OpenAI here means api.openai.com. Azure deployments use the AzureOpenAI provider.</AlertDescription></Alert> : null}
+                {isWorkersAi ? <Alert><AlertDescription>{active.runtimeConfig?.binding ? 'Served through this Worker\'s AI binding: no API token needed.' : 'A Cloudflare API token with Workers AI access. Put the account ID under Runtime.'}</AlertDescription></Alert> : null}
                 {isAzure && active.configured && active.runtimeReady === false ? <Alert><AlertDescription>The Azure key is saved but the base URL is missing. Save it under Runtime.</AlertDescription></Alert> : null}
                 {persistence?.server.warning ? <Alert variant="destructive"><AlertDescription>{persistence.server.warning}</AlertDescription></Alert> : null}
 
@@ -246,7 +254,7 @@ export function ProvidersPage({ d }: { d: Dashboard }) {
             </CardHeader>
             <CardContent>
               <form onSubmit={saveRuntime} className="grid gap-4">
-                <Field id="base-url" label="Base URL" hint={isAzure ? 'Example: https://your-resource.services.ai.azure.com/openai/v1' : undefined}>
+                <Field id="base-url" label={isWorkersAi ? 'Cloudflare account ID' : 'Base URL'} hint={isAzure ? 'Example: https://your-resource.services.ai.azure.com/openai/v1' : isWorkersAi ? 'Used for the REST API when there is no AI binding.' : undefined}>
                   <Input id="base-url" value={baseUrl} onChange={e => setBaseUrl(e.target.value)} disabled={!active.runtimeConfigurable} />
                 </Field>
                 <Field id="model" label="Model or deployment">

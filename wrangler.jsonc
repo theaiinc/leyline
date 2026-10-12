@@ -16,6 +16,8 @@
     { "binding": "DB", "database_name": "leyline", "database_id": "b7050bcf-f9ed-40bb-9042-b78ceb88fb22", "migrations_dir": "worker/migrations" }
   ],
   "triggers": { "crons": ["23 4 * * *"] },
+  // Workers AI (src/providers/workers-ai.ts): @cf/ chat, embeddings, Whisper and MeloTTS without an API token.
+  "ai": { "binding": "AI" },
   // Cost alerts by email (Cloudflare Email Sending, onboarded for notify.theaiinc.com: theaiinc.com's own mail is
   // Google's, so alerts come from a subdomain of their own).
   "send_email": [{ "name": "EMAIL", "allowed_sender_addresses": ["alerts@notify.theaiinc.com"] }],
@@ -40,5 +42,6 @@
   }
   // Secrets (wrangler secret put): LEYLINE_STORE_KEY (32 random bytes, base64), LEYLINE_SESSION_SECRET,
   // LEYLINE_LOGIN_CLIENT_SECRET, LLM_API_KEY, LEYLINE_ARCANA_CLOUD_CLIENT_SECRET,
-  // LEYLINE_ARCANA_CLOUD_ACCESS_CLIENT_SECRET; optionally LEYLINE_ADMIN_TOKEN.
+  // LEYLINE_ARCANA_CLOUD_ACCESS_CLIENT_SECRET; optionally LEYLINE_ADMIN_TOKEN, and provider keys such as
+  // OPENAI_API_KEY or DEEPGRAM_API_KEY (or save them on the dashboard / as Arcana references instead).
 }
