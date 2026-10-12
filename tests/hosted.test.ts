@@ -185,6 +185,20 @@ describe('hosted dashboard', () => {
     expect((await request(app).get('/dashboard/api-keys').set('Cookie', cookieFor('owner@example.com'))).status).toBe(200);
   });
 
+  it('an owner whose session ran out is signed back in from the refresh cookie', async () => {
+    const { AegisAuth, seal, cookies } = require('../src/core/admin-login') as typeof import('../src/core/admin-login');
+    const login = new AegisAuth({ issuer: 'https://id.example', clientId: 'c', clientSecret: 's', redirectUri: 'https://leyline.test/auth/callback', sessionSecret: 'test-session-secret' });
+    jest.spyOn(login, 'resume').mockImplementation(async () => ({
+      session: { sub: 'u1', email: 'owner@example.com', exp: Math.floor(Date.now() / 1000) + 3600 },
+      cookies: [cookieFor('owner@example.com') + '; Path=/', 'leyline_refresh=new; Path=/'],
+    }));
+    const { app } = setup({ login, adminEmails: ['owner@example.com'] });
+    const r = await request(app).get('/dashboard/api-keys').set('Cookie', `leyline_refresh=${encodeURIComponent(seal('rt', 'test-session-secret'))}`);
+    expect(r.status).toBe(200);
+    const set = ([] as string[]).concat(r.headers['set-cookie'] ?? []);
+    expect(Object.keys(cookies(set.map((c) => c.split(';')[0]).join('; ')))).toEqual(['leyline_session', 'leyline_refresh']);
+  });
+
   it('refuses changes from another site', async () => {
     const { app } = withLogin();
     const cookie = cookieFor('owner@example.com');

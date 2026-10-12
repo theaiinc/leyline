@@ -1,4 +1,4 @@
-import { createHash, createHmac, createPublicKey, randomBytes, timingSafeEqual, verify } from 'crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, createPublicKey, randomBytes, timingSafeEqual, verify } from 'crypto';
 
 type JsonWebKey = { kid?: string; alg?: string; kty?: string; [k: string]: unknown };
 
@@ -9,6 +9,11 @@ export type AdminUser = { sub: string; email: string; name?: string };
  * Sign-in with Aegis (OpenID Connect, authorization code + PKCE) for Leyline's admin page, then a signed
  * session cookie. No session store: the cookie carries who you are and when that expires, signed with
  * LEYLINE_SESSION_SECRET. Ported from echo-hosted (packages/hosted/src/auth.ts).
+ *
+ * Staying signed in: the sign-in asks for offline_access, and Aegis's refresh token is kept in a second,
+ * encrypted cookie. When the session cookie runs out, resume() trades the refresh token for a fresh
+ * session, so someone who uses the page keeps using it until Aegis ends the sign-in (its "long" policy for
+ * leyline-dashboard: 30 days after the last refresh, at most 90 after signing in).
  */
 export type AuthConfig = {
   issuer: string;
@@ -57,6 +62,34 @@ export function cookie(name: string, value: string, maxAgeSeconds: number): stri
   return `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAgeSeconds}`;
 }
 
+/** How long the refresh cookie lives; Aegis decides how long the token in it actually works. */
+const REFRESH_COOKIE_SECONDS = 90 * 24 * 3600;
+
+/** AES-256-GCM under a key derived from the session secret: the refresh token is a credential, not just signed data. */
+function sealKey(secret: string): Buffer {
+  return createHash('sha256').update(`leyline-refresh:${secret}`).digest();
+}
+
+export function seal(value: string, secret: string): string {
+  const iv = randomBytes(12);
+  const c = createCipheriv('aes-256-gcm', sealKey(secret), iv);
+  const body = Buffer.concat([c.update(value, 'utf8'), c.final()]);
+  return [iv, c.getAuthTag(), body].map((b) => b.toString('base64url')).join('.');
+}
+
+export function unseal(token: string | undefined, secret: string): string | null {
+  if (!token) return null;
+  const [iv, tag, body] = token.split('.').map((p) => Buffer.from(p ?? '', 'base64url'));
+  if (!iv?.length || !tag?.length || !body) return null;
+  try {
+    const d = createDecipheriv('aes-256-gcm', sealKey(secret), iv);
+    d.setAuthTag(tag);
+    return Buffer.concat([d.update(body), d.final()]).toString('utf8');
+  } catch {
+    return null;
+  }
+}
+
 type Discovery = { authorization_endpoint: string; token_endpoint: string; jwks_uri: string; issuer: string; userinfo_endpoint?: string };
 type PendingLogin = { state: string; verifier: string; nonce: string; next: string; exp: number };
 export type Session = AdminUser & { exp: number };
@@ -100,18 +133,20 @@ export class AegisAuth {
       client_id: this.cfg.clientId,
       redirect_uri: this.cfg.redirectUri,
       response_type: 'code',
-      scope: 'openid email profile',
+      // offline_access: a refresh token, so the page stays signed in while it's used (see resume).
+      scope: 'openid email profile offline_access',
       state: pending.state,
       nonce: pending.nonce,
       code_challenge: b64u(createHash('sha256').update(pending.verifier).digest()),
       code_challenge_method: 'S256',
-      ...(opts.switchAccount ? { prompt: 'login' } : {}),
+      // A prompt without "consent" makes Aegis (oidc-provider) drop offline_access.
+      ...(opts.switchAccount ? { prompt: 'login consent' } : {}),
     }).toString();
     return { url: url.toString(), cookie: cookie('leyline_login', sign(pending, this.cfg.sessionSecret), 600) };
   }
 
   /** Back from Aegis: the signed-in user, their session cookie, and where they were going. */
-  async finish(query: URLSearchParams, cookieHeader: string | undefined): Promise<{ session: Session; cookie: string; next: string }> {
+  async finish(query: URLSearchParams, cookieHeader: string | undefined): Promise<{ session: Session; cookie: string; cookies: string[]; next: string }> {
     const pending = unsign<PendingLogin>(cookies(cookieHeader)['leyline_login'], this.cfg.sessionSecret);
     if (!pending) throw new Error('sign-in expired; start again');
     if (query.get('error')) throw new Error(`Aegis: ${query.get('error')}`);
@@ -133,21 +168,76 @@ export class AegisAuth {
       }),
     });
     if (!res.ok) throw new Error(`Aegis token exchange ${res.status}`);
-    const { id_token } = (await res.json()) as { id_token?: string };
+    const { id_token, refresh_token } = (await res.json()) as { id_token?: string; refresh_token?: string };
     if (!id_token) throw new Error('Aegis returned no id_token');
     const claims = await this.verifyIdToken(id_token, d.issuer, pending.nonce);
+    const session = this.sessionFrom(claims);
+    const sessionCookie = this.sessionCookie(session);
+    return {
+      session,
+      cookie: sessionCookie,
+      cookies: [sessionCookie, ...(refresh_token ? [this.refreshCookie(refresh_token)] : [])],
+      next: pending.next,
+    };
+  }
+
+  /**
+   * The session cookie ran out (or is missing) but a refresh cookie is there: a fresh session from Aegis,
+   * with the cookies to set. Null when there's nothing to resume or Aegis ended the sign-in; then the
+   * refresh cookie should be cleared (clear: true).
+   */
+  async resume(cookieHeader: string | undefined): Promise<{ session: Session; cookies: string[] } | { clear: true } | null> {
+    if (this.session(cookieHeader)) return null;
+    const jar = cookies(cookieHeader);
+    if (!jar['leyline_refresh']) return null;
+    const refreshToken = unseal(jar['leyline_refresh'], this.cfg.sessionSecret);
+    if (!refreshToken) return { clear: true };
+    try {
+      const d = await this.discover();
+      const res = await this.fetchImpl(d.token_endpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'refresh_token',
+          refresh_token: refreshToken,
+          client_id: this.cfg.clientId,
+          client_secret: this.cfg.clientSecret,
+        }),
+      });
+      // 400 invalid_grant: Aegis ended the sign-in (expired, revoked, signed out).
+      if (res.status === 400 || res.status === 401) return { clear: true };
+      if (!res.ok) return null;
+      const body = (await res.json()) as { id_token?: string; refresh_token?: string };
+      if (!body.id_token) return { clear: true };
+      // A refreshed id_token has no nonce to check; signature, issuer, audience and expiry still are.
+      const claims = await this.verifySigned(body.id_token, d.issuer, 'id_token');
+      const aud = Array.isArray(claims['aud']) ? claims['aud'] : [claims['aud']];
+      if (!aud.includes(this.cfg.clientId)) return { clear: true };
+      const session = this.sessionFrom(claims);
+      // Aegis may rotate the refresh token; keep whichever is current.
+      return { session, cookies: [this.sessionCookie(session), this.refreshCookie(body.refresh_token ?? refreshToken)] };
+    } catch {
+      // Aegis unreachable or a bad answer: leave the cookie for the next request.
+      return null;
+    }
+  }
+
+  private sessionFrom(claims: Record<string, unknown>): Session {
     if (typeof claims['email'] !== 'string' || !claims['email']) throw new Error('your Aegis account has no email');
-    const session: Session = {
+    return {
       sub: String(claims['sub']),
       email: String(claims['email']).toLowerCase(),
       ...(nameFrom(claims) ? { name: nameFrom(claims)! } : {}),
       exp: Math.floor(Date.now() / 1000) + (this.cfg.sessionHours ?? 12) * 3600,
     };
-    return {
-      session,
-      cookie: cookie('leyline_session', sign(session, this.cfg.sessionSecret), (this.cfg.sessionHours ?? 12) * 3600),
-      next: pending.next,
-    };
+  }
+
+  private sessionCookie(session: Session): string {
+    return cookie('leyline_session', sign(session, this.cfg.sessionSecret), (this.cfg.sessionHours ?? 12) * 3600);
+  }
+
+  private refreshCookie(refreshToken: string): string {
+    return cookie('leyline_refresh', seal(refreshToken, this.cfg.sessionSecret), REFRESH_COOKIE_SECONDS);
   }
 
   session(cookieHeader: string | undefined): Session | null {
