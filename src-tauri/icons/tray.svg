@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- The Leyline mark for the macOS menu bar: a template image (only its shape counts; macOS colours it),
+       drawn edge to edge with heavier strokes because the bar shows it 18 pt tall. Source of icons/tray.png. -->
+  <g fill="none" stroke="#000" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="32" cy="32" r="21.5" stroke-width="5"/>
+    <path d="M32 8v48" stroke-width="5"/>
+    <ellipse cx="32" cy="32" rx="12" ry="4.2" stroke-width="4.2"/>
+    <path d="M32 23.5l-7-7M32 23.5l7-7" stroke-width="4.4"/>
+    <path d="M32 40.5l-7 7M32 40.5l7 7" stroke-width="4.4"/>
+  </g>
+  <g fill="#000">
+    <path d="M32 0l4.6 5.6-4.6 5.6-4.6-5.6z"/>
+    <path d="M32 52.8l4.6 5.6-4.6 5.6-4.6-5.6z"/>
+  </g>
+</svg>
