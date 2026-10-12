@@ -10,7 +10,7 @@ import { QuotaManager } from './core/quota-manager';
 import { getModelScore } from './core/leaderboard-data';
 import { config } from './config';
 import { requireClientApiKey } from './core/client-auth';
-import { adminOf, mountHosted, recordUsage, servedBy, requireIssuedKey, resolveModel, sameOrigin, type HostedOptions } from './core/hosted';
+import { adminOf, mountHosted, resumeAdminSession, recordUsage, servedBy, requireIssuedKey, resolveModel, sameOrigin, type HostedOptions } from './core/hosted';
 import { createRequireAegisToken, AegisTenant } from './core/aegis-auth';
 import { chatCompletionErrorResponse, formatProviderError, hydrateAxiosError } from './core/api-errors';
 import { normalizeCompletionRequest } from './core/normalize-request';
@@ -211,6 +211,8 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
 
   app.use(cors({ exposedHeaders: ['Mcp-Session-Id'] }));
   app.use(express.json({ limit: config.bodyLimit }));
+  // An admin whose session ran out keeps going on Aegis's refresh token (hosted.ts).
+  if (hosted?.login) app.use(resumeAdminSession(hosted));
 
   if (options.enforceExternalSurface !== false) {
     app.use(requireExternalSurfaceAllowlist);

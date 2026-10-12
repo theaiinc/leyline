@@ -1,7 +1,7 @@
 import type { Express, NextFunction, Request, Response } from 'express';
 import { timingSafeEqual } from 'crypto';
 import type { Router } from './router';
-import { AegisAuth, cookie, type AdminUser } from './admin-login';
+import { AegisAuth, cookie, cookies, type AdminUser } from './admin-login';
 import { CostAlerts, DEFAULT_ALERTS, type AlertChannels, type AlertSettings } from './alerts';
 import { AnthropicStream, anthropicError, anthropicToOpenAI, estimateTokens, openAIToAnthropic, type AnthropicRequest } from './anthropic';
 import { DEFAULT_PRICE, IssuedKeys, costUsd, modelAllowed, priceOf, type HostedSettings, type IssuedKey, type KeyCaps, type Price } from './issued-keys';
@@ -168,6 +168,28 @@ async function checkAlerts(opts: HostedOptions, key: IssuedKey | null): Promise<
   }
 }
 
+/**
+ * Middleware: an admin whose session cookie ran out but who still has Aegis's refresh token gets a fresh
+ * session before anything checks who they are (adminOf reads cookies synchronously).
+ */
+export function resumeAdminSession(opts: HostedOptions) {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const login = opts.login;
+    if (!login || !req.headers.cookie?.includes('leyline_refresh=')) return next();
+    const resumed = await login.resume(req.headers.cookie);
+    if (resumed && 'clear' in resumed) {
+      res.append('Set-Cookie', cookie('leyline_refresh', '', 0));
+    } else if (resumed) {
+      for (const c of resumed.cookies) res.append('Set-Cookie', c);
+      // This request already counts as signed in: put the fresh session in its cookie header.
+      const jar = cookies(req.headers.cookie);
+      jar['leyline_session'] = decodeURIComponent(resumed.cookies[0].split(';')[0].slice('leyline_session='.length));
+      req.headers.cookie = Object.entries(jar).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('; ');
+    }
+    next();
+  };
+}
+
 /** Who is managing this Leyline: their email (Aegis session), 'token' (LEYLINE_ADMIN_TOKEN), or null. */
 export function adminOf(opts: HostedOptions, req: Request): string | null {
   const auth = req.headers.authorization;
@@ -304,14 +326,14 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
           res.setHeader('Set-Cookie', cookie('leyline_login', '', 0));
           return res.status(403).type('html').send(refusedPage(done.session.email));
         }
-        res.setHeader('Set-Cookie', [done.cookie, cookie('leyline_login', '', 0)]);
+        res.setHeader('Set-Cookie', [...done.cookies, cookie('leyline_login', '', 0)]);
         res.redirect(302, done.next);
       } catch (err) {
         res.status(400).send(`Sign-in failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     });
     app.post('/auth/logout', (_req, res) => {
-      res.setHeader('Set-Cookie', cookie('leyline_session', '', 0));
+      res.setHeader('Set-Cookie', [cookie('leyline_session', '', 0), cookie('leyline_refresh', '', 0)]);
       res.status(204).end();
     });
   }
