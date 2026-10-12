@@ -120,6 +120,9 @@ export interface SingleModelRouterConfig {
 
 const MODEL_ID_CACHE_TTL_MS = 3600 * 1000;
 
+/** Model lists by provider name, as shared between instances. */
+export type ModelListSnapshot = Record<string, { ids: string[]; timestamp: number; prices?: Record<string, { input: number; output: number }> }>;
+
 const DEFAULT_SERVICE_TIERS: Record<string, string> = {
   casual: '4b',
   teaching: '4b',
@@ -310,6 +313,46 @@ export class Router {
   /** Eagerly refresh the model-id index for every registered provider. */
   async reindexAll(): Promise<void> {
     await Promise.all(this.providers.map(provider => this.reindexProvider(provider)));
+  }
+
+  /** Refresh only the providers whose model list is missing or older than the cache allows. */
+  async reindexStale(now = Date.now()): Promise<void> {
+    await Promise.all(this.providers
+      .filter(provider => {
+        const cached = this.providerModelIds.get(provider.name);
+        return !cached || now - cached.timestamp >= MODEL_ID_CACHE_TTL_MS;
+      })
+      .map(provider => this.reindexProvider(provider)));
+  }
+
+  /**
+   * The providers' model lists, to share with other instances: listing every provider's models took ~2.5 s, and a
+   * fresh Worker instance did it before answering its first request. Empty lists (a provider that couldn't be
+   * listed) are left out so the next instance tries again.
+   */
+  exportModelLists(): ModelListSnapshot {
+    const out: ModelListSnapshot = {};
+    for (const [name, entry] of this.providerModelIds) {
+      if (!entry.ids.size) continue;
+      out[name] = { ids: [...entry.ids], timestamp: entry.timestamp, ...(entry.prices?.size ? { prices: Object.fromEntries(entry.prices) } : {}) };
+    }
+    return out;
+  }
+
+  /** Take model lists another instance made (exportModelLists), for providers this one has none for yet. */
+  importModelLists(snapshot: ModelListSnapshot): void {
+    for (const provider of this.providers) {
+      const entry = snapshot[provider.name];
+      if (!entry || this.providerModelIds.has(provider.name)) continue;
+      this.providerModelIds.set(provider.name, { ids: new Set(entry.ids), timestamp: entry.timestamp, prices: new Map(Object.entries(entry.prices ?? {})) });
+    }
+  }
+
+  /** When the oldest model list was made (null: none yet). */
+  oldestModelList(): number | null {
+    let oldest: number | null = null;
+    for (const entry of this.providerModelIds.values()) oldest = oldest === null ? entry.timestamp : Math.min(oldest, entry.timestamp);
+    return oldest;
   }
 
   /** Derived view of the model-id index: model id → provider names that list it, in priority order. */

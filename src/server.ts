@@ -298,9 +298,16 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     if (saved) applyRoutingConfig(saved);
   };
 
+  /** How long each startup step took (ms), for the Worker's Server-Timing. */
+  const readyStages: Record<string, number> = {};
+  app.locals.readyStages = readyStages;
   const initializeApiKeys = async () => {
+    const startedAt = Date.now();
     await initializeRouting();
+    readyStages.routing = Date.now() - startedAt;
     await Promise.all(router.getProviders().map(async provider => {
+      const providerAt = Date.now();
+      try {
       if (isApiKeyConfigurableProvider(provider)) {
         if (provider.hasApiKey()) {
           keyMetadata.set(provider.name, { source: 'env' });
@@ -331,9 +338,15 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
           model: saved.model,
         });
       }
+      } finally {
+        readyStages[`keys-${provider.name.replace(/[^a-z0-9]+/gi, '_')}`] = Date.now() - providerAt;
+      }
     }));
+    readyStages.keys = Date.now() - startedAt;
 
-    await router.reindexAll();
+    // Lists another instance already made (imported before this ran) are kept until they go stale.
+    await router.reindexStale();
+    readyStages.lists = Date.now() - startedAt;
   };
 
   const persistRuntimeConfig = async (provider: RuntimeConfigurableProvider) => {
@@ -898,11 +911,18 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
         res.setHeader('Cache-Control', 'no-cache');
         res.setHeader('Connection', 'keep-alive');
 
+        const routeAt = Date.now();
         const stream = await router.routeStream(request, routeOptions);
+        const routeMs = Date.now() - routeAt;
+        // The same, for the caller: Server-Timing goes out with the headers, before the first chunk.
+        const t = (req as { timings?: { lookupMs: number; admitMs: number } }).timings;
+        res.setHeader('Server-Timing', [...(t ? [`lookup;dur=${t.lookupMs}`, `admit;dur=${t.admitMs}`] : []), `route;dur=${routeMs}`].join(', '));
+        let firstChunkMs: number | null = null;
         let streamUsage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined;
         let streamChars = 0;
 
         for await (const chunk of stream) {
+            firstChunkMs ??= Date.now() - routeAt;
             if (chunk.usage) streamUsage = chunk.usage;
             for (const choice of (chunk.choices ?? []) as Array<{ delta?: { content?: string | null; tool_calls?: Array<{ function?: { arguments?: string } }> } }>) {
               streamChars += choice.delta?.content?.length ?? 0;
@@ -912,6 +932,8 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
         }
         res.write('data: [DONE]\n\n');
         res.end();
+        // Where a streamed request's time went: the key checks, then the provider (connection, first chunk, all).
+        console.log(JSON.stringify({ event: 'leyline_chat', model: request.model, ...(req as { timings?: object }).timings, routeMs, firstChunkMs, totalMs: Date.now() - routeAt }));
         logTenantUsage(req, request.model, streamUsage, streamChars);
 
       } else {

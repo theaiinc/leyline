@@ -10,6 +10,11 @@
   // Not leyline.theaiinc.com (the Leyline Aegis tenant's issuer domain) or leyline-api.theaiinc.com (the Render
   // deployment, render.yaml).
   "routes": [{ "pattern": "llm.theaiinc.com", "custom_domain": true }],
+  // Run next to D1's primary (HKG). Every request and every cold start reads D1 several times; from a US colo each
+  // read crossed the Pacific, so a request took 5-8 s before its first byte (3.5 s of it rebuilding the app in a
+  // fresh instance, which US traffic is too light to keep warm). One hop to Hong Kong costs ~0.2 s instead. Smart
+  // placement can't decide on this little traffic (INSUFFICIENT_INVOCATIONS), hence a fixed region.
+  "placement": { "region": "gcp:asia-east2" },
   // The dashboard's files (vite build). The Worker runs first so it can keep the page behind sign-in.
   "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": true },
   "d1_databases": [

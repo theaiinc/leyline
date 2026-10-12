@@ -62,6 +62,8 @@ const unb64 = (s: string) => new Uint8Array(Buffer.from(s, 'base64'));
 export class D1SecretStore implements SecretStore {
   private key: Promise<CryptoKey> | null = null;
   private readonly cache = new Map<string, string | undefined>();
+  /** After preload(): the cache holds every secret, so an account missing from it has none. */
+  private complete = false;
 
   /** storeKey: 32 random bytes, base64 (a Worker secret). */
   constructor(private readonly db: D1Database, private readonly storeKey: string) {}
@@ -75,17 +77,31 @@ export class D1SecretStore implements SecretStore {
     return this.key;
   }
 
+  /**
+   * Every secret in one query. D1 has a single primary (this one is in APAC), and startup looks up dozens of
+   * accounts, most of them unset, one round trip each: an instance in a US colo took 5-8 s to build before it
+   * could answer. After this, lookups (found or not) need no query until forget().
+   */
+  async preload(): Promise<void> {
+    const { results = [] } = await this.db.prepare('SELECT account, iv, data FROM secrets').all<{ account: string; iv: string; data: string }>();
+    const values = await Promise.all(results.map(async (row) => [row.account, await this.decrypt(row.account, row)] as const));
+    this.cache.clear();
+    for (const [account, value] of values) this.cache.set(account, value);
+    this.complete = true;
+  }
+
   async get(account: string): Promise<string | undefined> {
-    if (this.cache.has(account)) return this.cache.get(account);
+    if (this.cache.has(account) || this.complete) return this.cache.get(account);
     const row = await this.db.prepare('SELECT iv, data FROM secrets WHERE account = ?').bind(account).first<{ iv: string; data: string }>();
-    let value: string | undefined;
-    if (row) {
-      // The account is the additional data, so a value can't be moved to another account.
-      const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(row.iv), additionalData: new TextEncoder().encode(account) }, await this.cryptoKey(), unb64(row.data));
-      value = new TextDecoder().decode(plain);
-    }
+    const value = row ? await this.decrypt(account, row) : undefined;
     this.cache.set(account, value);
     return value;
+  }
+
+  private async decrypt(account: string, row: { iv: string; data: string }): Promise<string> {
+    // The account is the additional data, so a value can't be moved to another account.
+    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(row.iv), additionalData: new TextEncoder().encode(account) }, await this.cryptoKey(), unb64(row.data));
+    return new TextDecoder().decode(plain);
   }
 
   async set(account: string, secret: string): Promise<void> {
@@ -103,6 +119,7 @@ export class D1SecretStore implements SecretStore {
 
   /** Accounts stored under a prefix. */
   async accounts(prefix: string): Promise<string[]> {
+    if (this.complete) return [...this.cache].filter(([account, value]) => value !== undefined && account.startsWith(prefix)).map(([account]) => account);
     const { results = [] } = await this.db.prepare('SELECT account FROM secrets WHERE substr(account, 1, ?) = ?').bind(prefix.length, prefix).all<{ account: string }>();
     return results.map((r) => r.account);
   }
@@ -110,6 +127,7 @@ export class D1SecretStore implements SecretStore {
   /** Forget cached values (another instance may have changed them). */
   forget(): void {
     this.cache.clear();
+    this.complete = false;
   }
 
   status(): SecretStoreStatus {

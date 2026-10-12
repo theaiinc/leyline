@@ -6,6 +6,7 @@ import { adminOf, applySettings, type HostedOptions } from '../src/core/hosted';
 import { D1ArcanaCloudStore, D1DocStore, D1LogStore, D1SecretStore, type D1Database } from '../src/core/d1-stores';
 import { arcanaCloudConfigFromEnv, parseArcanaCloudReferences, type SecretStore } from '../src/core/secret-store';
 import { logger } from '../src/core/logger';
+import type { ModelListSnapshot } from '../src/core/router';
 import type { WorkersAiBinding } from '../src/providers/workers-ai';
 
 /**
@@ -29,7 +30,12 @@ interface Env {
 }
 interface Ctx { waitUntil(p: Promise<unknown>): void }
 
-type Built = { port: number; server: Server; hosted: HostedOptions; version: string };
+/** Provider model lists shared by every instance (see build()), for one version of the provider keys. */
+type SharedModelLists = { version: string; savedAt: number; lists: ModelListSnapshot };
+const MODEL_LISTS_DOC = 'model-lists';
+const MODEL_LISTS_REFRESH_MS = 30 * 60_000;
+
+type Built = { port: number; server: Server; hosted: HostedOptions; version: string; stages: Record<string, number> };
 
 let built: Promise<Built> | null = null;
 let checkedAt = 0;
@@ -54,11 +60,18 @@ async function secretsVersion(db: D1Database): Promise<string> {
 }
 
 async function build(env: Env): Promise<Built> {
+  const started = Date.now();
+  const stages: Record<string, number> = {};
+  const mark = (stage: string) => { stages[stage] = Date.now() - started; };
   const d1Secrets = new D1SecretStore(env.DB, env.LEYLINE_STORE_KEY);
+  // All secrets in one query: every later lookup during startup is then free (see preload()).
+  await d1Secrets.preload();
+  mark('preload');
   // With an Arcana Cloud service client configured (LEYLINE_ARCANA_CLOUD_*), providers can take their keys from
   // Arcana references chosen on the dashboard.
   const arcana = arcanaCloudConfigFromEnv();
   const secrets: SecretStore = arcana ? await D1ArcanaCloudStore.open(d1Secrets, arcana, parseArcanaCloudReferences()) : d1Secrets;
+  mark('arcana');
   const docs = new D1DocStore(env.DB);
   const logs = new D1LogStore(env.DB);
   logger.persistTo((entry) => {
@@ -66,7 +79,13 @@ async function build(env: Env): Promise<Built> {
   }, () => logs.recent());
 
   const version = await secretsVersion(env.DB);
+  mark('version');
   const { router, quotaManager } = await buildRouter(secrets, { workersAi: env.AI });
+  // The providers' model lists as another instance last made them (for these same provider keys): listing them
+  // all again took ~2.5 s before this instance could answer anything.
+  const shared = await docs.get<SharedModelLists>(MODEL_LISTS_DOC).catch(() => null);
+  if (shared?.value.version === version) router.importModelLists(shared.value.lists);
+  mark('router');
   const hosted = hostedOptions(docs, { sharedMinute: true, watch: false });
   hosted.background = keepAlive;
   const email = env.EMAIL;
@@ -78,14 +97,26 @@ async function build(env: Env): Promise<Built> {
   }
   const saved = await hosted.keys.settings();
   if (saved) applySettings(hosted, saved);
+  mark('settings');
   const app = createServer(router, quotaManager, { apiKeyStore: secrets, hosted, enforceExternalSurface: false });
   // Finish startup's D1 reads inside this request: Workers cancels I/O a finished request left running.
   await app.locals.ready;
+  mark('ready');
+  for (const [k, v] of Object.entries((app.locals.readyStages ?? {}) as Record<string, number>)) stages[`ready-${k}`] = v;
+  // Keep the shared lists fresh for the next instance, after this one is already answering: save what this build
+  // listed itself, and relist in the background once they're half way to stale.
+  const oldest = router.oldestModelList();
+  if (!shared || shared.value.version !== version || (oldest !== null && oldest > shared.value.savedAt)) {
+    keepAlive(docs.put(MODEL_LISTS_DOC, { version, savedAt: Date.now(), lists: router.exportModelLists() } satisfies SharedModelLists));
+  } else if (oldest !== null && Date.now() - oldest > MODEL_LISTS_REFRESH_MS) {
+    keepAlive(router.reindexAll().then(() => docs.put(MODEL_LISTS_DOC, { version, savedAt: Date.now(), lists: router.exportModelLists() } satisfies SharedModelLists)));
+  }
   const port = nextPort++;
   const server = await new Promise<Server>((resolve) => {
     const s = app.listen(port, () => resolve(s));
   });
-  return { port, server, hosted, version };
+  console.log(JSON.stringify({ event: 'leyline_built', ms: Date.now() - started, stages }));
+  return { port, server, hosted, version, stages };
 }
 
 async function current(env: Env): Promise<Built> {
@@ -148,8 +179,18 @@ export default {
       return page;
     }
 
+    const t0 = Date.now();
     const b = await current(env);
-    return handleAsNodeRequest(b.port, request, env, ctx as never);
+    const appMs = Date.now() - t0;
+    const res = await handleAsNodeRequest(b.port, request, env, ctx as never);
+    // Where a request's time to its first byte goes: getting the app (a cold build), then the app itself.
+    if (url.pathname.startsWith('/v1/')) console.log(JSON.stringify({ event: 'leyline_request', path: url.pathname, appMs, headersMs: Date.now() - t0 }));
+    // Server-Timing for the caller too: getting the app (with its build stages when this request built it), the
+    // app's own stages (set by server.ts), and where this instance runs.
+    const timing = [`app;dur=${appMs}`, ...(appMs > 200 ? Object.entries(b.stages).map(([k, v]) => `build-${k};dur=${v}`) : []), `colo;desc=${(request as { cf?: { colo?: string } }).cf?.colo ?? '?'}`];
+    const out = new Response(res.body, res);
+    out.headers.set('Server-Timing', [res.headers.get('Server-Timing'), ...timing].filter(Boolean).join(', '));
+    return out;
   },
 
   /** Daily: drop old per-minute counters. */
