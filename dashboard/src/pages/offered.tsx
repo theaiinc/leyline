@@ -190,7 +190,7 @@ export function OfferedPage({ d }: { d: Dashboard }) {
         <Card>
           <CardHeader>
             <CardTitle>Prices</CardTitle>
-            <CardDescription>US$ per million tokens for the model that answered. A price set here wins; otherwise the provider's published price; otherwise "Others". <code className="font-mono text-xs">*</code> matches anything.</CardDescription>
+            <CardDescription>US$ per million tokens for the model that answered. A price set here wins; otherwise the provider's published price; otherwise "Others". <code className="font-mono text-xs">*</code> matches anything. Audio is priced by the minute (speech-to-text) or the character (text-to-speech) at list prices.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-2">
             <label className="mb-2 flex items-start justify-between gap-3 rounded-lg border p-3">
@@ -229,7 +229,7 @@ export function OfferedPage({ d }: { d: Dashboard }) {
         <Card>
           <CardHeader>
             <CardTitle>Models</CardTitle>
-            <CardDescription>Model ids listed on <code className="font-mono text-xs">/v1/models</code> and allowed in requests. <code className="font-mono text-xs">*</code> matches anything. None: whatever the router can serve.</CardDescription>
+            <CardDescription>Model ids listed on <code className="font-mono text-xs">/v1/models</code> and allowed in requests. <code className="font-mono text-xs">*</code> matches anything. None: whatever the router can serve. Embeddings and audio models count too (e.g. <code className="font-mono text-xs">text-embedding-*</code>, <code className="font-mono text-xs">whisper-1</code>, <code className="font-mono text-xs">nova-3</code>, <code className="font-mono text-xs">tts-1</code>, <code className="font-mono text-xs">@cf/*</code>).</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3">
             <div className="flex flex-wrap gap-2">

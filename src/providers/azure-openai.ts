@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import { AzureOpenAI } from 'openai/azure';
-import { Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail } from '../core/types';
+import { Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail, Capability, EmbeddingRequest, EmbeddingResult } from '../core/types';
 import { config } from '../config';
 import { prepareAzureChatParams } from './azure-request';
 import type { InstanceFamilyDefinition } from '../core/provider-instances';
@@ -63,6 +63,9 @@ export class AzureOpenAIProvider implements Provider {
   private deployment: string;
   private useOpenAICompatibleEndpoint: boolean;
   private client: OpenAI | null = null;
+  /** An embeddings deployment on the same resource (AZURE_OPENAI_EMBEDDING_DEPLOYMENT); unset: no embeddings. */
+  embeddingDeployment = process.env.AZURE_OPENAI_EMBEDDING_DEPLOYMENT || '';
+  capabilities: Capability[] = ['chat', 'embeddings'];
 
   constructor(
     apiKey: string = process.env.AZURE_OPENAI_API_KEY || '',
@@ -114,9 +117,43 @@ export class AzureOpenAIProvider implements Provider {
   }
 
   async getModels(): Promise<ModelDetail[]> {
-    return this.defaultModel
-      ? [{ id: this.defaultModel, name: this.defaultModel, description: 'Azure OpenAI deployment' }]
-      : [];
+    return [
+      ...(this.defaultModel ? [{ id: this.defaultModel, name: this.defaultModel, description: 'Azure OpenAI deployment' }] : []),
+      ...(this.embeddingDeployment ? [{ id: this.embeddingDeployment, name: this.embeddingDeployment, description: 'Azure OpenAI embeddings deployment' }] : []),
+    ];
+  }
+
+  /** Embeddings are served by the embeddings deployment, asked for by its name. */
+  servesModel(capability: Capability, model: string): boolean {
+    return capability === 'embeddings' && Boolean(this.embeddingDeployment) && model === this.embeddingDeployment;
+  }
+
+  defaultModelFor(capability: Capability): string | undefined {
+    if (capability === 'chat') return this.defaultModel;
+    return capability === 'embeddings' ? this.embeddingDeployment || undefined : undefined;
+  }
+
+  async embed(request: EmbeddingRequest): Promise<EmbeddingResult> {
+    try {
+      // No fixed deployment on this client: the legacy API takes the deployment from `model`.
+      const client = this.useOpenAICompatibleEndpoint
+        ? new OpenAI({ baseURL: this.endpoint, apiKey: this.apiKey })
+        : new AzureOpenAI({ baseURL: `${this.endpoint}/openai`, apiKey: this.apiKey, apiVersion: this.apiVersion });
+      const response = await client.embeddings.create({
+        model: request.model,
+        input: request.input,
+        encoding_format: 'float',
+        ...(request.dimensions ? { dimensions: request.dimensions } : {}),
+      });
+      const data = [...response.data].sort((a, b) => a.index - b.index);
+      return {
+        embeddings: data.map(d => d.embedding as number[]),
+        model: response.model || request.model,
+        ...(response.usage?.prompt_tokens ? { usage: { prompt_tokens: response.usage.prompt_tokens, total_tokens: response.usage.total_tokens } } : {}),
+      };
+    } catch (error) {
+      throw toProviderError(error);
+    }
   }
 
   async complete(request: CompletionRequest): Promise<CompletionResponse> {

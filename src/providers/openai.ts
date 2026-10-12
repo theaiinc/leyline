@@ -1,11 +1,23 @@
 import axios from 'axios';
 import { sanitizeToolSchemas } from './tool-schema';
 import { parsePublishedPricing } from '../core/pricing';
-import { Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail } from '../core/types';
+import {
+  Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail, Capability,
+  EmbeddingRequest, EmbeddingResult, TranscriptionRequest, TranscriptionResult, SpeechRequest, SpeechResult,
+} from '../core/types';
+import { SPEECH_CONTENT_TYPES, openAIEmbeddings, upstreamError } from '../core/media';
 import { config } from '../config';
+
+/** OpenAI's own non-chat models, by name. */
+const OPENAI_MODELS: Record<Exclude<Capability, 'chat'>, { pattern: RegExp; default: string }> = {
+  embeddings: { pattern: /^text-embedding-/, default: 'text-embedding-3-small' },
+  transcription: { pattern: /^(whisper-1|gpt-4o(-mini)?-transcribe.*)$/, default: 'whisper-1' },
+  speech: { pattern: /^(tts-1(-hd)?|gpt-4o(-mini)?-tts.*)$/, default: 'tts-1' },
+};
 
 export class OpenAIProvider implements Provider {
   name = 'OpenAI';
+  capabilities: Capability[] = ['chat', 'embeddings', 'transcription', 'speech'];
   defaultModel: string;
   private apiKey: string;
   private baseUrl: string;
@@ -124,6 +136,79 @@ export class OpenAIProvider implements Provider {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  servesModel(capability: Capability, model: string): boolean {
+    return capability !== 'chat' && OPENAI_MODELS[capability].pattern.test(model);
+  }
+
+  defaultModelFor(capability: Capability): string | undefined {
+    return capability === 'chat' ? this.defaultModel : OPENAI_MODELS[capability].default;
+  }
+
+  async embed(request: EmbeddingRequest): Promise<EmbeddingResult> {
+    return openAIEmbeddings(this.name, `${this.baseUrl}/embeddings`, { Authorization: `Bearer ${this.apiKey}` }, request);
+  }
+
+  async transcribe(request: TranscriptionRequest): Promise<TranscriptionResult> {
+    // whisper-1 answers verbose_json (segments, words, duration) and Leyline formats what the client asked for;
+    // the gpt-4o transcribe models only answer json (with token usage).
+    const verbose = request.model === 'whisper-1';
+    const form = new FormData();
+    form.append('file', new Blob([request.file.data as unknown as ArrayBuffer], { type: request.file.contentType }), request.file.filename);
+    form.append('model', request.model);
+    form.append('response_format', verbose ? 'verbose_json' : 'json');
+    if (request.language) form.append('language', request.language);
+    if (request.prompt) form.append('prompt', request.prompt);
+    if (request.temperature !== undefined) form.append('temperature', String(request.temperature));
+    if (verbose) {
+      form.append('timestamp_granularities[]', 'segment');
+      if (request.timestamps.word) form.append('timestamp_granularities[]', 'word');
+    }
+    const res = await fetch(`${this.baseUrl}/audio/transcriptions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${this.apiKey}` },
+      body: form,
+      signal: AbortSignal.timeout(300_000),
+    });
+    if (!res.ok) throw await upstreamError(this.name, res);
+    const body = await res.json() as {
+      text?: string; language?: string; duration?: number;
+      segments?: Array<{ id?: number; start: number; end: number; text: string }>;
+      words?: Array<{ word: string; start: number; end: number }>;
+      usage?: { type?: string; seconds?: number; input_tokens?: number; output_tokens?: number };
+    };
+    const duration = body.duration ?? body.usage?.seconds;
+    return {
+      text: body.text ?? '',
+      ...(body.language ? { language: body.language } : {}),
+      ...(duration !== undefined ? { duration } : {}),
+      ...(body.segments ? { segments: body.segments.map((seg, i) => ({ id: seg.id ?? i, start: seg.start, end: seg.end, text: seg.text })) } : {}),
+      ...(body.words ? { words: body.words.map(w => ({ word: w.word, start: w.start, end: w.end })) } : {}),
+      ...(body.usage?.type === 'tokens' ? { usage: { prompt_tokens: body.usage.input_tokens ?? 0, completion_tokens: body.usage.output_tokens ?? 0 } } : {}),
+    };
+  }
+
+  async speak(request: SpeechRequest): Promise<SpeechResult> {
+    const format = request.response_format || 'mp3';
+    const res = await fetch(`${this.baseUrl}/audio/speech`, {
+      method: 'POST',
+      headers: this.headers(),
+      body: JSON.stringify({
+        model: request.model,
+        input: request.input,
+        voice: request.voice || 'alloy',
+        response_format: format,
+        ...(request.speed !== undefined ? { speed: request.speed } : {}),
+        ...(request.instructions ? { instructions: request.instructions } : {}),
+      }),
+      signal: AbortSignal.timeout(300_000),
+    });
+    if (!res.ok) throw await upstreamError(this.name, res);
+    return {
+      audio: new Uint8Array(await res.arrayBuffer()),
+      contentType: res.headers.get('content-type') || SPEECH_CONTENT_TYPES[format] || 'application/octet-stream',
+    };
   }
 
   private headers(): Record<string, string> {

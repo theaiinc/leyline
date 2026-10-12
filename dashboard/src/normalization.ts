@@ -3,7 +3,12 @@ export type RuntimeConfig = {
   model?: string;
   baseUrlConfigured?: boolean;
   openAICompatible?: boolean;
+  /** Served through a platform binding (Workers AI's AI binding on the hosted Worker): no key needed. */
+  binding?: boolean;
 };
+
+/** What a provider serves: chat, embeddings, transcription (speech-to-text), speech (text-to-speech). */
+export type Capability = 'chat' | 'embeddings' | 'transcription' | 'speech';
 
 export type PersistenceMode = 'keychain' | 'localStorage' | 'memory' | 'arcana';
 export type ApiKeySource = PersistenceMode | 'arcana' | 'env' | 'none';
@@ -22,6 +27,7 @@ export type ApiKeyProvider = {
   runtimeConfigurable: boolean;
   runtimeConfig?: RuntimeConfig;
   runtimeReady?: boolean;
+  capabilities: Capability[];
 };
 
 export type RoutingStatus = {
@@ -92,6 +98,7 @@ export type ProviderStats = {
   runtimeConfigurable?: boolean;
   runtimeConfig?: RuntimeConfig;
   runtimeReady?: boolean;
+  capabilities: Capability[];
   models: ModelSummary[];
   quota?: { requestsPerMinute: number; requestsPerDay: number };
   usage: { minute: number; day: number };
@@ -178,8 +185,25 @@ function normalizeRuntimeConfig(value: unknown): RuntimeConfig | undefined {
     model: optionalString(value.model),
     baseUrlConfigured: typeof value.baseUrlConfigured === 'boolean' ? value.baseUrlConfigured : undefined,
     openAICompatible: typeof value.openAICompatible === 'boolean' ? value.openAICompatible : undefined,
+    binding: typeof value.binding === 'boolean' ? value.binding : undefined,
   };
 }
+
+const CAPABILITIES: Capability[] = ['chat', 'embeddings', 'transcription', 'speech'];
+
+/** Older servers don't say: every provider served chat only. */
+function normalizeCapabilities(value: unknown): Capability[] {
+  if (!Array.isArray(value)) return ['chat'];
+  const known = value.filter((c): c is Capability => CAPABILITIES.includes(c as Capability));
+  return known.length ? known : ['chat'];
+}
+
+export const CAPABILITY_LABELS: Record<Capability, string> = {
+  chat: 'Chat',
+  embeddings: 'Embeddings',
+  transcription: 'Speech-to-text',
+  speech: 'Text-to-speech',
+};
 
 function normalizePersistenceMode(value: unknown, defaultAvailable = false): { available: boolean; warning?: string; service?: string } {
   const raw = isRecord(value) ? value : {};
@@ -356,6 +380,7 @@ function normalizeApiKeyProvider(value: unknown, index: number): ApiKeyProvider 
     runtimeConfigurable: Boolean(raw.runtimeConfigurable),
     runtimeConfig: normalizeRuntimeConfig(raw.runtimeConfig),
     runtimeReady: typeof raw.runtimeReady === 'boolean' ? raw.runtimeReady : undefined,
+    capabilities: normalizeCapabilities(raw.capabilities),
   };
 }
 
@@ -379,6 +404,7 @@ function normalizeProviderStats(value: unknown, index: number): ProviderStats {
     apiKeyStatus,
     runtimeConfig: normalizeRuntimeConfig(raw.runtimeConfig),
     runtimeReady: typeof raw.runtimeReady === 'boolean' ? raw.runtimeReady : undefined,
+    capabilities: normalizeCapabilities(raw.capabilities),
     models: Array.isArray(raw.models) ? raw.models.map(normalizeModel) : [],
     quota: normalizeQuota(raw.quota),
     usage: normalizeUsage(raw.usage),
@@ -487,10 +513,13 @@ export function providerDescription(name: string, family?: string): string | und
   if (name === 'OpenAI') return 'Direct OpenAI API (api.openai.com). Not Azure.';
   if (name === 'LLM API') return 'OpenAI-compatible LLM API — configure its endpoint and credential independently.';
   if (familyOf(name, family) === 'AzureOpenAI') return 'Azure OpenAI — save your Azure resource key and base URL here.';
+  if (name === 'Deepgram') return 'Deepgram speech-to-text (nova-3, nova-2) for /v1/audio/transcriptions.';
+  if (name === 'WorkersAI') return 'Cloudflare Workers AI (@cf/ models): the AI binding on the hosted Worker, else account ID + API token.';
   return undefined;
 }
 
-export function providerStatusLabel(provider: Pick<ApiKeyProvider, 'configured' | 'runtimeConfigurable' | 'runtimeReady'>): { label: string; tone: BadgeTone } {
+export function providerStatusLabel(provider: Pick<ApiKeyProvider, 'configured' | 'runtimeConfigurable' | 'runtimeReady' | 'runtimeConfig'>): { label: string; tone: BadgeTone } {
+  if (provider.runtimeConfig?.binding) return { label: 'AI binding', tone: 'success' };
   if (provider.runtimeConfigurable) {
     if (!provider.configured) return { label: 'Missing key', tone: 'danger' };
     if (provider.runtimeReady === false) return { label: 'Needs base URL', tone: 'warning' };

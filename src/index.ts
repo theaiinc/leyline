@@ -24,6 +24,8 @@ export type {
   CompletionRequest, CompletionResponse, StreamChunk, ModelDetail, Quota,
   ModelVariant, BillingClass, ResourceClass,
   RouterClassification, ClassifyRequest, RouteResult, RouteOptions, TierConfig,
+  Capability, EmbeddingRequest, EmbeddingResult, AudioFile, TranscriptionRequest, TranscriptionResult,
+  TranscriptSegment, TranscriptWord, SpeechRequest, SpeechResult,
 } from './core/types';
 export { INSTANCE_FAMILIES } from './core/provider-instances';
 export type { InstanceFamilyDefinition, InstanceFieldSpec } from './core/provider-instances';
@@ -36,6 +38,14 @@ export { LMStudioProvider } from './providers/lmstudio';
 export { LiteLLMProvider } from './providers/litellm';
 export { LlmApiProvider } from './providers/llm-api';
 export { AzureOpenAIProvider } from './providers/azure-openai';
+export { DeepgramProvider } from './providers/deepgram';
+export { WorkersAiProvider } from './providers/workers-ai';
+export type { WorkersAiBinding } from './providers/workers-ai';
+export { CAPABILITY_PREFERENCE } from './core/router';
+export {
+  TRANSCRIPTION_USD_PER_MINUTE, SPEECH_USD_PER_MILLION_CHARS, transcriptionCostUsd, speechCostUsd,
+} from './core/media';
+export { BUILTIN_PRICES } from './core/pricing';
 export { createServer, startServer } from './server';
 export type { CreateServerOptions, StartServerOptions } from './server';
 export { config, DEFAULT_LEYLINE_CLIENT_API_KEY } from './config';
@@ -86,6 +96,8 @@ import { LMStudioProvider } from './providers/lmstudio';
 import { LiteLLMProvider } from './providers/litellm';
 import { LlmApiProvider } from './providers/llm-api';
 import { AzureOpenAIProvider } from './providers/azure-openai';
+import { DeepgramProvider } from './providers/deepgram';
+import { WorkersAiProvider, type WorkersAiBinding } from './providers/workers-ai';
 import { config, DEFAULT_LEYLINE_CLIENT_API_KEY } from './config';
 import type { ModelVariant } from './core/types';
 import { isCompressionAvailable } from './core/compress';
@@ -102,8 +114,11 @@ import { INSTANCE_FAMILIES } from './core/provider-instances';
 
 // ── Standalone server bootstrap ──────────────────────────────────────
 
-/** The router with every configured provider (shared by the Node server and the Cloudflare Worker). */
-export async function buildRouter(secretStore: SecretStore): Promise<{ router: Router; quotaManager: QuotaManager }> {
+/**
+ * The router with every configured provider (shared by the Node server and the Cloudflare Worker). `workersAi`:
+ * the Worker's AI binding, so Workers AI needs no account id or token there.
+ */
+export async function buildRouter(secretStore: SecretStore, opts: { workersAi?: WorkersAiBinding } = {}): Promise<{ router: Router; quotaManager: QuotaManager }> {
   const quotaManager = new QuotaManager();
 
   // Configure optional Leyline-side quotas (off by default — Cursor bursts exceed low RPM caps)
@@ -211,6 +226,10 @@ export async function buildRouter(secretStore: SecretStore): Promise<{ router: R
   if (process.env.LMSTUDIO_BASE_URL || process.env.LMSTUDIO_MODEL) {
     router.addProvider(new LMStudioProvider());
   }
+  // Speech-to-text (DEEPGRAM_API_KEY), and Cloudflare Workers AI (the AI binding, or CLOUDFLARE_ACCOUNT_ID +
+  // CLOUDFLARE_API_TOKEN): last, so chat `auto` reaches Workers AI only when nothing before it answers.
+  router.addProvider(new DeepgramProvider());
+  router.addProvider(new WorkersAiProvider({ binding: opts.workersAi }));
 
   // Add any additional named instances (e.g. extra Azure endpoints) configured via the dashboard.
   // These register as blank shells; startServer's initializeApiKeys() hydrates each from its own

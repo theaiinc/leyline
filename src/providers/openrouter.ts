@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { parsePublishedPricing } from '../core/pricing';
-import { Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail } from '../core/types';
+import { Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail, Capability, EmbeddingRequest, EmbeddingResult } from '../core/types';
+import { openAIEmbeddings } from '../core/media';
 import dotenv from 'dotenv';
 import { config } from '../config';
 
@@ -8,6 +9,7 @@ dotenv.config();
 
 export class OpenRouterProvider implements Provider {
   name = 'OpenRouter';
+  capabilities: Capability[] = ['chat', 'embeddings'];
   defaultModel: string;
   private apiKey: string;
   private model: string;
@@ -28,6 +30,20 @@ export class OpenRouterProvider implements Provider {
 
   hasApiKey(): boolean {
     return Boolean(this.apiKey);
+  }
+
+  /** OpenRouter's embedding models are vendor/name with "embed" in the name (openai/text-embedding-3-small, qwen/qwen3-embedding-8b). */
+  servesModel(capability: Capability, model: string): boolean {
+    return capability === 'embeddings' && /^[\w.-]+\/[\w.:-]*embed/i.test(model);
+  }
+
+  defaultModelFor(capability: Capability): string | undefined {
+    if (capability === 'chat') return this.defaultModel;
+    return capability === 'embeddings' ? 'openai/text-embedding-3-small' : undefined;
+  }
+
+  async embed(request: EmbeddingRequest): Promise<EmbeddingResult> {
+    return openAIEmbeddings(this.name, 'https://openrouter.ai/api/v1/embeddings', { Authorization: `Bearer ${this.apiKey}` }, request);
   }
 
   async getModels(): Promise<ModelDetail[]> {

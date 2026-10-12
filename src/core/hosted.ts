@@ -4,6 +4,7 @@ import type { Router } from './router';
 import { AegisAuth, cookie, cookies, type AdminUser } from './admin-login';
 import { CostAlerts, DEFAULT_ALERTS, type AlertChannels, type AlertSettings } from './alerts';
 import { AnthropicStream, anthropicError, anthropicToOpenAI, estimateTokens, openAIToAnthropic, type AnthropicRequest } from './anthropic';
+import { builtinPrice } from './pricing';
 import { DEFAULT_PRICE, IssuedKeys, costUsd, modelAllowed, priceOf, type HostedSettings, type IssuedKey, type KeyCaps, type Price } from './issued-keys';
 
 /**
@@ -129,10 +130,12 @@ function resolveAlias(opts: HostedOptions, model: string): string | null {
 
 /**
  * Count a finished request against its key and the monthly spend (never fails the request). The cost uses the price
- * of the model actually used. Without usage from the provider it's estimated (four characters a token): the request
- * body for input, outChars for output.
+ * of the model actually used: set by hand, else what its provider publishes (or Leyline's built-in list price, for
+ * embeddings), else the default. Without usage from the provider it's estimated (four characters a token): the
+ * request body for input, outChars for output. `usd`, when given, is the cost already worked out (audio is priced
+ * by the minute or the character, src/core/media.ts).
  */
-export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_tokens?: number; completion_tokens?: number }, outChars = 0): void {
+export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_tokens?: number; completion_tokens?: number }, outChars = 0, usd?: number): void {
   const r = req as WithKey;
   if (!r.issuedKey && !r.ownerRequest) return;
   const counted = usage && ((usage.prompt_tokens ?? 0) > 0 || (usage.completion_tokens ?? 0) > 0)
@@ -141,9 +144,10 @@ export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_
   const model = r.requestedModel ?? '';
   // Priced by the model that actually answered (after aliases and routing), credited to the provider that served it.
   const used = r.served?.model || resolveModel(opts.aliases, model);
-  const published = opts.usePublishedPrices !== false && r.served ? opts.publishedPrice?.(r.served.provider, used) : undefined;
-  const usd = costUsd(priceOf({ prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE }, used, published), counted);
-  const work = opts.keys.record(r.issuedKey ?? null, model, counted, usd, { provider: r.served?.provider ?? 'unknown', model: used })
+  const usePublished = opts.usePublishedPrices !== false;
+  const published = usePublished ? (r.served ? opts.publishedPrice?.(r.served.provider, used) : undefined) ?? builtinPrice(used) : undefined;
+  const cost = usd ?? costUsd(priceOf({ prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE }, used, published), counted);
+  const work = opts.keys.record(r.issuedKey ?? null, model, counted, cost, { provider: r.served?.provider ?? 'unknown', model: used })
     .then(() => checkAlerts(opts, r.issuedKey ?? null))
     .catch((err) => console.error('[hosted] usage record failed', err));
   opts.background?.(work);

@@ -8,7 +8,10 @@ import {
   RouteResult,
   RouteOptions,
   TierConfig,
+  Capability,
+  servesChat,
 } from './types';
+import { CapabilityError, errorStatus } from './media';
 import { QuotaManager } from './quota-manager';
 import { ModelRegistry } from './model-registry';
 import { Classifier } from './classifier';
@@ -310,17 +313,19 @@ export class Router {
    * the matches) is moved to the front to resolve the ambiguity.
    */
   private async candidateProviders(model: string): Promise<Provider[]> {
-    if (!model || model === 'auto') return this.providers;
+    // Providers that only do embeddings or audio (Deepgram) never take chat.
+    const chat = this.providers.filter(servesChat);
+    if (!model || model === 'auto') return chat;
 
     const matches: Provider[] = [];
-    for (const provider of this.providers) {
+    for (const provider of chat) {
       const enabled = this.enabledModelsFor(provider);
       if (enabled?.includes(model) || await this.providerListsModel(provider, model)) {
         matches.push(provider);
       }
     }
     // Nobody lists it (a deployment name, a model a provider doesn't advertise): try them all, as before.
-    if (matches.length === 0) return this.providers;
+    if (matches.length === 0) return chat;
     if (matches.length > 1) {
       const pinned = this.modelPins.get(model);
       const pinnedIndex = pinned ? matches.findIndex(p => p.name === pinned) : -1;
@@ -329,6 +334,98 @@ export class Router {
     // Only the providers that serve this model: falling through to the others would answer with a different
     // model (an Azure deployment answers whatever it's asked) while the client thinks it got the one it named.
     return matches;
+  }
+
+  // ── Embeddings, transcription, speech ───────────────────────────
+
+  /** Providers that serve `model` for a capability: by name, or because they list it (gateways). */
+  private async capabilityServers(capability: Capability, model: string): Promise<Provider[]> {
+    const out: Provider[] = [];
+    for (const provider of this.providers) {
+      if (!provider.capabilities?.includes(capability)) continue;
+      if (provider.servesModel?.(capability, model)
+        || (provider.servesListedModels?.(capability) && await this.providerListsModel(provider, model))) {
+        out.push(provider);
+      }
+    }
+    const pinned = this.modelPins.get(model);
+    const at = pinned ? out.findIndex(p => p.name === pinned) : -1;
+    if (at > 0) out.unshift(out.splice(at, 1)[0]);
+    return out;
+  }
+
+  /**
+   * Run an embeddings / transcription / speech request on a provider that serves the model asked for, failing
+   * over only to providers that serve that same model (vectors from another embedding model would not match an
+   * index built with this one). `auto` takes the first configured provider's default model, in
+   * CAPABILITY_PREFERENCE order. Errors the client caused (HTTP 400, 413, 415, 422) are not retried elsewhere.
+   */
+  async routeCapability<T>(
+    capability: Exclude<Capability, 'chat'>,
+    requested: string,
+    run: (provider: Provider, model: string) => Promise<T>,
+    opts: RouteOptions & { usageOf?: (result: T) => { prompt_tokens?: number; completion_tokens?: number } | undefined } = {},
+  ): Promise<{ result: T; provider: string; model: string }> {
+    const start = Date.now();
+    const requestId = Math.random().toString(36).substring(7);
+    const capable = this.providers.filter(p => p.capabilities?.includes(capability));
+    let model = (requested || '').trim();
+    let candidates: Provider[];
+
+    if (opts.forceProvider) {
+      const forced = capable.find(p => p.name === opts.forceProvider);
+      if (!forced) throw new CapabilityError(400, 'unknown_provider', `Provider "${opts.forceProvider}" does not serve ${capability}.`);
+      if (!model || model === 'auto') model = forced.defaultModelFor?.(capability) ?? '';
+      if (!model) throw new CapabilityError(400, 'model_required', `Name a ${capability} model for ${forced.name}.`);
+      candidates = [forced];
+    } else if (!model || model === 'auto') {
+      const preference = CAPABILITY_PREFERENCE[capability];
+      const rank = (p: Provider) => {
+        const i = preference.indexOf(p.name);
+        return i === -1 ? preference.length : i;
+      };
+      let first: Provider | undefined;
+      for (const provider of [...capable].sort((a, b) => rank(a) - rank(b))) {
+        if (provider.defaultModelFor?.(capability) && await provider.isAvailable()) {
+          first = provider;
+          break;
+        }
+      }
+      if (!first) throw new CapabilityError(503, 'no_provider', `No provider is configured for ${capability}.`);
+      model = first.defaultModelFor!(capability)!;
+      candidates = [first, ...(await this.capabilityServers(capability, model)).filter(p => p !== first)];
+    } else {
+      candidates = await this.capabilityServers(capability, model);
+      if (candidates.length === 0) {
+        throw new CapabilityError(404, 'model_not_found', `No provider here serves the ${capability} model "${model}".`);
+      }
+    }
+
+    let lastError: unknown;
+    for (const provider of candidates) {
+      if (!this.quotaManager.checkQuota(provider.name)) {
+        logger.log({ requestId, provider: provider.name, model, status: 'rate_limited', error: 'Quota exceeded' });
+        continue;
+      }
+      if (!(await provider.isAvailable())) {
+        logger.log({ requestId, provider: provider.name, model, status: 'error', error: `${provider.name} reported unavailable`, duration: Date.now() - start });
+        continue;
+      }
+      try {
+        const result = await run(provider, model);
+        opts.onServed?.(provider.name, model);
+        this.quotaManager.incrementUsage(provider.name);
+        logger.log({ requestId, provider: provider.name, model, status: 'success', duration: Date.now() - start, usage: opts.usageOf?.(result) });
+        return { result, provider: provider.name, model };
+      } catch (error) {
+        lastError = await hydrateAxiosError(error);
+        logger.log({ requestId, provider: provider.name, model, status: 'error', error: formatProviderError(lastError), duration: Date.now() - start });
+        console.error(`[Router] ${capability} error with ${provider.name}:`, formatProviderError(lastError));
+        const status = errorStatus(lastError);
+        if (status === 400 || status === 413 || status === 415 || status === 422) throw lastError;
+      }
+    }
+    throw lastError ?? new CapabilityError(503, 'no_provider', `No provider serving "${model}" is available for ${capability}.`);
   }
 
   // ── Route execution (existing) ──────────────────────────────────
@@ -879,6 +976,16 @@ export class Router {
     return { provider, model };
   }
 }
+
+/**
+ * Who answers `auto` for each capability, first configured first: the usual default (OpenAI) before
+ * alternatives. Providers not named here come after, in registration order.
+ */
+export const CAPABILITY_PREFERENCE: Record<Exclude<Capability, 'chat'>, string[]> = {
+  embeddings: ['OpenAI', 'AzureOpenAI', 'WorkersAI', 'Gemini', 'OpenRouter'],
+  transcription: ['OpenAI', 'Deepgram', 'WorkersAI'],
+  speech: ['OpenAI', 'WorkersAI'],
+};
 
 function normalizeProviderName(provider: string): string {
   return provider.toLowerCase().replace(/[^a-z0-9]/g, '');

@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `POST /v1/embeddings` (OpenAI, Azure, Gemini, OpenRouter, the LLM API gateway when it lists the model, Workers AI bge), `POST /v1/audio/transcriptions` (OpenAI, Deepgram prerecorded, Workers AI Whisper) and `POST /v1/audio/speech` (OpenAI, Workers AI MeloTTS), behind the same keys, caps, budget and usage recording as chat.
+- Cloudflare Workers AI provider (chat with streaming, embeddings, audio) through the Worker's `AI` binding or the REST API; Deepgram provider with a dashboard/Arcana key slot.
+- Dashboard shows what each provider serves (chat, embeddings, speech-to-text, text-to-speech) and the Workers AI binding status.
+
 ## [1.3.3] - 2026-06-25
 
 ### Added

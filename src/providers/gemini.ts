@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail } from '../core/types';
+import { Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail, Capability, EmbeddingRequest, EmbeddingResult } from '../core/types';
+import { openAIEmbeddings } from '../core/media';
 import axios from 'axios';
 import dotenv from 'dotenv';
 import { config } from '../config';
@@ -8,6 +9,7 @@ dotenv.config();
 
 export class GeminiProvider implements Provider {
   name = 'Gemini';
+  capabilities: Capability[] = ['chat', 'embeddings'];
   defaultModel: string;
   private apiKey: string;
   private client: GoogleGenerativeAI;
@@ -33,13 +35,27 @@ export class GeminiProvider implements Provider {
     return Boolean(this.apiKey);
   }
 
+  servesModel(capability: Capability, model: string): boolean {
+    return capability === 'embeddings' && /^(gemini-embedding-|text-embedding-00|embedding-00)/.test(model);
+  }
+
+  defaultModelFor(capability: Capability): string | undefined {
+    if (capability === 'chat') return this.defaultModel;
+    return capability === 'embeddings' ? 'gemini-embedding-001' : undefined;
+  }
+
+  /** Through Gemini's OpenAI-compatible endpoint (same request and response as OpenAI's). */
+  async embed(request: EmbeddingRequest): Promise<EmbeddingResult> {
+    return openAIEmbeddings(this.name, 'https://generativelanguage.googleapis.com/v1beta/openai/embeddings', { Authorization: `Bearer ${this.apiKey}` }, request);
+  }
+
   async getModels(): Promise<ModelDetail[]> {
       const apiKey = this.apiKey;
       if (!apiKey) return [];
       try {
           const response = await axios.get(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
           return response.data.models
-              .filter((m: any) => m.supportedGenerationMethods.includes('generateContent'))
+              .filter((m: any) => m.supportedGenerationMethods.includes('generateContent') || m.supportedGenerationMethods.includes('embedContent'))
               .map((m: any) => ({
                   id: m.name.replace('models/', ''),
                   name: m.displayName,

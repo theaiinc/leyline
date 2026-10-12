@@ -874,6 +874,8 @@ function arcanaEnvironmentName(account: string): string {
     OpenRouter: 'OPENROUTER_API_KEY',
     AzureOpenAI: 'AZURE_OPENAI_API_KEY',
     'LLM API': 'LLM_API_KEY',
+    Deepgram: 'DEEPGRAM_API_KEY',
+    WorkersAI: 'CLOUDFLARE_API_TOKEN',
   };
   return providerEnvironmentNames[provider]
     || `${provider.replace(/[^A-Za-z0-9]+/g, '_').toUpperCase()}_API_KEY`;
@@ -899,6 +901,8 @@ function parseArcanaReferences(): Record<string, string> {
     OpenAI: 'OPENAI',
     OpenRouter: 'OPENROUTER',
     AzureOpenAI: 'AZURE_OPENAI',
+    Deepgram: 'DEEPGRAM',
+    WorkersAI: 'CLOUDFLARE',
   };
   for (const [provider, envName] of Object.entries(providers)) {
     const reference = process.env[`LEYLINE_ARCANA_${envName}_REF`];
@@ -940,6 +944,8 @@ export function parseArcanaCloudReferences(): Record<string, string> {
     OpenAI: 'OPENAI',
     OpenRouter: 'OPENROUTER',
     AzureOpenAI: 'AZURE_OPENAI',
+    Deepgram: 'DEEPGRAM',
+    WorkersAI: 'CLOUDFLARE',
   };
   for (const [provider, envName] of Object.entries(providers)) {
     const reference = process.env[`LEYLINE_ARCANA_CLOUD_${envName}_REF`];

@@ -72,6 +72,71 @@ export interface ModelDetail {
   pricing?: { input: number; output: number };
 }
 
+// ── Capabilities beyond chat (embeddings, speech-to-text, text-to-speech) ──
+
+/** What a provider serves. Providers that don't say serve chat only. */
+export type Capability = 'chat' | 'embeddings' | 'transcription' | 'speech';
+
+export interface EmbeddingRequest {
+  model: string;
+  /** Always a list here (the server turns a single string into one). */
+  input: string[];
+  dimensions?: number;
+  user?: string;
+}
+
+export interface EmbeddingResult {
+  /** One vector per input, in input order. */
+  embeddings: number[][];
+  /** The model that made them (as the provider names it). */
+  model: string;
+  usage?: { prompt_tokens: number; total_tokens?: number };
+}
+
+export interface AudioFile {
+  data: Uint8Array;
+  filename: string;
+  contentType: string;
+}
+
+export interface TranscriptSegment { id: number; start: number; end: number; text: string }
+export interface TranscriptWord { word: string; start: number; end: number }
+
+export interface TranscriptionRequest {
+  model: string;
+  file: AudioFile;
+  language?: string;
+  prompt?: string;
+  temperature?: number;
+  /** Timestamps the client wants back (verbose_json, srt, vtt or timestamp_granularities). */
+  timestamps: { segment: boolean; word: boolean };
+}
+
+/** A transcript in one shape whatever the provider; the server formats it as the client asked (json, srt …). */
+export interface TranscriptionResult {
+  text: string;
+  language?: string;
+  /** Seconds of audio (billing uses it). */
+  duration?: number;
+  segments?: TranscriptSegment[];
+  words?: TranscriptWord[];
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
+}
+
+export interface SpeechRequest {
+  model: string;
+  input: string;
+  voice?: string;
+  response_format?: string;
+  speed?: number;
+  instructions?: string;
+}
+
+export interface SpeechResult {
+  audio: Uint8Array;
+  contentType: string;
+}
+
 export interface Provider {
   name: string;
   /** Provider family shared across instances, e.g. 'AzureOpenAI'. Unset for single-instance providers. */
@@ -83,6 +148,22 @@ export interface Provider {
   getModels(): Promise<ModelDetail[]>;
   complete(request: CompletionRequest): Promise<CompletionResponse>;
   completeStream(request: CompletionRequest): AsyncGenerator<StreamChunk, void, unknown>;
+  /** What it serves; unset: chat only. Chat routing skips providers that don't list 'chat'. */
+  capabilities?: Capability[];
+  /** Whether it serves `model` for a non-chat capability (by name: text-embedding-*, whisper-1, @cf/…). */
+  servesModel?(capability: Capability, model: string): boolean;
+  /** Whether the models it lists (GET /models) can be asked for this capability (gateways such as llmapi.ai). */
+  servesListedModels?(capability: Capability): boolean;
+  /** The model it uses when a client asks for `auto` (undefined: it doesn't take part in auto). */
+  defaultModelFor?(capability: Capability): string | undefined;
+  embed?(request: EmbeddingRequest): Promise<EmbeddingResult>;
+  transcribe?(request: TranscriptionRequest): Promise<TranscriptionResult>;
+  speak?(request: SpeechRequest): Promise<SpeechResult>;
+}
+
+/** Whether a provider takes chat completions (every provider that doesn't declare capabilities does). */
+export function servesChat(provider: Provider): boolean {
+  return !provider.capabilities || provider.capabilities.includes('chat');
 }
 
 export interface RouteOptions {
