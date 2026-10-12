@@ -1,7 +1,7 @@
 // ── Public API exports ──────────────────────────────────────────────
 // Consumers import models and types from @theaiinc/leyline:
 //   import { Router, ModelRegistry, Classifier, LMStudioProvider } from '@theaiinc/leyline';
-export { Router, selectModelByRouter } from './core/router';
+export { Router, selectModelByRouter, UnsupportedContentError } from './core/router';
 export type { RouterOptions, SingleModelRouterConfig } from './core/router';
 export { ModelRegistry } from './core/model-registry';
 export { Classifier } from './core/classifier';
@@ -25,8 +25,9 @@ export type {
   ModelVariant, BillingClass, ResourceClass,
   RouterClassification, ClassifyRequest, RouteResult, RouteOptions, TierConfig,
   Capability, EmbeddingRequest, EmbeddingResult, AudioFile, TranscriptionRequest, TranscriptionResult,
-  TranscriptSegment, TranscriptWord, SpeechRequest, SpeechResult,
+  TranscriptSegment, TranscriptWord, SpeechRequest, SpeechResult, ChatMessage,
 } from './core/types';
+export type { ContentPart, TextPart, ImageUrlPart, InputAudioPart, FilePart } from './core/content';
 export { INSTANCE_FAMILIES } from './core/provider-instances';
 export type { InstanceFamilyDefinition, InstanceFieldSpec } from './core/provider-instances';
 export { GeminiProvider } from './providers/gemini';

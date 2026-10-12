@@ -8,6 +8,10 @@
 - Cloudflare Workers AI provider (chat with streaming, embeddings, audio) through the Worker's `AI` binding or the REST API; Deepgram provider with a dashboard/Arcana key slot.
 - Dashboard shows what each provider serves (chat, embeddings, speech-to-text, text-to-speech) and the Workers AI binding status.
 
+### Fixed
+
+- Images (and audio, files) in OpenAI content-part arrays and Anthropic `/v1/messages` image blocks reach the upstream model instead of being flattened to text; requests with images skip providers that can't read them (HuggingFace, Workers AI) and get a clear 400 when only those serve the model. Gemini inlines `data:` URL images; Ollama sends them as `images`.
+
 ## [1.3.3] - 2026-06-25
 
 ### Added

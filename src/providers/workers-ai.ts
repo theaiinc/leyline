@@ -4,6 +4,7 @@ import type {
   SpeechRequest, SpeechResult, StreamChunk, TranscriptionRequest, TranscriptionResult,
 } from '../core/types';
 import { estimateTextTokens, upstreamError } from '../core/media';
+import { contentText, estimateMessageTokens } from '../core/content';
 
 /** The Workers AI binding (`env.AI` with `"ai": {"binding": "AI"}` in wrangler.jsonc). */
 export interface WorkersAiBinding {
@@ -107,6 +108,14 @@ export class WorkersAiProvider implements Provider {
     return capability === 'chat' ? this.defaultModel : DEFAULTS[capability];
   }
 
+  /**
+   * Its chat input here is text only (messages with string content), so requests with images, audio or files go
+   * to a provider that reads them.
+   */
+  acceptsNonTextContent(): boolean {
+    return false;
+  }
+
   /** Chat requests for @cf/ models only (an unknown model id never lands here by accident). */
   async canHandle(request: CompletionRequest): Promise<boolean> {
     return request.model.startsWith('@cf/') && !Object.values(PATTERNS).some(p => p.test(request.model));
@@ -165,7 +174,7 @@ export class WorkersAiProvider implements Provider {
       const args = c.function?.arguments ?? c.arguments ?? {};
       return { id: c.id ?? `call_${i}_${randomBytes(4).toString('hex')}`, type: 'function', function: { name, arguments: typeof args === 'string' ? args : JSON.stringify(args) } };
     });
-    const prompt = out?.usage?.prompt_tokens ?? estimateTextTokens(request.messages.map(m => String(m.content ?? '')));
+    const prompt = out?.usage?.prompt_tokens ?? estimateMessageTokens(request.messages);
     const completion = out?.usage?.completion_tokens ?? Math.ceil(text.length / 4);
     return {
       id: `chatcmpl-${randomBytes(12).toString('hex')}`,
@@ -292,13 +301,12 @@ export function fromWhisper(out: WhisperOutput): TranscriptionResult {
   };
 }
 
-/** Workers AI takes string contents; a multimodal content list keeps its text parts. */
+/**
+ * Workers AI takes string contents; a multimodal content list keeps its text parts. The router never sends it
+ * images (acceptsNonTextContent), so dropping them here can't make a model answer blind.
+ */
 function toWorkersMessage(m: ChatMessage): Record<string, unknown> {
-  const content = typeof m.content === 'string' || m.content === null || m.content === undefined
-    ? m.content ?? ''
-    : Array.isArray(m.content)
-      ? (m.content as Array<{ type?: string; text?: string }>).filter(p => p.type === 'text').map(p => p.text ?? '').join('\n')
-      : JSON.stringify(m.content);
+  const content = contentText(m.content);
   return { role: m.role, content, ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}), ...(m.name ? { name: m.name } : {}) };
 }
 

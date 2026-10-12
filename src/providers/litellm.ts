@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import axios from 'axios';
 import { Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail } from '../core/types';
+import { contentText, estimateBodyTokens } from '../core/content';
 
 type ToolRecord = Record<string, unknown>;
 
@@ -20,26 +21,26 @@ function byteLength(value: unknown): number {
   return Buffer.byteLength(stableJson(value), 'utf8');
 }
 
+/** Characters of a message's content: the string, or the text of its parts plus the JSON of the rest. */
 function contentCharLength(content: unknown): number {
   if (content === null || content === undefined) return 0;
   if (typeof content === 'string') return content.length;
   return stableJson(content).length;
 }
 
-function messageSummary(messages: unknown): { count: number; contentChars: number; sha256: string } {
-  if (!Array.isArray(messages)) {
-    return {
-      count: messages === undefined ? 0 : 1,
-      contentChars: isRecord(messages) ? contentCharLength(messages.content) : contentCharLength(messages),
-      sha256: sha256(messages),
-    };
-  }
+function nonTextPartCount(content: unknown): number {
+  return Array.isArray(content) ? content.filter(part => !isRecord(part) || part.type !== 'text').length : 0;
+}
 
+function messageSummary(messages: unknown): { count: number; contentChars: number; textChars: number; nonTextParts: number; sha256: string } {
+  const list = Array.isArray(messages) ? messages : messages === undefined ? [] : [messages];
+  const contentOf = (message: unknown) => (isRecord(message) ? message.content : message);
   return {
-    count: messages.length,
-    contentChars: messages.reduce((sum, message) => (
-      sum + (isRecord(message) ? contentCharLength(message.content) : contentCharLength(message))
-    ), 0),
+    count: list.length,
+    contentChars: list.reduce((sum: number, message) => sum + contentCharLength(contentOf(message)), 0),
+    // Text only (images/audio/files counted separately), so the audit compares what the model reads as text.
+    textChars: list.reduce((sum: number, message) => sum + contentText(contentOf(message)).length, 0),
+    nonTextParts: list.reduce((sum: number, message) => sum + nonTextPartCount(contentOf(message)), 0),
     sha256: sha256(messages),
   };
 }
@@ -70,6 +71,7 @@ function auditPayload(request: CompletionRequest, payload: Record<string, unknow
     preserved: {
       messageCount: messageSummary(request.messages).count === messageSummary(payload.messages).count,
       messageContentChars: messageSummary(request.messages).contentChars === messageSummary(payload.messages).contentChars,
+      nonTextParts: messageSummary(request.messages).nonTextParts === messageSummary(payload.messages).nonTextParts,
       toolCount: inboundTools.count === outboundTools.count,
     },
   };
@@ -86,8 +88,9 @@ function optionalPositiveInteger(value: unknown): number | undefined {
 function estimatePayloadTokens(payload: Record<string, unknown>): number {
   // Conservative proxy estimate: JSON payload chars include messages, tool schemas,
   // response hints, and Cursor metadata that provider tokenizers also need to process.
+  // Inline images/audio count as a fixed estimate each, not by the length of their base64.
   const charsPerToken = optionalPositiveInteger(process.env.LITELLM_TOKEN_CHAR_RATIO) || 4;
-  return Math.ceil(JSON.stringify(payload).length / charsPerToken);
+  return estimateBodyTokens(payload, charsPerToken);
 }
 
 function contextLengthError(estimatedTokens: number, maxInputTokens: number): unknown {

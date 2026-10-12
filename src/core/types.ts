@@ -1,8 +1,13 @@
+import type { ContentPart } from './content';
+
+export type { ContentPart } from './content';
+
 // ── Existing request/response types ──────────────────────────────────
 
 export interface ChatMessage {
   role: string;
-  content?: string | null;
+  /** A string, or OpenAI content parts (text, image_url, input_audio, file, …) passed through as sent. */
+  content?: string | ContentPart[] | null;
   tool_calls?: unknown[];
   tool_call_id?: string;
   name?: string;
@@ -159,6 +164,13 @@ export interface Provider {
   embed?(request: EmbeddingRequest): Promise<EmbeddingResult>;
   transcribe?(request: TranscriptionRequest): Promise<TranscriptionResult>;
   speak?(request: SpeechRequest): Promise<SpeechResult>;
+  /**
+   * Whether it can take this request's non-text content (images, audio, files) for `request.model`. Unset: it
+   * passes content parts through to an OpenAI-compatible upstream, which decides. Providers that would drop the
+   * parts say false, and the router sends such requests elsewhere (or answers 400) rather than let a model
+   * answer about an image it never saw.
+   */
+  acceptsNonTextContent?(request: CompletionRequest): boolean;
 }
 
 /** Whether a provider takes chat completions (every provider that doesn't declare capabilities does). */
@@ -236,7 +248,7 @@ export interface RouterClassification {
 
 export interface ClassifyRequest {
   userMessage: string;
-  chatHistory?: Array<{ role: string; content: string }>;
+  chatHistory?: Array<{ role: string; content: string | ContentPart[] | null }>;
 }
 
 export interface RouteResult {

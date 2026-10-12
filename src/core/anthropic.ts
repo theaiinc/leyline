@@ -1,5 +1,6 @@
 import { randomBytes } from 'crypto';
 import type { ChatMessage, CompletionRequest, CompletionResponse, StreamChunk } from './types';
+import { estimateBodyTokens, type ContentPart } from './content';
 
 /**
  * Anthropic's Messages API (POST /v1/messages) on top of Leyline's OpenAI-style routing, so Claude Code (and
@@ -59,7 +60,8 @@ export function anthropicToOpenAI(req: AnthropicRequest): CompletionRequest {
     for (const b of m.content.filter((x) => x.type === 'tool_result')) {
       messages.push({ role: 'tool', tool_call_id: String(b.tool_use_id), content: (b.is_error ? 'Error: ' : '') + resultText(b.content) });
     }
-    const parts = m.content.filter((b) => b.type === 'text' || b.type === 'image').map((b) => {
+    // Text and images stay in order; images become OpenAI image_url parts (a data: URL for base64 sources).
+    const parts: ContentPart[] = m.content.filter((b) => b.type === 'text' || b.type === 'image').map((b): ContentPart => {
       if (b.type === 'text') return { type: 'text', text: String(b.text ?? '') };
       const src = b.source as { type?: string; media_type?: string; data?: string; url?: string } | undefined;
       const url = src?.type === 'base64' ? `data:${src.media_type};base64,${src.data}` : String(src?.url ?? '');
@@ -67,7 +69,7 @@ export function anthropicToOpenAI(req: AnthropicRequest): CompletionRequest {
     });
     if (parts.length === 0) continue;
     const onlyText = parts.every((p) => p.type === 'text');
-    messages.push({ role: 'user', content: onlyText ? parts.map((p) => (p as { text: string }).text).join('\n') : (parts as unknown as string) });
+    messages.push({ role: 'user', content: onlyText ? parts.map((p) => (p as { text: string }).text).join('\n') : parts });
   }
   const out: CompletionRequest = { model: req.model, messages, stream: req.stream === true };
   if (req.max_tokens) out.max_tokens = req.max_tokens;
@@ -191,10 +193,10 @@ export class AnthropicStream {
   }
 }
 
-/** A rough token count (four characters a token) for /v1/messages/count_tokens. */
+/** A rough token count (four characters a token, images a fixed estimate) for /v1/messages/count_tokens. */
 export function estimateTokens(req: AnthropicRequest): number {
-  const chars = JSON.stringify({ s: req.system ?? '', m: req.messages ?? [], t: req.tools ?? [] }).length;
-  return Math.ceil(chars / 4);
+  // Images count as a fixed estimate each, not as the length of their base64.
+  return estimateBodyTokens({ s: req.system ?? '', m: req.messages ?? [], t: req.tools ?? [] });
 }
 
 /** An Anthropic-shaped error body. */

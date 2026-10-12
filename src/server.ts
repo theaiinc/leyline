@@ -923,7 +923,13 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       const hydrated = await hydrateAxiosError(error);
       console.error('API Error:', formatProviderError(hydrated));
       const { status, body } = chatCompletionErrorResponse(hydrated);
-      res.status(status).json(body);
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
+      // A stream that failed before its first chunk (a 400 for images no provider can read) answers as JSON,
+      // not under the text/event-stream type set for it.
+      res.status(status).type('json').json(body);
     }
   });
 
