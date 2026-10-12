@@ -1,4 +1,5 @@
 import { ClassifyRequest, RouterClassification } from './types';
+import { contentText, countImageParts } from './content';
 
 /**
  * The router classifier prompt — tells the model what to output.
@@ -64,7 +65,9 @@ export class Classifier {
       const recent = request.chatHistory.slice(-4);
       for (const m of recent) {
         const role = (m.role || '?').toUpperCase();
-        const content = (m.content || '').slice(0, 200);
+        // Content parts: the text, and a note of any images (their data never goes to the classifier).
+        const images = countImageParts([m]);
+        const content = (contentText(m.content) + (images ? ` [${images} image${images > 1 ? 's' : ''}]` : '')).slice(0, 200);
         contextParts.push(`${role}: ${content}`);
       }
     }

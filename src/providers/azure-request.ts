@@ -60,6 +60,9 @@ export function sanitizeAzureMessages(messages: ChatMessage[] | unknown): ChatMe
         sanitizedMessage.content = message.content.length > 0 ? message.content : ' ';
       } else if (message.content === null && message.role === 'assistant') {
         sanitizedMessage.content = '';
+      } else if (Array.isArray(message.content)) {
+        // Content parts (text, image_url, input_audio, file) go to Azure as sent: it reads them.
+        sanitizedMessage.content = message.content.length > 0 ? message.content : ' ';
       } else {
         sanitizedMessage.content = typeof message.content === 'string'
           ? message.content

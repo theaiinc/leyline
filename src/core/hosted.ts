@@ -5,6 +5,8 @@ import { AegisAuth, cookie, cookies, type AdminUser } from './admin-login';
 import { CostAlerts, DEFAULT_ALERTS, type AlertChannels, type AlertSettings } from './alerts';
 import { AnthropicStream, anthropicError, anthropicToOpenAI, estimateTokens, openAIToAnthropic, type AnthropicRequest } from './anthropic';
 import { builtinPrice } from './pricing';
+import { errorStatus } from './media';
+import { estimateBodyTokens } from './content';
 import { DEFAULT_PRICE, IssuedKeys, costUsd, modelAllowed, priceOf, type HostedSettings, type IssuedKey, type KeyCaps, type Price } from './issued-keys';
 
 /**
@@ -132,7 +134,7 @@ function resolveAlias(opts: HostedOptions, model: string): string | null {
  * Count a finished request against its key and the monthly spend (never fails the request). The cost uses the price
  * of the model actually used: set by hand, else what its provider publishes (or Leyline's built-in list price, for
  * embeddings), else the default. Without usage from the provider it's estimated (four characters a token): the
- * request body for input, outChars for output. `usd`, when given, is the cost already worked out (audio is priced
+ * request body for input (an inline image a fixed estimate, not its base64 length), outChars for output. `usd`, when given, is the cost already worked out (audio is priced
  * by the minute or the character, src/core/media.ts).
  */
 export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_tokens?: number; completion_tokens?: number }, outChars = 0, usd?: number): void {
@@ -140,7 +142,7 @@ export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_
   if (!r.issuedKey && !r.ownerRequest) return;
   const counted = usage && ((usage.prompt_tokens ?? 0) > 0 || (usage.completion_tokens ?? 0) > 0)
     ? usage
-    : { prompt_tokens: Math.ceil(JSON.stringify(req.body ?? {}).length / 4), completion_tokens: Math.ceil(outChars / 4) };
+    : { prompt_tokens: estimateBodyTokens(req.body), completion_tokens: Math.ceil(outChars / 4) };
   const model = r.requestedModel ?? '';
   // Priced by the model that actually answered (after aliases and routing), credited to the provider that served it.
   const used = r.served?.model || resolveModel(opts.aliases, model);
@@ -296,6 +298,8 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
           send(out.end());
         } catch (err) {
           console.error('[hosted] /v1/messages stream failed', err);
+          // Nothing sent yet and the request itself can't be served (images no provider can read): say so.
+          if (!res.headersSent && errorStatus(err) === 400) return res.status(400).type('json').json(anthropicError(400, err instanceof Error ? err.message : String(err)));
           res.write(`event: error\ndata: ${JSON.stringify(anthropicError(502, 'The model provider failed; try again.'))}\n\n`);
         }
         res.end();
@@ -307,6 +311,7 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
       recordUsage(opts, req, response.usage);
     } catch (err) {
       console.error('[hosted] /v1/messages failed', err);
+      if (!res.headersSent && errorStatus(err) === 400) return res.status(400).type('json').json(anthropicError(400, err instanceof Error ? err.message : String(err)));
       if (!res.headersSent) res.status(502).json(anthropicError(502, 'The model provider failed; try again.'));
     }
   });

@@ -1,5 +1,6 @@
 import axios from 'axios';
-import { Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail } from '../core/types';
+import { Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail, ChatMessage } from '../core/types';
+import { contentText, isTextPart, parseDataUrl } from '../core/content';
 import { config } from '../config';
 import { ModelRegistry } from '../core/model-registry';
 
@@ -44,6 +45,11 @@ export class OllamaProvider implements Provider {
     }
   }
 
+  /** Ollama's chat API takes images as base64 (vision models read them); not remote URLs, audio or files. */
+  acceptsNonTextContent(request: CompletionRequest): boolean {
+    return request.messages.every(m => !Array.isArray(m.content) || m.content.every(p => isTextPart(p) || ollamaImage(p) !== null));
+  }
+
   async getModels(): Promise<ModelDetail[]> {
       try {
           const response = await axios.get(`${this.baseUrl}/api/tags`, { timeout: 5000 });
@@ -62,7 +68,7 @@ export class OllamaProvider implements Provider {
     const model = await this.requireInstalledModel(request.model === 'auto' ? this.model : request.model);
     const response = await axios.post(`${this.baseUrl}/api/chat`, {
         model,
-        messages: request.messages,
+        messages: toOllamaMessages(request.messages),
         stream: false
     });
 
@@ -88,7 +94,7 @@ export class OllamaProvider implements Provider {
     const model = await this.requireInstalledModel(request.model === 'auto' ? this.model : request.model);
     const response = await axios.post(`${this.baseUrl}/api/chat`, {
         model,
-        messages: request.messages,
+        messages: toOllamaMessages(request.messages),
         stream: true
     }, {
         responseType: 'stream'
@@ -147,4 +153,20 @@ export class OllamaProvider implements Provider {
     }
     return model;
   }
+}
+
+/** An image_url part with a data: URL as the bare base64 Ollama wants, else null. */
+function ollamaImage(part: unknown): string | null {
+  const p = part as { type?: string; image_url?: { url?: string } };
+  if (p?.type !== 'image_url') return null;
+  return parseDataUrl(String(p.image_url?.url ?? ''))?.data ?? null;
+}
+
+/** Ollama's /api/chat messages: string content, with a message's images in `images` (base64). */
+export function toOllamaMessages(messages: ChatMessage[]): Array<Record<string, unknown>> {
+  return messages.map((message) => {
+    if (!Array.isArray(message.content)) return message as unknown as Record<string, unknown>;
+    const images = message.content.map(ollamaImage).filter((image): image is string => image !== null);
+    return { ...message, content: contentText(message.content), ...(images.length ? { images } : {}) };
+  });
 }

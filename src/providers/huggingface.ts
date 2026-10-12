@@ -1,14 +1,16 @@
 import { HfInference } from '@huggingface/inference';
 import { ChatMessage, Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail } from '../core/types';
+import { contentText } from '../core/content';
 import dotenv from 'dotenv';
 import { config } from '../config';
 
 dotenv.config();
 
+/** Its models are text-only: a content list keeps its text (the router never sends it images, see acceptsNonTextContent). */
 function toHuggingFaceMessages(messages: ChatMessage[]) {
   return messages.map((message) => ({
     role: message.role,
-    content: message.content ?? '',
+    content: contentText(message.content),
   }));
 }
 
@@ -24,6 +26,11 @@ export class HuggingFaceProvider implements Provider {
     this.client = new HfInference(apiKey);
     this.model = model;
     this.defaultModel = model;
+  }
+
+  /** The models it offers read text only. */
+  acceptsNonTextContent(): boolean {
+    return false;
   }
 
   async isAvailable(): Promise<boolean> {

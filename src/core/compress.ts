@@ -1,11 +1,12 @@
 import { spawn } from 'child_process';
 import { config } from '../config';
-import type { CompletionRequest } from './types';
+import type { ChatMessage, CompletionRequest } from './types';
+import { requestHasNonTextContent } from './content';
 
 let bridgeWarned = false;
 
 interface CompressResult {
-  messages: Array<{ role: string; content: string }>;
+  messages: ChatMessage[];
   tokens_before: number;
   tokens_after: number;
   tokens_saved: number;
@@ -38,13 +39,19 @@ export async function maybeCompress(
   request: CompletionRequest,
 ): Promise<CompletionRequest> {
   if (!config.compression.enabled) return request;
+  // headroom compresses text; images, audio and files would come back stringified (or not at all), so a
+  // request carrying them goes upstream as sent.
+  if (requestHasNonTextContent(request.messages)) return request;
 
   try {
     const result = await runCompression(request);
     if (result?.compressed && Array.isArray(result.messages) && result.messages.length > 0) {
       return { ...request, messages: result.messages.map((message) => ({
+        ...message,
         role: typeof message.role === 'string' ? message.role : 'user',
-        content: typeof message.content === 'string' ? message.content : String(message.content ?? ''),
+        content: typeof message.content === 'string' || Array.isArray(message.content) || message.content === null
+          ? message.content
+          : String(message.content ?? ''),
       })) };
     }
   } catch (err: any) {

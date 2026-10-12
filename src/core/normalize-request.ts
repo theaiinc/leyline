@@ -1,4 +1,5 @@
 import type { ChatMessage, CompletionRequest } from './types';
+import { isTextPart, type ContentPart } from './content';
 
 type MessageInput = {
   role?: unknown;
@@ -26,28 +27,39 @@ function normalizeRole(role: unknown): string {
   return typeof role === 'string' ? role : 'user';
 }
 
-function normalizeMessageContent(content: unknown): string | null {
+/** A content-list entry as an OpenAI part: bare strings become text parts; any other part is kept as sent. */
+function normalizePart(part: unknown): ContentPart {
+  if (typeof part === 'string') return { type: 'text', text: part };
+  if (part && typeof part === 'object') {
+    const record = part as Record<string, unknown>;
+    if (typeof record.type === 'string') return record as ContentPart;
+    if (typeof record.text === 'string') return { type: 'text', text: record.text };
+    if (typeof record.content === 'string') return { type: 'text', text: record.content };
+  }
+  return { type: 'text', text: JSON.stringify(part) };
+}
+
+/**
+ * A message's content as a string or OpenAI content parts. A list that is all text collapses to one string (what
+ * every provider takes); a list with images, audio, files or unknown part types stays a list, untouched, so those
+ * parts reach the upstream model.
+ */
+function normalizeMessageContent(content: unknown): string | ContentPart[] | null {
   if (content === null) return null;
   if (typeof content === 'string') return content;
   if (content == null) return '';
 
   if (Array.isArray(content)) {
-    return content
-      .map((part) => {
-        if (typeof part === 'string') return part;
-        if (part && typeof part === 'object') {
-          const record = part as Record<string, unknown>;
-          if (typeof record.text === 'string') return record.text;
-          if (typeof record.content === 'string') return record.content;
-        }
-        return JSON.stringify(part);
-      })
-      .filter(Boolean)
-      .join('\n');
+    const parts = content.map(normalizePart);
+    if (parts.every(isTextPart)) {
+      return parts.map((part) => (part as { text: string }).text).filter(Boolean).join('\n');
+    }
+    return parts;
   }
 
   if (typeof content === 'object') {
     const record = content as Record<string, unknown>;
+    if (typeof record.type === 'string' && !isTextPart(record)) return [record as ContentPart];
     if (typeof record.text === 'string') return record.text;
     return JSON.stringify(content);
   }

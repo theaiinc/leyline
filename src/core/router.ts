@@ -19,6 +19,7 @@ import { logger } from './logger';
 import { maybeCompress } from './compress';
 import { formatProviderError, hydrateAxiosError } from './api-errors';
 import { ensureMessageArray } from './normalize-request';
+import { requestHasNonTextContent } from './content';
 
 type UsageSnapshot = {
   prompt_tokens?: number;
@@ -51,6 +52,34 @@ async function providerCanHandle(
   const candidate = provider as RequestAwareProvider;
   if (typeof candidate.canHandle !== 'function') return true;
   return candidate.canHandle({ ...request, model: effectiveModel });
+}
+
+/**
+ * A request with images (or audio, files) that no provider able to read them could take: a 400 naming the
+ * providers that can't, rather than a model answering about an image it never received.
+ */
+export class UnsupportedContentError extends Error {
+  readonly status = 400;
+  readonly response: { status: number; data: { error: { message: string; type: string; code: string } } };
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnsupportedContentError';
+    this.response = { status: 400, data: { error: { message, type: 'invalid_request_error', code: 'unsupported_content' } } };
+  }
+}
+
+/** Whether a provider can take the request's non-text content (always, for a text-only request). */
+function providerAcceptsContent(provider: Provider, request: CompletionRequest, effectiveModel: string): boolean {
+  if (!requestHasNonTextContent(request.messages)) return true;
+  return provider.acceptsNonTextContent?.({ ...request, model: effectiveModel }) ?? true;
+}
+
+function unsupportedContent(providers: string[], model: string): UnsupportedContentError {
+  const who = providers.join(', ');
+  return new UnsupportedContentError(
+    `The request has images (or other non-text content) but ${who} can't read them for model "${model}", and no provider that can is available. Ask for a vision-capable model.`,
+  );
 }
 
 // ── Router options (backward-compatible: all optional) ─────────────
@@ -465,6 +494,8 @@ export class Router {
           throw new Error(`Fixed provider ${provider.name} reported unavailable.`);
         }
 
+        if (!providerAcceptsContent(provider, routedRequest, model)) throw unsupportedContent([provider.name], model);
+
         console.log(`[Router] Single-model mode: routing to ${provider.name} with model: ${model}`);
         const response = await provider.complete({ ...routedRequest, model });
         opts?.onServed?.(provider.name, model);
@@ -486,6 +517,9 @@ export class Router {
       }
     }
 
+    // Providers skipped because they can't read the request's images; a 400 when nobody else got to try.
+    const cannotRead: string[] = [];
+    let attempted = false;
     for (const provider of await this.candidateProviders(request.model)) {
       const autoModel = request.model === 'auto' ? this.autoModelFor(provider) : null;
       if (request.model === 'auto' && autoModel === null) {
@@ -531,7 +565,15 @@ export class Router {
           continue;
         }
 
+        if (!providerAcceptsContent(provider, routedRequest, effectiveModel)) {
+          cannotRead.push(provider.name);
+          logger.log({ requestId, provider: provider.name, model: effectiveModel, status: 'error', error: `${provider.name} can't read images for ${effectiveModel}`, duration: Date.now() - start });
+          console.warn(`[Router] Skipping ${provider.name} — can't read the request's images with ${effectiveModel}`);
+          continue;
+        }
+
         console.log(`[Router] Routing to ${provider.name} with model: ${effectiveModel}`);
+        attempted = true;
 
         const response = await provider.complete({ ...routedRequest, model: effectiveModel });
         opts?.onServed?.(provider.name, effectiveModel);
@@ -551,6 +593,7 @@ export class Router {
         console.error(`[Router] Error with ${provider.name}:`, error.message);
       }
     }
+    if (!attempted && cannotRead.length) throw unsupportedContent(cannotRead, request.model);
     throw new Error('All providers failed or are rate-limited.');
   }
 
@@ -589,6 +632,8 @@ export class Router {
           throw new Error(`Fixed provider ${provider.name} reported unavailable.`);
         }
 
+        if (!providerAcceptsContent(provider, routedRequest, model)) throw unsupportedContent([provider.name], model);
+
         console.log(`[Router] Single-model mode: routing stream to ${provider.name} with model: ${model}`);
         const stream = provider.completeStream({ ...routedRequest, model });
         opts?.onServed?.(provider.name, model);
@@ -626,6 +671,8 @@ export class Router {
       }
     }
 
+    const cannotRead: string[] = [];
+    let attempted = false;
     for (const provider of await this.candidateProviders(request.model)) {
         const autoModel = request.model === 'auto' ? this.autoModelFor(provider) : null;
         if (request.model === 'auto' && autoModel === null) {
@@ -682,7 +729,15 @@ export class Router {
               continue;
             }
 
+            if (!providerAcceptsContent(provider, routedRequest, effectiveModel)) {
+              cannotRead.push(provider.name);
+              logger.log({ requestId, provider: provider.name, model: effectiveModel, status: 'error', error: `${provider.name} can't read images for ${effectiveModel}`, duration: Date.now() - start });
+              console.warn(`[Router] Skipping ${provider.name} — can't read the request's images with ${effectiveModel}`);
+              continue;
+            }
+
           console.log(`[Router] Routing stream to ${provider.name} with model: ${effectiveModel}`);
+          attempted = true;
 
           const stream = provider.completeStream({ ...routedRequest, messages: currentMessages, model: effectiveModel });
           opts?.onServed?.(provider.name, effectiveModel);
@@ -718,6 +773,7 @@ export class Router {
           console.error(`[Router] Stream Error with ${provider.name}:`, error);
         }
       }
+      if (!attempted && cannotRead.length) throw unsupportedContent(cannotRead, request.model);
       throw new Error('All providers failed or are rate-limited.');
   }
 
@@ -744,6 +800,7 @@ export class Router {
       if (!canHandle) {
         throw new Error(`${provider.name} does not support model ${model}`);
       }
+      if (!providerAcceptsContent(provider, routedRequest, model)) throw unsupportedContent([provider.name], model);
 
       console.log(`[Router] Forced routing to ${provider.name} with model: ${model}`);
       const response = await provider.complete(routedRequest);
@@ -784,6 +841,7 @@ export class Router {
       if (!canHandle) {
         throw new Error(`${provider.name} does not support model ${model}`);
       }
+      if (!providerAcceptsContent(provider, routedRequest, model)) throw unsupportedContent([provider.name], model);
 
       console.log(`[Router] Forced routing stream to ${provider.name} with model: ${model}`);
       const stream = provider.completeStream(routedRequest);
