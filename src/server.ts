@@ -305,9 +305,10 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     const startedAt = Date.now();
     await initializeRouting();
     readyStages.routing = Date.now() - startedAt;
+    const background: Promise<unknown>[] = [];
     await Promise.all(router.getProviders().map(async provider => {
       const providerAt = Date.now();
-      try {
+      const hydrate = async () => {
       if (isApiKeyConfigurableProvider(provider)) {
         if (provider.hasApiKey()) {
           keyMetadata.set(provider.name, { source: 'env' });
@@ -338,11 +339,19 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
           model: saved.model,
         });
       }
-      } finally {
-        readyStages[`keys-${provider.name.replace(/[^a-z0-9]+/gi, '_')}`] = Date.now() - providerAt;
-      }
+      };
+      const done = () => { readyStages[`keys-${provider.name.replace(/[^a-z0-9]+/gi, '_')}`] = Date.now() - providerAt; };
+      // A key held in Arcana Cloud is a network fetch (~1.6 s): load it without holding up startup. Only requests
+      // that go to this provider wait for it (Router.keyLoading); everyone else is answered at once.
+      const remote = isApiKeyConfigurableProvider(provider) && !provider.hasApiKey()
+        && !!apiKeyStore.hasArcanaReference?.(apiKeyAccount(provider.name));
+      if (!remote) return hydrate().finally(done);
+      const loading = hydrate().catch((err) => console.error(`[Leyline] loading ${provider.name}'s key failed`, err)).finally(done);
+      router.keyLoading(provider.name, loading);
+      background.push(loading.then(() => router.reindexStale()));
     }));
     readyStages.keys = Date.now() - startedAt;
+    app.locals.background = Promise.allSettled(background);
 
     // Lists another instance already made (imported before this ran) are kept until they go stale.
     await router.reindexStale();

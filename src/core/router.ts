@@ -315,10 +315,24 @@ export class Router {
     await Promise.all(this.providers.map(provider => this.reindexProvider(provider)));
   }
 
+  /** Providers whose key is still loading (from Arcana Cloud): their requests wait for it, nobody else's do. */
+  private readonly keysLoading = new Map<string, Promise<unknown>>();
+
+  keyLoading(name: string, loading: Promise<unknown>): void {
+    this.keysLoading.set(name, loading);
+    void loading.finally(() => { if (this.keysLoading.get(name) === loading) this.keysLoading.delete(name); });
+  }
+
+  private async keyReady(provider: Provider): Promise<void> {
+    const loading = this.keysLoading.get(provider.name);
+    if (loading) await loading.catch(() => undefined);
+  }
+
   /** Refresh only the providers whose model list is missing or older than the cache allows. */
   async reindexStale(now = Date.now()): Promise<void> {
     await Promise.all(this.providers
       .filter(provider => {
+        if (this.keysLoading.has(provider.name)) return false; // listed once its key is in (see keyLoading)
         const cached = this.providerModelIds.get(provider.name);
         return !cached || now - cached.timestamp >= MODEL_ID_CACHE_TTL_MS;
       })
@@ -484,6 +498,7 @@ export class Router {
         continue;
       }
       try {
+        await this.keyReady(provider);
         const result = await run(provider, model);
         opts.onServed?.(provider.name, model);
         this.quotaManager.incrementUsage(provider.name);
@@ -540,6 +555,7 @@ export class Router {
         if (!providerAcceptsContent(provider, routedRequest, model)) throw unsupportedContent([provider.name], model);
 
         console.log(`[Router] Single-model mode: routing to ${provider.name} with model: ${model}`);
+        await this.keyReady(provider);
         const response = await provider.complete({ ...routedRequest, model });
         opts?.onServed?.(provider.name, model);
         this.quotaManager.incrementUsage(provider.name);
@@ -618,6 +634,7 @@ export class Router {
         console.log(`[Router] Routing to ${provider.name} with model: ${effectiveModel}`);
         attempted = true;
 
+        await this.keyReady(provider);
         const response = await provider.complete({ ...routedRequest, model: effectiveModel });
         opts?.onServed?.(provider.name, effectiveModel);
         this.quotaManager.incrementUsage(provider.name);
@@ -678,6 +695,7 @@ export class Router {
         if (!providerAcceptsContent(provider, routedRequest, model)) throw unsupportedContent([provider.name], model);
 
         console.log(`[Router] Single-model mode: routing stream to ${provider.name} with model: ${model}`);
+        await this.keyReady(provider);
         const stream = provider.completeStream({ ...routedRequest, model });
         opts?.onServed?.(provider.name, model);
         this.quotaManager.incrementUsage(provider.name);
@@ -782,6 +800,7 @@ export class Router {
           console.log(`[Router] Routing stream to ${provider.name} with model: ${effectiveModel}`);
           attempted = true;
 
+          await this.keyReady(provider);
           const stream = provider.completeStream({ ...routedRequest, messages: currentMessages, model: effectiveModel });
           opts?.onServed?.(provider.name, effectiveModel);
           this.quotaManager.incrementUsage(provider.name);
@@ -846,6 +865,7 @@ export class Router {
       if (!providerAcceptsContent(provider, routedRequest, model)) throw unsupportedContent([provider.name], model);
 
       console.log(`[Router] Forced routing to ${provider.name} with model: ${model}`);
+      await this.keyReady(provider);
       const response = await provider.complete(routedRequest);
       this.quotaManager.incrementUsage(provider.name);
       logger.log({ requestId, provider: provider.name, model, status: 'success', duration: Date.now() - start, usage: response.usage });
@@ -887,6 +907,7 @@ export class Router {
       if (!providerAcceptsContent(provider, routedRequest, model)) throw unsupportedContent([provider.name], model);
 
       console.log(`[Router] Forced routing stream to ${provider.name} with model: ${model}`);
+      await this.keyReady(provider);
       const stream = provider.completeStream(routedRequest);
       this.quotaManager.incrementUsage(provider.name);
 

@@ -19,10 +19,23 @@ export interface D1PreparedStatement {
 export interface D1Database { prepare(query: string): D1PreparedStatement }
 
 export class D1DocStore implements DocStore {
-  constructor(private readonly db: D1Database) {}
+  /**
+   * db serves reads (a read-replica session when hosted); writes, and reads that must be current (getPrimary, for
+   * compare-and-set updates), go to `primary`. Writing through the read session would make its later reads wait
+   * for the replica to catch up with every usage write.
+   */
+  constructor(private readonly db: D1Database, private readonly primary: D1Database = db) {}
 
   async get<T>(key: string) {
-    const row = await this.db.prepare('SELECT value, gen FROM docs WHERE key = ?').bind(key).first<{ value: string; gen: number }>();
+    return this.read<T>(this.db, key);
+  }
+
+  async getPrimary<T>(key: string) {
+    return this.read<T>(this.primary, key);
+  }
+
+  private async read<T>(db: D1Database, key: string) {
+    const row = await db.prepare('SELECT value, gen FROM docs WHERE key = ?').bind(key).first<{ value: string; gen: number }>();
     return row ? { value: JSON.parse(row.value) as T, gen: String(row.gen) } : null;
   }
 
@@ -30,16 +43,16 @@ export class D1DocStore implements DocStore {
     const json = JSON.stringify(value);
     const now = Date.now();
     if (ifGen === '0') {
-      const r = await this.db.prepare('INSERT INTO docs (key, value, gen, updated) VALUES (?, ?, 1, ?) ON CONFLICT(key) DO NOTHING').bind(key, json, now).run();
+      const r = await this.primary.prepare('INSERT INTO docs (key, value, gen, updated) VALUES (?, ?, 1, ?) ON CONFLICT(key) DO NOTHING').bind(key, json, now).run();
       if (!r.meta.changes) throw new Conflict(key);
       return '1';
     }
     if (ifGen !== undefined) {
-      const r = await this.db.prepare('UPDATE docs SET value = ?, gen = gen + 1, updated = ? WHERE key = ? AND gen = ?').bind(json, now, key, Number(ifGen)).run();
+      const r = await this.primary.prepare('UPDATE docs SET value = ?, gen = gen + 1, updated = ? WHERE key = ? AND gen = ?').bind(json, now, key, Number(ifGen)).run();
       if (!r.meta.changes) throw new Conflict(key);
       return String(Number(ifGen) + 1);
     }
-    const row = await this.db.prepare('INSERT INTO docs (key, value, gen, updated) VALUES (?, ?, 1, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, gen = docs.gen + 1, updated = excluded.updated RETURNING gen')
+    const row = await this.primary.prepare('INSERT INTO docs (key, value, gen, updated) VALUES (?, ?, 1, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, gen = docs.gen + 1, updated = excluded.updated RETURNING gen')
       .bind(key, json, now).first<{ gen: number }>();
     return String(row?.gen ?? 1);
   }
@@ -51,7 +64,7 @@ export class D1DocStore implements DocStore {
 
   /** Drop per-minute counters older than a day (they're only read during their minute). */
   async prune(now = Date.now()): Promise<number> {
-    const r = await this.db.prepare("DELETE FROM docs WHERE key LIKE 'rpm/%' AND updated < ?").bind(now - 86_400_000).run();
+    const r = await this.primary.prepare("DELETE FROM docs WHERE key LIKE 'rpm/%' AND updated < ?").bind(now - 86_400_000).run();
     return r.meta.changes ?? 0;
   }
 }

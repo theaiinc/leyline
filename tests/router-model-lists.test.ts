@@ -54,3 +54,30 @@ describe('shared model lists', () => {
     expect(router.oldestModelList()).toBe(5);
   });
 });
+
+describe('keys still loading', () => {
+  it('holds only requests for that provider until its key is in', async () => {
+    const { router } = setup();
+    await router.reindexAll();
+    let release!: () => void;
+    router.keyLoading('B', new Promise<void>((r) => { release = r; }));
+
+    // A's model answers at once.
+    await expect(router.route({ model: 'a-1', messages: [{ role: 'user', content: 'hi' }] })).resolves.toMatchObject({ choices: [{ message: { content: 'A' } }] });
+
+    let done = false;
+    const b = router.route({ model: 'gemini-x', messages: [{ role: 'user', content: 'hi' }] }).then((r) => { done = true; return r; });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(done).toBe(false);
+    release();
+    await expect(b).resolves.toMatchObject({ choices: [{ message: { content: 'B' } }] });
+  });
+
+  it("doesn't list a provider before its key is in", async () => {
+    const { router, a, b } = setup();
+    router.keyLoading('B', new Promise<void>(() => undefined));
+    await router.reindexStale();
+    expect([a.listings, b.listings]).toEqual([1, 0]);
+  });
+});
+
