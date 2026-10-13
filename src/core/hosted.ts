@@ -56,7 +56,7 @@ export type HostedOptions = {
   background?: (work: Promise<unknown>) => void;
 };
 
-type WithKey = Request & { issuedKey?: IssuedKey; requestedModel?: string; ownerRequest?: boolean; served?: { provider: string; model: string } };
+type WithKey = Request & { issuedKey?: IssuedKey; requestedModel?: string; ownerRequest?: boolean; served?: { provider: string; model: string }; timings?: { lookupMs: number; admitMs: number } };
 
 /** Route option that remembers which provider and model served this request (for spend by provider and model). */
 export function servedBy(req: Request): (provider: string, model: string) => void {
@@ -96,6 +96,7 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
     }
     if (!presented) return fail(401, 'missing_api_key', 'Missing API key: send Authorization: Bearer <key> (or x-api-key).');
     let key: IssuedKey | null;
+    const lookupAt = Date.now();
     try {
       key = await opts.keys.lookup(presented);
     } catch (err) {
@@ -109,7 +110,9 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
     if (requested && isBlocked(opts, requested)) {
       return fail(403, 'model_disabled', `The model "${requested}" is turned off here; see /v1/models for what you can use.`);
     }
+    const admitAt = Date.now();
     const refusal = await opts.keys.admit(key, requested, opts.monthlyBudgetUsd ?? null);
+    (req as WithKey).timings = { lookupMs: admitAt - lookupAt, admitMs: Date.now() - admitAt };
     if (refusal) return fail(refusal.status, refusal.code, refusal.message);
     (req as WithKey).issuedKey = key;
     (req as WithKey).requestedModel = requested;

@@ -298,9 +298,17 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     if (saved) applyRoutingConfig(saved);
   };
 
+  /** How long each startup step took (ms), for the Worker's Server-Timing. */
+  const readyStages: Record<string, number> = {};
+  app.locals.readyStages = readyStages;
   const initializeApiKeys = async () => {
+    const startedAt = Date.now();
     await initializeRouting();
+    readyStages.routing = Date.now() - startedAt;
+    const background: Promise<unknown>[] = [];
     await Promise.all(router.getProviders().map(async provider => {
+      const providerAt = Date.now();
+      const hydrate = async () => {
       if (isApiKeyConfigurableProvider(provider)) {
         if (provider.hasApiKey()) {
           keyMetadata.set(provider.name, { source: 'env' });
@@ -331,9 +339,23 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
           model: saved.model,
         });
       }
+      };
+      const done = () => { readyStages[`keys-${provider.name.replace(/[^a-z0-9]+/gi, '_')}`] = Date.now() - providerAt; };
+      // A key held in Arcana Cloud is a network fetch (~1.6 s): load it without holding up startup. Only requests
+      // that go to this provider wait for it (Router.keyLoading); everyone else is answered at once.
+      const remote = isApiKeyConfigurableProvider(provider) && !provider.hasApiKey()
+        && !!apiKeyStore.hasArcanaReference?.(apiKeyAccount(provider.name));
+      if (!remote) return hydrate().finally(done);
+      const loading = hydrate().catch((err) => console.error(`[Leyline] loading ${provider.name}'s key failed`, err)).finally(done);
+      router.keyLoading(provider.name, loading);
+      background.push(loading.then(() => router.reindexStale()));
     }));
+    readyStages.keys = Date.now() - startedAt;
+    app.locals.background = Promise.allSettled(background);
 
-    await router.reindexAll();
+    // Lists another instance already made (imported before this ran) are kept until they go stale.
+    await router.reindexStale();
+    readyStages.lists = Date.now() - startedAt;
   };
 
   const persistRuntimeConfig = async (provider: RuntimeConfigurableProvider) => {
@@ -898,11 +920,18 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
         res.setHeader('Cache-Control', 'no-cache');
         res.setHeader('Connection', 'keep-alive');
 
+        const routeAt = Date.now();
         const stream = await router.routeStream(request, routeOptions);
+        const routeMs = Date.now() - routeAt;
+        // The same, for the caller: Server-Timing goes out with the headers, before the first chunk.
+        const t = (req as { timings?: { lookupMs: number; admitMs: number } }).timings;
+        res.setHeader('Server-Timing', [...(t ? [`lookup;dur=${t.lookupMs}`, `admit;dur=${t.admitMs}`] : []), `route;dur=${routeMs}`].join(', '));
+        let firstChunkMs: number | null = null;
         let streamUsage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined;
         let streamChars = 0;
 
         for await (const chunk of stream) {
+            firstChunkMs ??= Date.now() - routeAt;
             if (chunk.usage) streamUsage = chunk.usage;
             for (const choice of (chunk.choices ?? []) as Array<{ delta?: { content?: string | null; tool_calls?: Array<{ function?: { arguments?: string } }> } }>) {
               streamChars += choice.delta?.content?.length ?? 0;
@@ -912,6 +941,8 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
         }
         res.write('data: [DONE]\n\n');
         res.end();
+        // Where a streamed request's time went: the key checks, then the provider (connection, first chunk, all).
+        console.log(JSON.stringify({ event: 'leyline_chat', model: request.model, ...(req as { timings?: object }).timings, routeMs, firstChunkMs, totalMs: Date.now() - routeAt }));
         logTenantUsage(req, request.model, streamUsage, streamChars);
 
       } else {

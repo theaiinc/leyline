@@ -67,6 +67,8 @@ export type MonthSpend = {
 
 export interface DocStore {
   get<T>(key: string): Promise<{ value: T; gen: string } | null>;
+  /** The current version, where get() may read a replica that lags (for compare-and-set). */
+  getPrimary?<T>(key: string): Promise<{ value: T; gen: string } | null>;
   /** Write; with ifGen, only if the document is at that generation ('0': must not exist). */
   put(key: string, value: unknown, ifGen?: string): Promise<string>;
   list(prefix: string): Promise<string[]>;
@@ -188,7 +190,7 @@ export class GcsDocStore implements DocStore {
 /** Read-modify-write a document, retrying when someone else wrote it in between. */
 export async function update<T>(store: DocStore, key: string, fn: (cur: T | null) => T, tries = 5): Promise<T> {
   for (let i = 0; ; i++) {
-    const cur = await store.get<T>(key);
+    const cur = await (store.getPrimary ? store.getPrimary<T>(key) : store.get<T>(key));
     const next = fn(cur ? cur.value : null);
     try {
       await store.put(key, next, cur ? cur.gen : '0');
@@ -408,6 +410,11 @@ export class IssuedKeys {
       return { status: 403, code: 'model_not_allowed', message: `This key may not use the model "${model}".` };
     }
     const now = this.now();
+    // The reads below don't depend on each other: start them together (each is a D1 round trip when hosted).
+    const spending = budgetUsd !== null ? this.spend() : null;
+    const using = key.caps.tokensPerMonth || key.caps.requestsPerDay || key.caps.usdPerMonth ? this.usage(key.id) : null;
+    spending?.catch(() => undefined);
+    using?.catch(() => undefined);
     if (key.caps.requestsPerMinute && this.sharedMinute) {
       const limit = key.caps.requestsPerMinute;
       let over = false;
@@ -425,11 +432,11 @@ export class IssuedKeys {
       window.push(now);
       this.minute.set(key.id, window);
     }
-    if (budgetUsd !== null && (await this.spend()).usd >= budgetUsd) {
+    if (spending && (await spending).usd >= budgetUsd!) {
       return { status: 429, code: 'budget_exhausted', message: 'This service has reached its spending limit for the month; it resets on the 1st (UTC).' };
     }
     if (key.caps.tokensPerMonth || key.caps.requestsPerDay || key.caps.usdPerMonth) {
-      const u = await this.usage(key.id);
+      const u = await using!;
       if (key.caps.usdPerMonth && (u.usd ?? 0) >= key.caps.usdPerMonth) {
         return { status: 429, code: 'monthly_spend_exhausted', message: `This key has used its $${key.caps.usdPerMonth} for this month.` };
       }

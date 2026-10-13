@@ -19,10 +19,23 @@ export interface D1PreparedStatement {
 export interface D1Database { prepare(query: string): D1PreparedStatement }
 
 export class D1DocStore implements DocStore {
-  constructor(private readonly db: D1Database) {}
+  /**
+   * db serves reads (a read-replica session when hosted); writes, and reads that must be current (getPrimary, for
+   * compare-and-set updates), go to `primary`. Writing through the read session would make its later reads wait
+   * for the replica to catch up with every usage write.
+   */
+  constructor(private readonly db: D1Database, private readonly primary: D1Database = db) {}
 
   async get<T>(key: string) {
-    const row = await this.db.prepare('SELECT value, gen FROM docs WHERE key = ?').bind(key).first<{ value: string; gen: number }>();
+    return this.read<T>(this.db, key);
+  }
+
+  async getPrimary<T>(key: string) {
+    return this.read<T>(this.primary, key);
+  }
+
+  private async read<T>(db: D1Database, key: string) {
+    const row = await db.prepare('SELECT value, gen FROM docs WHERE key = ?').bind(key).first<{ value: string; gen: number }>();
     return row ? { value: JSON.parse(row.value) as T, gen: String(row.gen) } : null;
   }
 
@@ -30,16 +43,16 @@ export class D1DocStore implements DocStore {
     const json = JSON.stringify(value);
     const now = Date.now();
     if (ifGen === '0') {
-      const r = await this.db.prepare('INSERT INTO docs (key, value, gen, updated) VALUES (?, ?, 1, ?) ON CONFLICT(key) DO NOTHING').bind(key, json, now).run();
+      const r = await this.primary.prepare('INSERT INTO docs (key, value, gen, updated) VALUES (?, ?, 1, ?) ON CONFLICT(key) DO NOTHING').bind(key, json, now).run();
       if (!r.meta.changes) throw new Conflict(key);
       return '1';
     }
     if (ifGen !== undefined) {
-      const r = await this.db.prepare('UPDATE docs SET value = ?, gen = gen + 1, updated = ? WHERE key = ? AND gen = ?').bind(json, now, key, Number(ifGen)).run();
+      const r = await this.primary.prepare('UPDATE docs SET value = ?, gen = gen + 1, updated = ? WHERE key = ? AND gen = ?').bind(json, now, key, Number(ifGen)).run();
       if (!r.meta.changes) throw new Conflict(key);
       return String(Number(ifGen) + 1);
     }
-    const row = await this.db.prepare('INSERT INTO docs (key, value, gen, updated) VALUES (?, ?, 1, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, gen = docs.gen + 1, updated = excluded.updated RETURNING gen')
+    const row = await this.primary.prepare('INSERT INTO docs (key, value, gen, updated) VALUES (?, ?, 1, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, gen = docs.gen + 1, updated = excluded.updated RETURNING gen')
       .bind(key, json, now).first<{ gen: number }>();
     return String(row?.gen ?? 1);
   }
@@ -51,7 +64,7 @@ export class D1DocStore implements DocStore {
 
   /** Drop per-minute counters older than a day (they're only read during their minute). */
   async prune(now = Date.now()): Promise<number> {
-    const r = await this.db.prepare("DELETE FROM docs WHERE key LIKE 'rpm/%' AND updated < ?").bind(now - 86_400_000).run();
+    const r = await this.primary.prepare("DELETE FROM docs WHERE key LIKE 'rpm/%' AND updated < ?").bind(now - 86_400_000).run();
     return r.meta.changes ?? 0;
   }
 }
@@ -62,6 +75,8 @@ const unb64 = (s: string) => new Uint8Array(Buffer.from(s, 'base64'));
 export class D1SecretStore implements SecretStore {
   private key: Promise<CryptoKey> | null = null;
   private readonly cache = new Map<string, string | undefined>();
+  /** After preload(): the cache holds every secret, so an account missing from it has none. */
+  private complete = false;
 
   /** storeKey: 32 random bytes, base64 (a Worker secret). */
   constructor(private readonly db: D1Database, private readonly storeKey: string) {}
@@ -75,17 +90,31 @@ export class D1SecretStore implements SecretStore {
     return this.key;
   }
 
+  /**
+   * Every secret in one query. D1 has a single primary (this one is in APAC), and startup looks up dozens of
+   * accounts, most of them unset, one round trip each: an instance in a US colo took 5-8 s to build before it
+   * could answer. After this, lookups (found or not) need no query until forget().
+   */
+  async preload(): Promise<void> {
+    const { results = [] } = await this.db.prepare('SELECT account, iv, data FROM secrets').all<{ account: string; iv: string; data: string }>();
+    const values = await Promise.all(results.map(async (row) => [row.account, await this.decrypt(row.account, row)] as const));
+    this.cache.clear();
+    for (const [account, value] of values) this.cache.set(account, value);
+    this.complete = true;
+  }
+
   async get(account: string): Promise<string | undefined> {
-    if (this.cache.has(account)) return this.cache.get(account);
+    if (this.cache.has(account) || this.complete) return this.cache.get(account);
     const row = await this.db.prepare('SELECT iv, data FROM secrets WHERE account = ?').bind(account).first<{ iv: string; data: string }>();
-    let value: string | undefined;
-    if (row) {
-      // The account is the additional data, so a value can't be moved to another account.
-      const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(row.iv), additionalData: new TextEncoder().encode(account) }, await this.cryptoKey(), unb64(row.data));
-      value = new TextDecoder().decode(plain);
-    }
+    const value = row ? await this.decrypt(account, row) : undefined;
     this.cache.set(account, value);
     return value;
+  }
+
+  private async decrypt(account: string, row: { iv: string; data: string }): Promise<string> {
+    // The account is the additional data, so a value can't be moved to another account.
+    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(row.iv), additionalData: new TextEncoder().encode(account) }, await this.cryptoKey(), unb64(row.data));
+    return new TextDecoder().decode(plain);
   }
 
   async set(account: string, secret: string): Promise<void> {
@@ -103,6 +132,7 @@ export class D1SecretStore implements SecretStore {
 
   /** Accounts stored under a prefix. */
   async accounts(prefix: string): Promise<string[]> {
+    if (this.complete) return [...this.cache].filter(([account, value]) => value !== undefined && account.startsWith(prefix)).map(([account]) => account);
     const { results = [] } = await this.db.prepare('SELECT account FROM secrets WHERE substr(account, 1, ?) = ?').bind(prefix.length, prefix).all<{ account: string }>();
     return results.map((r) => r.account);
   }
@@ -110,6 +140,7 @@ export class D1SecretStore implements SecretStore {
   /** Forget cached values (another instance may have changed them). */
   forget(): void {
     this.cache.clear();
+    this.complete = false;
   }
 
   status(): SecretStoreStatus {

@@ -120,6 +120,9 @@ export interface SingleModelRouterConfig {
 
 const MODEL_ID_CACHE_TTL_MS = 3600 * 1000;
 
+/** Model lists by provider name, as shared between instances. */
+export type ModelListSnapshot = Record<string, { ids: string[]; timestamp: number; prices?: Record<string, { input: number; output: number }> }>;
+
 const DEFAULT_SERVICE_TIERS: Record<string, string> = {
   casual: '4b',
   teaching: '4b',
@@ -312,6 +315,60 @@ export class Router {
     await Promise.all(this.providers.map(provider => this.reindexProvider(provider)));
   }
 
+  /** Providers whose key is still loading (from Arcana Cloud): their requests wait for it, nobody else's do. */
+  private readonly keysLoading = new Map<string, Promise<unknown>>();
+
+  keyLoading(name: string, loading: Promise<unknown>): void {
+    this.keysLoading.set(name, loading);
+    void loading.finally(() => { if (this.keysLoading.get(name) === loading) this.keysLoading.delete(name); });
+  }
+
+  private async keyReady(provider: Provider): Promise<void> {
+    const loading = this.keysLoading.get(provider.name);
+    if (loading) await loading.catch(() => undefined);
+  }
+
+  /** Refresh only the providers whose model list is missing or older than the cache allows. */
+  async reindexStale(now = Date.now()): Promise<void> {
+    await Promise.all(this.providers
+      .filter(provider => {
+        if (this.keysLoading.has(provider.name)) return false; // listed once its key is in (see keyLoading)
+        const cached = this.providerModelIds.get(provider.name);
+        return !cached || now - cached.timestamp >= MODEL_ID_CACHE_TTL_MS;
+      })
+      .map(provider => this.reindexProvider(provider)));
+  }
+
+  /**
+   * The providers' model lists, to share with other instances: listing every provider's models took ~2.5 s, and a
+   * fresh Worker instance did it before answering its first request. Empty lists (a provider that couldn't be
+   * listed) are left out so the next instance tries again.
+   */
+  exportModelLists(): ModelListSnapshot {
+    const out: ModelListSnapshot = {};
+    for (const [name, entry] of this.providerModelIds) {
+      if (!entry.ids.size) continue;
+      out[name] = { ids: [...entry.ids], timestamp: entry.timestamp, ...(entry.prices?.size ? { prices: Object.fromEntries(entry.prices) } : {}) };
+    }
+    return out;
+  }
+
+  /** Take model lists another instance made (exportModelLists), for providers this one has none for yet. */
+  importModelLists(snapshot: ModelListSnapshot): void {
+    for (const provider of this.providers) {
+      const entry = snapshot[provider.name];
+      if (!entry || this.providerModelIds.has(provider.name)) continue;
+      this.providerModelIds.set(provider.name, { ids: new Set(entry.ids), timestamp: entry.timestamp, prices: new Map(Object.entries(entry.prices ?? {})) });
+    }
+  }
+
+  /** When the oldest model list was made (null: none yet). */
+  oldestModelList(): number | null {
+    let oldest: number | null = null;
+    for (const entry of this.providerModelIds.values()) oldest = oldest === null ? entry.timestamp : Math.min(oldest, entry.timestamp);
+    return oldest;
+  }
+
   /** Derived view of the model-id index: model id → provider names that list it, in priority order. */
   getModelIndex(): Record<string, string[]> {
     const index: Record<string, string[]> = {};
@@ -441,6 +498,7 @@ export class Router {
         continue;
       }
       try {
+        await this.keyReady(provider);
         const result = await run(provider, model);
         opts.onServed?.(provider.name, model);
         this.quotaManager.incrementUsage(provider.name);
@@ -497,6 +555,7 @@ export class Router {
         if (!providerAcceptsContent(provider, routedRequest, model)) throw unsupportedContent([provider.name], model);
 
         console.log(`[Router] Single-model mode: routing to ${provider.name} with model: ${model}`);
+        await this.keyReady(provider);
         const response = await provider.complete({ ...routedRequest, model });
         opts?.onServed?.(provider.name, model);
         this.quotaManager.incrementUsage(provider.name);
@@ -575,6 +634,7 @@ export class Router {
         console.log(`[Router] Routing to ${provider.name} with model: ${effectiveModel}`);
         attempted = true;
 
+        await this.keyReady(provider);
         const response = await provider.complete({ ...routedRequest, model: effectiveModel });
         opts?.onServed?.(provider.name, effectiveModel);
         this.quotaManager.incrementUsage(provider.name);
@@ -635,6 +695,7 @@ export class Router {
         if (!providerAcceptsContent(provider, routedRequest, model)) throw unsupportedContent([provider.name], model);
 
         console.log(`[Router] Single-model mode: routing stream to ${provider.name} with model: ${model}`);
+        await this.keyReady(provider);
         const stream = provider.completeStream({ ...routedRequest, model });
         opts?.onServed?.(provider.name, model);
         this.quotaManager.incrementUsage(provider.name);
@@ -739,6 +800,7 @@ export class Router {
           console.log(`[Router] Routing stream to ${provider.name} with model: ${effectiveModel}`);
           attempted = true;
 
+          await this.keyReady(provider);
           const stream = provider.completeStream({ ...routedRequest, messages: currentMessages, model: effectiveModel });
           opts?.onServed?.(provider.name, effectiveModel);
           this.quotaManager.incrementUsage(provider.name);
@@ -803,6 +865,7 @@ export class Router {
       if (!providerAcceptsContent(provider, routedRequest, model)) throw unsupportedContent([provider.name], model);
 
       console.log(`[Router] Forced routing to ${provider.name} with model: ${model}`);
+      await this.keyReady(provider);
       const response = await provider.complete(routedRequest);
       this.quotaManager.incrementUsage(provider.name);
       logger.log({ requestId, provider: provider.name, model, status: 'success', duration: Date.now() - start, usage: response.usage });
@@ -844,6 +907,7 @@ export class Router {
       if (!providerAcceptsContent(provider, routedRequest, model)) throw unsupportedContent([provider.name], model);
 
       console.log(`[Router] Forced routing stream to ${provider.name} with model: ${model}`);
+      await this.keyReady(provider);
       const stream = provider.completeStream(routedRequest);
       this.quotaManager.incrementUsage(provider.name);
 

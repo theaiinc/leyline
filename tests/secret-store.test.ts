@@ -244,15 +244,30 @@ describe('secret store', () => {
     it('reuses a cached Aegis token instead of minting one per pull', async () => {
       mockCloud();
       const store = new ArcanaCloudSecretStore(
-        { 'api-key:OpenAI': 'arcana://leyline/openai-api-key' },
+        { 'api-key:OpenAI': 'arcana://leyline/openai-api-key', 'api-key:Gemini': 'arcana://leyline/gemini-api-key' },
         arcanaCloudConfig,
       );
 
       await store.get('api-key:OpenAI');
-      await store.get('api-key:OpenAI');
+      await store.get('api-key:Gemini');
 
       expect(tokenCalls()).toHaveLength(1);
       expect(pullCalls()).toHaveLength(2);
+    });
+
+    it('keeps a pulled value instead of pulling it again for every lookup, but retries a failure', async () => {
+      mockCloud();
+      const store = new ArcanaCloudSecretStore({ 'api-key:OpenAI': 'arcana://leyline/openai-api-key' }, arcanaCloudConfig);
+      await Promise.all([store.get('api-key:OpenAI'), store.get('api-key:OpenAI')]);
+      await expect(store.get('api-key:OpenAI')).resolves.toBe('sk-from-cloud');
+      expect(pullCalls()).toHaveLength(1);
+
+      mockCloud({ tokenError: new Error('down') });
+      const flaky = new ArcanaCloudSecretStore({ 'api-key:OpenAI': 'arcana://leyline/openai-api-key' }, arcanaCloudConfig);
+      await expect(flaky.get('api-key:OpenAI')).resolves.toBeUndefined();
+      await new Promise((r) => setImmediate(r));
+      mockCloud();
+      await expect(flaky.get('api-key:OpenAI')).resolves.toBe('sk-from-cloud');
     });
 
     it('sends Cloudflare Access service token headers when configured', async () => {

@@ -714,6 +714,9 @@ async function fetchWithTimeout(url: string, timeoutMs: number, init: RequestIni
 
 export class ArcanaCloudSecretStore implements SecretStore {
   private token: CachedAegisToken | undefined;
+  /** Values fetched recently: each lookup was a network round trip, made again by every startup step that asked. */
+  private readonly values = new Map<string, { value: Promise<string | undefined>; at: number }>();
+  private static readonly VALUE_TTL_MS = 10 * 60_000;
 
   constructor(
     private readonly references: Record<string, string>,
@@ -724,6 +727,17 @@ export class ArcanaCloudSecretStore implements SecretStore {
     const reference = this.references[account];
     const parsed = reference ? parseArcanaCloudReference(reference) : undefined;
     if (!parsed) return undefined;
+    const key = `${account}\u0000${reference}`;
+    const cached = this.values.get(key);
+    if (cached && Date.now() - cached.at < ArcanaCloudSecretStore.VALUE_TTL_MS) return cached.value;
+    const value = this.fetchValue(reference!, parsed);
+    this.values.set(key, { value, at: Date.now() });
+    // Only found values are kept: a failure (Arcana down, 404) is asked again next time.
+    void value.then((v) => { if (v === undefined) this.values.delete(key); });
+    return value;
+  }
+
+  private async fetchValue(reference: string, parsed: NonNullable<ReturnType<typeof parseArcanaCloudReference>>): Promise<string | undefined> {
 
     try {
       const token = await this.getAccessToken();
