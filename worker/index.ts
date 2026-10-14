@@ -98,7 +98,10 @@ async function build(env: Env): Promise<Built> {
   // The providers' model lists as another instance last made them (for these same provider keys): listing them
   // all again took ~2.5 s before this instance could answer anything.
   const shared = await docs.get<SharedModelLists>(MODEL_LISTS_DOC).catch(() => null);
-  if (shared?.value.version === version) router.importModelLists(shared.value.lists);
+  // The lists are for these keys *and* these providers: a deploy that adds one (Anthropic) must list it too, not
+  // reuse lists made without it until the half-hourly refresh.
+  const listsVersion = `${version}|${router.getProviders().map((p) => p.name).sort().join(',')}`;
+  if (shared?.value.version === listsVersion) router.importModelLists(shared.value.lists);
   mark('router');
   const hosted = hostedOptions(docs, { sharedMinute: true, watch: false });
   hosted.background = keepAlive;
@@ -122,10 +125,10 @@ async function build(env: Env): Promise<Built> {
   // Keep the shared lists fresh for the next instance, after this one is already answering: save what this build
   // listed itself, and relist in the background once they're half way to stale.
   const oldest = router.oldestModelList();
-  if (!shared || shared.value.version !== version || (oldest !== null && oldest > shared.value.savedAt)) {
-    keepAlive(docs.put(MODEL_LISTS_DOC, { version, savedAt: Date.now(), lists: router.exportModelLists() } satisfies SharedModelLists));
+  if (!shared || shared.value.version !== listsVersion || (oldest !== null && oldest > shared.value.savedAt)) {
+    keepAlive(docs.put(MODEL_LISTS_DOC, { version: listsVersion, savedAt: Date.now(), lists: router.exportModelLists() } satisfies SharedModelLists));
   } else if (oldest !== null && Date.now() - oldest > MODEL_LISTS_REFRESH_MS) {
-    keepAlive(router.reindexAll().then(() => docs.put(MODEL_LISTS_DOC, { version, savedAt: Date.now(), lists: router.exportModelLists() } satisfies SharedModelLists)));
+    keepAlive(router.reindexAll().then(() => docs.put(MODEL_LISTS_DOC, { version: listsVersion, savedAt: Date.now(), lists: router.exportModelLists() } satisfies SharedModelLists)));
   }
   const port = nextPort++;
   const server = await new Promise<Server>((resolve) => {
