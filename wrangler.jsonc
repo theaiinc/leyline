@@ -7,6 +7,10 @@
   "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
+  // Run in Singapore, not wherever the request lands: from Cloudflare's Hong Kong colo (where most of our traffic
+  // lands) Anthropic's API answers 403 "Request not allowed", Hong Kong being outside its supported regions.
+  // Singapore is supported and close to the D1 primary (HKG).
+  "placement": { "mode": "targeted", "region": "gcp:asia-southeast1" },
   // Not leyline.theaiinc.com (the Leyline Aegis tenant's issuer domain) or leyline-api.theaiinc.com (the Render
   // deployment, render.yaml).
   "routes": [{ "pattern": "llm.theaiinc.com", "custom_domain": true }],
