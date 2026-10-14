@@ -67,12 +67,14 @@ export type HostedSettings = {
   aliases: Record<string, string>;
   blockedModels: string[];
   monthlyBudgetUsd: number | null;
+  /** The most each provider may be paid a month (US$), by provider name. */
+  providerBudgetsUsd?: Record<string, number>;
   prices: Record<string, Price>;
   defaultPrice: Price;
   usePublishedPrices: boolean;
   /** Models with a published price, per provider. */
   publishedPrices: Record<string, number>;
-  spend: { month: string; usd: number; requests: number };
+  spend: { month: string; usd: number; requests: number; byProvider?: Record<string, { usd: number; requests: number }> };
   saved: { at: number; by: string } | null;
   publicUrl: string;
 };

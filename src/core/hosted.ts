@@ -35,6 +35,8 @@ export type HostedOptions = {
   blockedModels?: string[];
   /** The most all keys together may spend a month (US dollars); null: no limit. */
   monthlyBudgetUsd?: number | null;
+  /** The most each provider may be paid a month (US dollars), by provider name; see providersOverBudget. */
+  providerBudgetsUsd?: Record<string, number>;
   /** US dollars per million tokens by model (or pattern), and the price for models without one. */
   prices?: Record<string, Price>;
   defaultPrice?: Price;
@@ -42,6 +44,8 @@ export type HostedOptions = {
   usePublishedPrices?: boolean;
   /** The serving provider's published price for a model (the router's model lists; set by mountHosted). */
   publishedPrice?: (provider: string, model: string) => Price | undefined;
+  /** Any provider's published price for a model (for one served by a provider that publishes none). */
+  anyPublishedPrice?: (model: string) => Price | undefined;
   publishedPriceCounts?: () => Record<string, number>;
   /** Cost alert thresholds and channels (saved with the settings). */
   alerts?: AlertSettings;
@@ -150,7 +154,9 @@ export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_
   // Priced by the model that actually answered (after aliases and routing), credited to the provider that served it.
   const used = r.served?.model || resolveModel(opts.aliases, model);
   const usePublished = opts.usePublishedPrices !== false;
-  const published = usePublished ? (r.served ? opts.publishedPrice?.(r.served.provider, used) : undefined) ?? builtinPrice(used) : undefined;
+  const published = usePublished
+    ? (r.served ? opts.publishedPrice?.(r.served.provider, used) : undefined) ?? opts.anyPublishedPrice?.(used) ?? builtinPrice(used)
+    : undefined;
   const cost = usd ?? costUsd(priceOf({ prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE }, used, published), counted);
   const work = opts.keys.record(r.issuedKey ?? null, model, counted, cost, { provider: r.served?.provider ?? 'unknown', model: used })
     .then(() => checkAlerts(opts, r.issuedKey ?? null))
@@ -199,6 +205,33 @@ export function resumeAdminSession(opts: HostedOptions) {
   };
 }
 
+/** This month's spend by provider, read at most every 15 s (a D1 read when hosted), per HostedOptions. */
+const providerSpendCache = new WeakMap<HostedOptions, { at: number; byProvider: Record<string, number> }>();
+const PROVIDER_SPEND_TTL_MS = 15_000;
+
+/**
+ * Providers at their monthly spend limit (providerBudgetsUsd): the router skips them, so their requests go to
+ * another provider serving the model, or get a 429 when there's none. A read failure blocks nobody.
+ */
+export async function providersOverBudget(opts: HostedOptions, now = Date.now()): Promise<string[]> {
+  const budgets = opts.providerBudgetsUsd ?? {};
+  if (Object.keys(budgets).length === 0) return [];
+  let cached = providerSpendCache.get(opts);
+  if (!cached || now - cached.at > PROVIDER_SPEND_TTL_MS) {
+    try {
+      const spend = await opts.keys.spend();
+      const byProvider: Record<string, number> = {};
+      for (const [name, line] of Object.entries(spend.byProvider ?? {})) byProvider[name] = line.usd;
+      cached = { at: now, byProvider };
+      providerSpendCache.set(opts, cached);
+    } catch (err) {
+      console.error('[hosted] provider spend read failed', err);
+      return [];
+    }
+  }
+  return Object.entries(budgets).filter(([name, limit]) => (cached!.byProvider[name] ?? 0) >= limit).map(([name]) => name);
+}
+
 /** Who is managing this Leyline: their email (Aegis session), 'token' (LEYLINE_ADMIN_TOKEN), or null. */
 export function adminOf(opts: HostedOptions, req: Request): string | null {
   const auth = req.headers.authorization;
@@ -227,6 +260,7 @@ export function applySettings(opts: HostedOptions, s: HostedSettings): void {
   opts.aliases = s.aliases;
   // Settings saved before the spending limit existed keep the configured limit.
   if ('monthlyBudgetUsd' in s) opts.monthlyBudgetUsd = s.monthlyBudgetUsd;
+  opts.providerBudgetsUsd = s.providerBudgetsUsd ?? opts.providerBudgetsUsd ?? {};
   opts.blockedModels = s.blockedModels ?? opts.blockedModels ?? [];
   opts.prices = s.prices ?? opts.prices ?? {};
   opts.defaultPrice = s.defaultPrice ?? opts.defaultPrice ?? DEFAULT_PRICE;
@@ -241,6 +275,7 @@ async function settingsView(opts: HostedOptions) {
     aliases: opts.aliases,
     blockedModels: opts.blockedModels ?? [],
     monthlyBudgetUsd: opts.monthlyBudgetUsd ?? null,
+    providerBudgetsUsd: opts.providerBudgetsUsd ?? {},
     prices: opts.prices ?? {},
     defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE,
     usePublishedPrices: opts.usePublishedPrices !== false,
@@ -266,6 +301,7 @@ export function watchSettings(opts: HostedOptions, everyMs = 60_000): () => void
 export function mountHosted(app: Express, router: Router, opts: HostedOptions): void {
   opts.publishedPrice ??= (provider, model) => router.publishedPrice(provider, model);
   opts.publishedPriceCounts ??= () => router.publishedPriceCounts();
+  opts.anyPublishedPrice ??= (model) => router.anyPublishedPrice(model);
   // ── models ──────────────────────────────────────────────────────────────────────────────────────────
   app.get('/v1/models', requireIssuedKeyNoModel(opts), (req, res) => {
     const key = (req as WithKey).issuedKey!;
@@ -297,7 +333,8 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
           for (const e of events) res.write(`event: ${e.event}\ndata: ${JSON.stringify(e.data)}\n\n`);
         };
         try {
-          for await (const chunk of await router.routeStream(request, { onServed: servedBy(req) })) send(out.push(chunk));
+          const excludeProviders = await providersOverBudget(opts);
+          for await (const chunk of await router.routeStream(request, { onServed: servedBy(req), excludeProviders })) send(out.push(chunk));
           send(out.end());
         } catch (err) {
           console.error('[hosted] /v1/messages stream failed', err);
@@ -309,7 +346,7 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
         recordUsage(opts, req, out.tokens, out.chars);
         return;
       }
-      const response = await router.route(request, { onServed: servedBy(req) });
+      const response = await router.route(request, { onServed: servedBy(req), excludeProviders: await providersOverBudget(opts) });
       res.json(openAIToAnthropic(response, asked));
       recordUsage(opts, req, response.usage);
     } catch (err) {
@@ -366,7 +403,7 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
   app.put('/admin/api/settings', guard, async (req, res) => {
     try {
       // A save changes only what it names; the rest stays as it is.
-      const current = { models: opts.models, aliases: opts.aliases, blockedModels: opts.blockedModels ?? [], monthlyBudgetUsd: opts.monthlyBudgetUsd ?? null, prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE, usePublishedPrices: opts.usePublishedPrices !== false, alerts: opts.alerts ?? DEFAULT_ALERTS };
+      const current = { models: opts.models, aliases: opts.aliases, blockedModels: opts.blockedModels ?? [], monthlyBudgetUsd: opts.monthlyBudgetUsd ?? null, providerBudgetsUsd: opts.providerBudgetsUsd ?? {}, prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE, usePublishedPrices: opts.usePublishedPrices !== false, alerts: opts.alerts ?? DEFAULT_ALERTS };
       const saved = await opts.keys.saveSettings({ ...current, ...(req.body as Partial<HostedSettings>) }, (req as Request & { admin?: string }).admin!);
       applySettings(opts, saved);
       console.log(JSON.stringify({ event: 'settings_saved', by: saved.updatedBy, models: saved.models, aliases: saved.aliases, monthlyBudgetUsd: saved.monthlyBudgetUsd }));

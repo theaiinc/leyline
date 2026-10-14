@@ -183,6 +183,8 @@ export interface RouteOptions {
   forceProvider?: string;
   /** Told which provider and model served the request (the last one tried, when an earlier one failed). */
   onServed?: (provider: string, model: string) => void;
+  /** Providers not to use for this request (at their monthly spend limit, hosted.ts). */
+  excludeProviders?: string[];
 }
 
 export interface ApiKeyConfigurableProvider extends Provider {

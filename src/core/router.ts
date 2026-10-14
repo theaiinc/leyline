@@ -303,6 +303,18 @@ export class Router {
     return this.providerModelIds.get(providerName)?.prices?.get(model);
   }
 
+  /**
+   * Any provider's published price for a model: for a provider that publishes none (Anthropic lists models
+   * without prices) serving a model a gateway prices (LLM API lists the same Claude models with theirs).
+   */
+  anyPublishedPrice(model: string): { input: number; output: number } | undefined {
+    for (const entry of this.providerModelIds.values()) {
+      const price = entry.prices?.get(model);
+      if (price) return price;
+    }
+    return undefined;
+  }
+
   /** How many models have a published price, per provider. */
   publishedPriceCounts(): Record<string, number> {
     const out: Record<string, number> = {};
@@ -523,6 +535,12 @@ export class Router {
     return { ...compressed, messages };
   }
 
+  /** A request whose only providers are at their monthly spend limit: 429, saying whose limit. */
+  private budgetRefusal(excluded: string[]): CapabilityError {
+    return new CapabilityError(429, 'provider_budget_exhausted',
+      `${excluded.join(', ')} reached ${excluded.length > 1 ? 'their' : 'its'} spending limit for the month; it resets on the 1st (UTC).`);
+  }
+
   async route(request: CompletionRequest, opts?: RouteOptions): Promise<CompletionResponse> {
     const start = Date.now();
     const requestId = Math.random().toString(36).substring(7);
@@ -534,6 +552,7 @@ export class Router {
       if (!provider) {
         throw new Error(`Provider "${opts.forceProvider}" is not registered.`);
       }
+      if (opts.excludeProviders?.includes(provider.name)) throw this.budgetRefusal([provider.name]);
       opts.onServed?.(provider.name, routedRequest.model);
       return this.runForcedProvider(provider, routedRequest, requestId, start);
     }
@@ -541,6 +560,7 @@ export class Router {
     const fixedRoute = this.getSingleModelRoute();
     if (fixedRoute) {
       const { provider, model } = fixedRoute;
+      if (opts?.excludeProviders?.includes(provider.name)) throw this.budgetRefusal([provider.name]);
       if (!this.quotaManager.checkQuota(provider.name)) {
         logger.log({ requestId, provider: provider.name, model, status: 'rate_limited', error: 'Quota exceeded' });
         throw new Error(`Fixed provider ${provider.name} is rate-limited.`);
@@ -579,7 +599,12 @@ export class Router {
     // Providers skipped because they can't read the request's images; a 400 when nobody else got to try.
     const cannotRead: string[] = [];
     let attempted = false;
+    const overBudget: string[] = [];
     for (const provider of await this.candidateProviders(request.model)) {
+      if (opts?.excludeProviders?.includes(provider.name)) {
+        overBudget.push(provider.name);
+        continue;
+      }
       const autoModel = request.model === 'auto' ? this.autoModelFor(provider) : null;
       if (request.model === 'auto' && autoModel === null) {
         console.log(`[Router] Skipping ${provider.name} — no models enabled for routing.`);
@@ -654,6 +679,7 @@ export class Router {
       }
     }
     if (!attempted && cannotRead.length) throw unsupportedContent(cannotRead, request.model);
+    if (!attempted && overBudget.length) throw this.budgetRefusal(overBudget);
     throw new Error('All providers failed or are rate-limited.');
   }
 
@@ -670,6 +696,7 @@ export class Router {
       if (!provider) {
         throw new Error(`Provider "${opts.forceProvider}" is not registered.`);
       }
+      if (opts.excludeProviders?.includes(provider.name)) throw this.budgetRefusal([provider.name]);
       opts.onServed?.(provider.name, routedRequest.model);
       yield* this.runForcedProviderStream(provider, routedRequest, requestId, start);
       return;
@@ -678,6 +705,7 @@ export class Router {
     const fixedRoute = this.getSingleModelRoute();
     if (fixedRoute) {
       const { provider, model } = fixedRoute;
+      if (opts?.excludeProviders?.includes(provider.name)) throw this.budgetRefusal([provider.name]);
       let providerChars = 0;
       let providerUsage: UsageSnapshot | undefined;
 
@@ -734,7 +762,12 @@ export class Router {
 
     const cannotRead: string[] = [];
     let attempted = false;
+    const overBudget: string[] = [];
     for (const provider of await this.candidateProviders(request.model)) {
+      if (opts?.excludeProviders?.includes(provider.name)) {
+        overBudget.push(provider.name);
+        continue;
+      }
         const autoModel = request.model === 'auto' ? this.autoModelFor(provider) : null;
         if (request.model === 'auto' && autoModel === null) {
           console.log(`[Router] Skipping ${provider.name} — no models enabled for routing.`);
@@ -836,6 +869,7 @@ export class Router {
         }
       }
       if (!attempted && cannotRead.length) throw unsupportedContent(cannotRead, request.model);
+      if (!attempted && overBudget.length) throw this.budgetRefusal(overBudget);
       throw new Error('All providers failed or are rate-limited.');
   }
 

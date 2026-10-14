@@ -131,6 +131,12 @@ export function chatCompletionErrorResponse(error: unknown): { status: number; b
   const providerData = candidate?.response?.data;
   const providerMessage = extractProviderErrorMessage(providerData, message);
 
+  // A provider at its monthly spend limit (Router.budgetRefusal): say whose limit, not a provider error.
+  const coded = error as { status?: number; code?: string };
+  if (coded?.code === 'provider_budget_exhausted') {
+    return { status: 429, body: { error: { message, type: 'rate_limit_error', code: 'provider_budget_exhausted' } } };
+  }
+
   if (isRateLimitError(error)) {
     return {
       status: 429,

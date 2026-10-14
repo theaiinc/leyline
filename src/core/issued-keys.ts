@@ -210,6 +210,12 @@ export type HostedSettings = {
   blockedModels?: string[];
   /** The most all keys together may spend a month, in US dollars; null: no limit. */
   monthlyBudgetUsd: number | null;
+  /**
+   * The most one provider may be paid a month, in US dollars, by provider name ("Anthropic": 100). A provider
+   * at its limit gets no more requests this month: they go to another provider serving the model, or are
+   * refused when there's none.
+   */
+  providerBudgetsUsd?: Record<string, number>;
   /** US dollars per million tokens, by model id or pattern with * (the model actually used). */
   prices: Record<string, Price>;
   /** For models with no price: deliberately high, so a limit errs on the safe side. */
@@ -246,6 +252,11 @@ export function cleanSettings(input: Partial<HostedSettings> | null | undefined)
     if (m.trim() && price) prices[m.trim()] = price;
   }
   const budget = Number(input?.monthlyBudgetUsd);
+  const providerBudgetsUsd: Record<string, number> = {};
+  for (const [name, limit] of Object.entries(input?.providerBudgetsUsd && typeof input.providerBudgetsUsd === 'object' ? input.providerBudgetsUsd : {})) {
+    const usd = Number(limit);
+    if (String(name).trim() && Number.isFinite(usd) && usd > 0) providerBudgetsUsd[String(name).trim()] = Math.round(usd * 100) / 100;
+  }
   const blockedModels = Array.isArray(input?.blockedModels)
     ? [...new Set(input!.blockedModels.map((m) => String(m).trim()).filter(Boolean))].slice(0, 200)
     : [];
@@ -254,6 +265,7 @@ export function cleanSettings(input: Partial<HostedSettings> | null | undefined)
     aliases,
     blockedModels,
     monthlyBudgetUsd: input?.monthlyBudgetUsd === null || input?.monthlyBudgetUsd === undefined || !Number.isFinite(budget) || budget <= 0 ? null : Math.round(budget * 100) / 100,
+    providerBudgetsUsd,
     prices,
     defaultPrice: cleanPrice(input?.defaultPrice) ?? DEFAULT_PRICE,
     usePublishedPrices: input?.usePublishedPrices !== false,
