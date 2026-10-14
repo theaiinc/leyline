@@ -26,6 +26,7 @@ export interface DefaultModelsConfig {
   HF: string;
   OPENAI: string;
   OPENROUTER: string;
+  ANTHROPIC: string;
   OLLAMA: string;
   AZURE_OPENAI: string;
 }
@@ -196,6 +197,7 @@ export const config: LeylineConfig = {
       HF: process.env.HF_DEFAULT_MODEL || 'microsoft/Phi-3-mini-4k-instruct',
       OPENAI: process.env.OPENAI_DEFAULT_MODEL || 'gpt-5.5',
       OPENROUTER: process.env.OPENROUTER_DEFAULT_MODEL || 'mistralai/mistral-7b-instruct:free',
+      ANTHROPIC: process.env.ANTHROPIC_DEFAULT_MODEL || 'claude-sonnet-5-5',
       OLLAMA: process.env.OLLAMA_DEFAULT_MODEL || 'llama2',
       AZURE_OPENAI: process.env.AZURE_OPENAI_DEFAULT_MODEL || process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-5.5',
   },
