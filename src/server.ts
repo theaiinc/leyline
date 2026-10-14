@@ -11,7 +11,7 @@ import { QuotaManager } from './core/quota-manager';
 import { getModelScore } from './core/leaderboard-data';
 import { config } from './config';
 import { requireClientApiKey } from './core/client-auth';
-import { adminOf, mountHosted, resumeAdminSession, recordUsage, servedBy, requireIssuedKey, resolveModel, sameOrigin, type HostedOptions } from './core/hosted';
+import { adminOf, mountHosted, providersOverBudget, resumeAdminSession, recordUsage, servedBy, requireIssuedKey, resolveModel, sameOrigin, type HostedOptions } from './core/hosted';
 import { createRequireAegisToken, AegisTenant } from './core/aegis-auth';
 import { chatCompletionErrorResponse, formatProviderError, hydrateAxiosError } from './core/api-errors';
 import { normalizeCompletionRequest } from './core/normalize-request';
@@ -912,7 +912,12 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
         },
       });
     }
-    const routeOptions = { ...(forceProvider ? { forceProvider } : {}), onServed: servedBy(req) };
+    const routeOptions = {
+      ...(forceProvider ? { forceProvider } : {}),
+      onServed: servedBy(req),
+      // Hosted: providers at their monthly spend limit are skipped (providersOverBudget).
+      ...(hosted ? { excludeProviders: await providersOverBudget(hosted) } : {}),
+    };
 
     try {
       if (request.stream) {

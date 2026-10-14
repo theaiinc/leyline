@@ -23,6 +23,7 @@ export function OfferedPage({ d }: { d: Dashboard }) {
   const [rows, setRows] = useState<Row[]>([]);
   const [draft, setDraft] = useState('');
   const [budget, setBudget] = useState('');
+  const [providerBudgets, setProviderBudgets] = useState<Record<string, string>>({});
   const [priceRows, setPriceRows] = useState<PriceRow[]>([]);
   const [fallback, setFallback] = useState({ input: '', output: '' });
   const [blocked, setBlocked] = useState<string[]>([]);
@@ -35,6 +36,7 @@ export function OfferedPage({ d }: { d: Dashboard }) {
     setModels(s.models);
     setRows(Object.entries(s.aliases).map(([from, to]) => ({ from, to })));
     setBudget(s.monthlyBudgetUsd ? String(s.monthlyBudgetUsd) : '');
+    setProviderBudgets(Object.fromEntries(Object.entries(s.providerBudgetsUsd ?? {}).map(([name, usd]) => [name, String(usd)])));
     setPriceRows(Object.entries(s.prices).map(([model, p]) => ({ model, input: String(p.input), output: String(p.output) })));
     setFallback({ input: String(s.defaultPrice.input), output: String(s.defaultPrice.output) });
     setBlocked(s.blockedModels ?? []);
@@ -52,10 +54,16 @@ export function OfferedPage({ d }: { d: Dashboard }) {
     .map(r => [r.model.trim(), { input: Number(r.input), output: Number(r.output) }]));
   const defaultPrice: Price = { input: Number(fallback.input) || 0, output: Number(fallback.output) || 0 };
   const monthlyBudgetUsd = budget.trim() ? Number(budget) : null;
+  const providerBudgetsUsd: Record<string, number> = Object.fromEntries(Object.entries(providerBudgets)
+    .filter(([, usd]) => usd.trim() && Number(usd) > 0)
+    .map(([name, usd]) => [name, Number(usd)]));
+  // Every provider that serves chat, plus any with a limit already set.
+  const providerNames = [...new Set([...d.stats.providers.map(p => p.name), ...Object.keys(settings?.providerBudgetsUsd ?? {})])].sort();
   const dirty = settings !== null && (
     JSON.stringify(models) !== JSON.stringify(settings.models)
     || JSON.stringify(aliases) !== JSON.stringify(settings.aliases)
     || monthlyBudgetUsd !== settings.monthlyBudgetUsd
+    || JSON.stringify(providerBudgetsUsd) !== JSON.stringify(settings.providerBudgetsUsd ?? {})
     || JSON.stringify(prices) !== JSON.stringify(settings.prices)
     || JSON.stringify(defaultPrice) !== JSON.stringify(settings.defaultPrice)
     || JSON.stringify(blocked) !== JSON.stringify(settings.blockedModels ?? [])
@@ -98,7 +106,7 @@ export function OfferedPage({ d }: { d: Dashboard }) {
   async function save() {
     setSaving(true);
     try {
-      apply(await api<HostedSettings>('/admin/api/settings', { method: 'PUT', body: { models, aliases, blockedModels: blocked, monthlyBudgetUsd, prices, defaultPrice, usePublishedPrices: usePublished } }));
+      apply(await api<HostedSettings>('/admin/api/settings', { method: 'PUT', body: { models, aliases, blockedModels: blocked, monthlyBudgetUsd, providerBudgetsUsd, prices, defaultPrice, usePublishedPrices: usePublished } }));
       toast.success('Saved.');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not save');
@@ -183,6 +191,32 @@ export function OfferedPage({ d }: { d: Dashboard }) {
             <div className="grid max-w-56 gap-1.5">
               <Label htmlFor="budget">Monthly limit (US$)</Label>
               <Input id="budget" type="number" min={1} step={1} placeholder="No limit" value={budget} onChange={e => setBudget(e.target.value)} />
+            </div>
+            <div className="grid gap-2">
+              <div className="grid gap-0.5">
+                <Label>Per provider (US$ a month)</Label>
+                <span className="text-xs text-muted-foreground">
+                  A provider at its limit gets no more requests this month: they go to another provider serving the same model, or are refused when there's none.
+                </span>
+              </div>
+              {providerNames.map(name => {
+                const spent = settings?.spend.byProvider?.[name]?.usd ?? 0;
+                const limit = Number(providerBudgets[name]);
+                return (
+                  <div key={name} className="grid grid-cols-[1fr_auto_7rem] items-center gap-3 text-sm">
+                    <span className="truncate">{name}</span>
+                    <span className={`tabular-nums text-xs ${limit > 0 && spent >= limit ? 'text-destructive' : 'text-muted-foreground'}`}>
+                      {money(spent)}{limit > 0 ? ` of $${limit}` : ''}
+                    </span>
+                    <Input
+                      aria-label={`${name} monthly limit`}
+                      type="number" min={1} step={1} placeholder="No limit"
+                      value={providerBudgets[name] ?? ''}
+                      onChange={e => setProviderBudgets(b => ({ ...b, [name]: e.target.value }))}
+                    />
+                  </div>
+                );
+              })}
             </div>
           </CardContent>
         </Card>
