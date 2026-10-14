@@ -34,6 +34,7 @@ export { GeminiProvider } from './providers/gemini';
 export { HuggingFaceProvider } from './providers/huggingface';
 export { OpenAIProvider } from './providers/openai';
 export { OpenRouterProvider } from './providers/openrouter';
+export { AnthropicProvider } from './providers/anthropic';
 export { OllamaProvider } from './providers/ollama';
 export { LMStudioProvider } from './providers/lmstudio';
 export { LiteLLMProvider } from './providers/litellm';
@@ -92,6 +93,7 @@ import { GeminiProvider } from './providers/gemini';
 import { HuggingFaceProvider } from './providers/huggingface';
 import { OpenAIProvider } from './providers/openai';
 import { OpenRouterProvider } from './providers/openrouter';
+import { AnthropicProvider } from './providers/anthropic';
 import { OllamaProvider } from './providers/ollama';
 import { LMStudioProvider } from './providers/lmstudio';
 import { LiteLLMProvider } from './providers/litellm';
@@ -206,6 +208,7 @@ export async function buildRouter(secretStore: SecretStore, opts: { workersAi?: 
   router.addProvider(new HuggingFaceProvider());
   router.addProvider(new OpenAIProvider());
   router.addProvider(new OpenRouterProvider());
+  router.addProvider(new AnthropicProvider());
   if (
     config.hosted.enabled
     || process.env.LLM_API_BASE_URL
