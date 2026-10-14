@@ -152,7 +152,7 @@ export class AnthropicProvider implements Provider {
     if (!this.apiKey) return [];
     try {
       const response = await fetch(`${API}/models?limit=100`, { headers: this.headers() });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}: ${(await response.text().catch(() => '')).slice(0, 200)}`);
       const body = (await response.json()) as { data?: Array<{ id: string; display_name?: string }> };
       return (body.data ?? []).map(m => ({ id: m.id, name: m.display_name || m.id }));
     } catch (error) {
