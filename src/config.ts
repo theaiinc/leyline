@@ -1,7 +1,9 @@
 import dotenv from 'dotenv';
 import { randomBytes } from 'crypto';
 
-dotenv.config();
+// The desktop app never bundles a .env; it points LEYLINE_ENV_FILE at a
+// per-user file (see src-tauri/src/sidecar.rs). Otherwise read ./.env as usual.
+dotenv.config(process.env.LEYLINE_ENV_FILE ? { path: process.env.LEYLINE_ENV_FILE } : undefined);
 
 // ── Configuration types (exported for consumers) ──────────────────────
 

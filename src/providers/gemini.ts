@@ -3,10 +3,7 @@ import { Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDeta
 import { isTextPart, parseDataUrl } from '../core/content';
 import { openAIEmbeddings } from '../core/media';
 import axios from 'axios';
-import dotenv from 'dotenv';
 import { config } from '../config';
-
-dotenv.config();
 
 export class GeminiProvider implements Provider {
   name = 'Gemini';

@@ -1,10 +1,7 @@
 import { HfInference } from '@huggingface/inference';
 import { ChatMessage, Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail } from '../core/types';
 import { contentText } from '../core/content';
-import dotenv from 'dotenv';
 import { config } from '../config';
-
-dotenv.config();
 
 /** Its models are text-only: a content list keeps its text (the router never sends it images, see acceptsNonTextContent). */
 function toHuggingFaceMessages(messages: ChatMessage[]) {

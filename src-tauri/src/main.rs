@@ -20,7 +20,8 @@ fn main() {
             // and non-blocking: sidecar startup happens on a background thread
             // and every failure is logged instead of propagated.
             let resource_dir = app.path().resource_dir().ok();
-            let manager = Arc::new(Mutex::new(sidecar::SidecarManager::new()));
+            let config_dir = app.path().app_config_dir().ok();
+            let manager = Arc::new(Mutex::new(sidecar::SidecarManager::new(config_dir)));
             app.manage(manager.clone());
             std::thread::spawn(move || supervise_sidecar(manager, resource_dir));
 

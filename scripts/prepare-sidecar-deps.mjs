@@ -5,7 +5,7 @@
 // a pruned copy here (deps only, no jest/tsc/vite/tauri-cli/...) instead of
 // shipping the whole workspace node_modules.
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, copyFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, copyFileSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -17,17 +17,9 @@ mkdirSync(outDir, { recursive: true });
 copyFileSync(path.join(projectRoot, 'package.json'), path.join(outDir, 'package.json'));
 copyFileSync(path.join(projectRoot, 'package-lock.json'), path.join(outDir, 'package-lock.json'));
 
-// Packaged builds run with cwd pointed at the bundled resource dir (see
-// sidecar.rs) so dotenv can find a .env the same way `npm start` does. The
-// resource must exist at build time even when the developer has no local
-// .env yet, so always produce one (falling back to a harmless empty file).
-const localEnvPath = path.join(projectRoot, '.env');
-const bundledEnvPath = path.join(outDir, '.env');
-if (existsSync(localEnvPath)) {
-  copyFileSync(localEnvPath, bundledEnvPath);
-} else {
-  writeFileSync(bundledEnvPath, '');
-}
+// Never copy the developer's .env into the bundle: it holds real API keys and
+// would ship inside every build. Packaged apps read config from a per-user
+// file instead (see src-tauri/src/sidecar.rs).
 
 console.log('[Leyline] Installing production-only sidecar dependencies...');
 execFileSync('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], {

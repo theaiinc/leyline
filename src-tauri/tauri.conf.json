@@ -34,7 +34,7 @@
       "../dist": "_up_/dist",
       "../public": "_up_/public",
       "../src-tauri/sidecar-deps/node_modules": "_up_/node_modules",
-      "../src-tauri/sidecar-deps/.env": "_up_/.env"
+      "../src-tauri/desktop.env.example": "_up_/.env.example"
     }
   }
 }

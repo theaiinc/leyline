@@ -23,12 +23,17 @@ pub struct SidecarManager {
     child: Option<Child>,
     host: String,
     port: u16,
+    /// Per-user config directory (Tauri's `app_config_dir()`), where packaged
+    /// builds read the sidecar's `.env` from. Never bundled with the app.
+    #[cfg_attr(debug_assertions, allow(dead_code))]
+    config_dir: Option<PathBuf>,
 }
 
 impl SidecarManager {
-    pub fn new() -> Self {
+    pub fn new(config_dir: Option<PathBuf>) -> Self {
         Self {
             child: None,
+            config_dir,
             host: env::var("LEYLINE_HOST").unwrap_or_else(|_| DEFAULT_HOST.to_string()),
             port: env::var("PORT")
                 .ok()
@@ -88,18 +93,25 @@ impl SidecarManager {
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
 
-        // In development, load the workspace .env just like `npm start`. Packaged
-        // builds get no cwd by default (Finder launches land at "/"), so they'd
-        // never find provider config; point them at the bundled resource
-        // directory instead, where tauri.conf.json's resources map ships a copy
-        // of .env alongside dist/ and node_modules/.
+        // In development, load the workspace .env just like `npm start`.
+        // Packaged builds must never ship a .env (it would leak whoever built
+        // the app's keys), so they read runtime config from a per-user file
+        // instead: <app_config_dir>/.env, e.g.
+        //   macOS:   ~/Library/Application Support/com.theaiinc.leyline/.env
+        //   Windows: %APPDATA%\com.theaiinc.leyline\.env
+        // The path is handed to the Node API via LEYLINE_ENV_FILE (src/config.ts);
+        // an explicit LEYLINE_ENV_FILE in the launching environment wins.
         #[cfg(debug_assertions)]
         if let Some(project_root) = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent() {
             command.current_dir(project_root);
         }
         #[cfg(not(debug_assertions))]
-        if let Some(dir) = resource_dir {
-            command.current_dir(dir.join("_up_"));
+        if let Some(dir) = self.config_dir.as_ref() {
+            prepare_user_config_dir(dir, resource_dir.as_deref());
+            if env::var_os("LEYLINE_ENV_FILE").is_none() {
+                command.env("LEYLINE_ENV_FILE", dir.join(".env"));
+            }
+            command.current_dir(dir);
         }
 
         let child = command.spawn()?;
@@ -187,6 +199,7 @@ impl SidecarManager {
     fn with_endpoint(port: u16) -> Self {
         Self {
             child: None,
+            config_dir: None,
             host: DEFAULT_HOST.to_string(),
             port,
         }
@@ -242,6 +255,36 @@ impl SidecarManager {
 impl Drop for SidecarManager {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+/// Create the per-user config dir and drop a key-names-only `.env.example`
+/// there (copied from the bundled resource) so users know what to fill in.
+/// Failures are logged, never fatal: the API still starts without config.
+#[cfg(not(debug_assertions))]
+fn prepare_user_config_dir(dir: &std::path::Path, resource_dir: Option<&std::path::Path>) {
+    if let Err(error) = std::fs::create_dir_all(dir) {
+        eprintln!(
+            "[Leyline] Could not create config dir {}: {error}",
+            dir.display()
+        );
+        return;
+    }
+    let example = dir.join(".env.example");
+    if example.exists() {
+        return;
+    }
+    let Some(resource_dir) = resource_dir else {
+        return;
+    };
+    for candidate in [
+        resource_dir.join("_up_").join(".env.example"),
+        resource_dir.join(".env.example"),
+    ] {
+        if candidate.exists() {
+            let _ = std::fs::copy(&candidate, &example);
+            break;
+        }
     }
 }
 

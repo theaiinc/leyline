@@ -278,6 +278,8 @@ npm run tauri:build
 
 The current sidecar strategy expects Node and the `janus` command to be available on the host. Set `LEYLINE_SIDECAR_COMMAND`, `LEYLINE_SIDECAR_ENTRYPOINT`, or `LEYLINE_JANUS_COMMAND` when a deployment uses custom executables. On macOS, the app also checks common Homebrew and user-bin locations because GUI-launched apps may not inherit the shell `PATH`.
 
+Release builds never bundle a `.env`. `tauri dev` reads the repository `.env` as before; a packaged app reads its runtime config from a per-user file instead — `~/Library/Application Support/com.theaiinc.leyline/.env` on macOS, `%APPDATA%\com.theaiinc.leyline\.env` on Windows (set `LEYLINE_ENV_FILE` to override). On first launch the app drops a key-names-only `.env.example` in that folder. Provider keys can also be entered in the dashboard.
+
 ## 🔑 Hosted keys (an LLM API for other people's coding agents)
 
 Run Leyline in the cloud and hand out API keys that use your provider keys, each with caps you set. In the cloud, the same dashboard as the desktop app runs at `/dashboard`, behind Aegis sign-in.

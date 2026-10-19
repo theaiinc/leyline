@@ -2,10 +2,7 @@ import axios from 'axios';
 import { parsePublishedPricing } from '../core/pricing';
 import { Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail, Capability, EmbeddingRequest, EmbeddingResult } from '../core/types';
 import { openAIEmbeddings } from '../core/media';
-import dotenv from 'dotenv';
 import { config } from '../config';
-
-dotenv.config();
 
 export class OpenRouterProvider implements Provider {
   name = 'OpenRouter';
