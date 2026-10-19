@@ -63,21 +63,23 @@ impl SidecarManager {
 
         let entrypoint = self.resolve_entrypoint(resource_dir.clone())?;
         let command_name = self.resolve_command();
-        let path_entries = [
-            env::var("PATH").ok(),
-            (cfg!(target_os = "macos")).then(|| "/opt/homebrew/bin".to_string()),
-            (cfg!(target_os = "macos")).then(|| "/usr/local/bin".to_string()),
-            env::var("HOME")
-                .ok()
-                .map(|home| format!("{home}/.local/bin")),
-            env::var("HOME")
-                .ok()
-                .map(|home| format!("{home}/.volta/bin")),
-        ]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(":");
+        // GUI-launched apps often don't inherit the shell PATH, so append the
+        // usual user/Homebrew bin dirs. join_paths uses the platform separator
+        // (":" on Unix, ";" on Windows, where drive letters contain ":").
+        let mut path_entries: Vec<PathBuf> = env::var_os("PATH")
+            .map(|value| env::split_paths(&value).collect())
+            .unwrap_or_default();
+        if cfg!(target_os = "macos") {
+            path_entries.push(PathBuf::from("/opt/homebrew/bin"));
+            path_entries.push(PathBuf::from("/usr/local/bin"));
+        }
+        if let Some(home) = env::var_os("HOME") {
+            let home = PathBuf::from(home);
+            path_entries.push(home.join(".local").join("bin"));
+            path_entries.push(home.join(".volta").join("bin"));
+        }
+        let path_entries = env::join_paths(path_entries)
+            .unwrap_or_else(|_| env::var_os("PATH").unwrap_or_default());
 
         println!(
             "[Leyline] Starting internal API sidecar: {} {}",
@@ -92,6 +94,15 @@ impl SidecarManager {
             .env("PATH", path_entries)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
+
+        // Release builds use the Windows GUI subsystem; without this flag each
+        // sidecar launch would pop up a console window.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
 
         // In development, load the workspace .env just like `npm start`.
         // Packaged builds must never ship a .env (it would leak whoever built
@@ -239,16 +250,31 @@ impl SidecarManager {
             return PathBuf::from(value);
         }
 
-        let candidates = [
-            "/opt/homebrew/bin/node",
-            "/usr/local/bin/node",
-            "/usr/bin/node",
-        ];
+        // A Node runtime shipped next to the app executable wins (the MSIX
+        // Store build puts node.exe there, see .github/workflows/msix.yml),
+        // then well-known system locations, then whatever `node` is on PATH.
+        let node_file = format!("node{}", env::consts::EXE_SUFFIX);
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        if let Ok(executable) = env::current_exe() {
+            if let Some(parent) = executable.parent() {
+                candidates.push(parent.join(&node_file));
+            }
+        }
+        if cfg!(unix) {
+            candidates.extend(
+                [
+                    "/opt/homebrew/bin/node",
+                    "/usr/local/bin/node",
+                    "/usr/bin/node",
+                ]
+                .iter()
+                .map(PathBuf::from),
+            );
+        }
         candidates
-            .iter()
-            .map(PathBuf::from)
-            .find(|path| path.exists())
-            .unwrap_or_else(|| PathBuf::from("node"))
+            .into_iter()
+            .find(|path| path.is_file())
+            .unwrap_or_else(|| PathBuf::from(node_file))
     }
 }
 

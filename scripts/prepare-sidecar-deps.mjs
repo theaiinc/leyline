@@ -22,9 +22,12 @@ copyFileSync(path.join(projectRoot, 'package-lock.json'), path.join(outDir, 'pac
 // file instead (see src-tauri/src/sidecar.rs).
 
 console.log('[Leyline] Installing production-only sidecar dependencies...');
-execFileSync('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], {
+// On Windows npm is npm.cmd, which Node can only launch through a shell.
+const isWindows = process.platform === 'win32';
+execFileSync(isWindows ? 'npm.cmd' : 'npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], {
   cwd: outDir,
   stdio: 'inherit',
+  shell: isWindows,
 });
 
 if (!existsSync(path.join(outDir, 'node_modules'))) {

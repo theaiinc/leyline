@@ -1,0 +1,141 @@
+name: MSIX (Microsoft Store)
+
+# Builds an unsigned x64 .msix for Microsoft Store submission. The Store
+# re-signs packages itself, so no code-signing certificate is needed here.
+# Partner Center identity values come from repo variables; see
+# windows/msix/README.md. The defaults below are placeholders for CI testing
+# and are NOT valid for a real Store upload.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/msix-store]
+
+permissions:
+  contents: read
+
+jobs:
+  msix:
+    runs-on: windows-latest
+    env:
+      MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME || 'TheAITechnology.Leyline' }}
+      MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER || 'CN=00000000-0000-0000-0000-000000000000' }}
+      MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME || 'THE AI TECHNOLOGY COMPANY LIMITED' }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      # Same Node major as publish.yml. This node.exe (official nodejs.org
+      # Windows x64 build) is also what ships inside the package.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      # package.json scripts use POSIX `VAR=value cmd` syntax; run them with
+      # Git Bash instead of cmd.exe. Tauri's beforeBuildCommand only calls
+      # `npm run ...`, so it picks this up too.
+      - name: Use bash for npm scripts
+        run: npm config set script-shell "C:\Program Files\Git\bin\bash.exe"
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      # --no-bundle: build only the release exe (frontend embedded); we lay
+      # out and pack the MSIX ourselves. beforeBuildCommand runs
+      # build:desktop (tsc + vite) and prepare:sidecar-deps (prod node_modules).
+      - name: Build release executable
+        run: npx tauri build --no-bundle --config src-tauri/tauri.microsoftstore.conf.json
+
+      - name: Stage msix-layout
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $layout = 'msix-layout'
+          if (Test-Path $layout) { Remove-Item $layout -Recurse -Force }
+          New-Item -ItemType Directory -Path $layout | Out-Null
+
+          # Tauri's resource_dir() on Windows is the exe's directory, and
+          # sidecar.rs looks for <resource_dir>/_up_/dist/index.js, so the
+          # bundle.resources map from tauri.conf.json is mirrored under _up_.
+          Copy-Item 'src-tauri/target/release/leyline.exe' "$layout/leyline.exe"
+
+          # Bundled Node runtime: sidecar.rs prefers node.exe next to the app exe.
+          $nodeExe = (node -p "process.execPath").Trim()
+          Copy-Item $nodeExe "$layout/node.exe"
+          & "$layout/node.exe" --version
+
+          $up = "$layout/_up_"
+          New-Item -ItemType Directory -Path $up | Out-Null
+          Copy-Item 'dist' "$up/dist" -Recurse
+          Copy-Item 'public' "$up/public" -Recurse
+          Copy-Item 'src-tauri/sidecar-deps/node_modules' "$up/node_modules" -Recurse
+          Copy-Item 'src-tauri/desktop.env.example' "$up/.env.example"
+
+          Copy-Item 'windows/msix/Assets' "$layout/Assets" -Recurse
+
+          # Never ship secrets: fail if any .env (other than the key-names-only
+          # .env.example) made it into the layout.
+          $leaked = Get-ChildItem $layout -Recurse -Force -File |
+            Where-Object { $_.Name -match '^\.env(\..+)?$' -and $_.Name -ne '.env.example' }
+          if ($leaked) {
+            $leaked | ForEach-Object { Write-Error "Refusing to package secrets file: $($_.FullName)" }
+            exit 1
+          }
+
+      - name: Write AppxManifest.xml
+        id: manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $semver = (Get-Content 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json).version
+          $core = ($semver -split '[-+]')[0]
+          $parts = $core.Split('.')
+          if ($parts.Count -ne 3) { throw "Unexpected version '$semver' in tauri.conf.json" }
+          # Store requires the 4th (revision) part to be 0.
+          $msixVersion = "$core.0"
+          "version=$core" >> $env:GITHUB_OUTPUT
+
+          $esc = { param($s) [System.Security.SecurityElement]::Escape($s) }
+          $xml = Get-Content 'windows/msix/Package.appxmanifest' -Raw
+          $xml = $xml.Replace('__MSIX_IDENTITY_NAME__', (& $esc $env:MSIX_IDENTITY_NAME))
+          $xml = $xml.Replace('__MSIX_PUBLISHER_DISPLAY_NAME__', (& $esc $env:MSIX_PUBLISHER_DISPLAY_NAME))
+          $xml = $xml.Replace('__MSIX_PUBLISHER__', (& $esc $env:MSIX_PUBLISHER))
+          $xml = $xml.Replace('__MSIX_VERSION__', $msixVersion)
+          if ($xml -match '__MSIX_[A-Z_]+__') { throw "Unsubstituted placeholder: $($Matches[0])" }
+          [xml]$xml | Out-Null  # well-formedness check
+          Set-Content -Path 'msix-layout/AppxManifest.xml' -Value $xml -Encoding utf8
+          Write-Host "MSIX version $msixVersion, identity $env:MSIX_IDENTITY_NAME, publisher $env:MSIX_PUBLISHER"
+
+      - name: Pack MSIX
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $makeappx = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\makeappx.exe" |
+            Where-Object { $_.Directory.Parent.Name -match '^\d+(\.\d+){3}$' } |
+            Sort-Object { [version]$_.Directory.Parent.Name } -Descending |
+            Select-Object -First 1
+          if (-not $makeappx) { throw 'makeappx.exe not found in Windows SDK' }
+          Write-Host "Using $($makeappx.FullName)"
+          $out = "Leyline_${{ steps.manifest.outputs.version }}_x64.msix"
+          & $makeappx.FullName pack /v /d msix-layout /p $out /o
+          if ($LASTEXITCODE -ne 0) { throw "makeappx pack failed ($LASTEXITCODE)" }
+
+          # Sanity check: unpack and confirm no .env slipped in.
+          & $makeappx.FullName unpack /p $out /d msix-verify /o | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "makeappx unpack failed ($LASTEXITCODE)" }
+          $leaked = Get-ChildItem msix-verify -Recurse -Force -File |
+            Where-Object { $_.Name -match '^\.env(\..+)?$' -and $_.Name -ne '.env.example' }
+          if ($leaked) { throw 'Packaged MSIX contains a .env file' }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: leyline-msix-x64
+          path: Leyline_*_x64.msix
+          if-no-files-found: error
