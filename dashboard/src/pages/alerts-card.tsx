@@ -21,7 +21,7 @@ const deliveryTone = (d?: string) => (d === 'sent' ? 'success' : d === 'off' || 
 
 /** The latest alert at or over 80% of the monthly limit this month, for a banner. */
 export function urgentAlert(log: Alert[]): Alert | undefined {
-  return log.find(a => a.kind === 'budget' && a.threshold >= 80);
+  return log.find(a => a.kind === 'budget' && a.threshold >= 80 && a.usd >= a.limitUsd);
 }
 
 export function AlertsCard({ onLog }: { onLog?: (log: Alert[]) => void }) {
