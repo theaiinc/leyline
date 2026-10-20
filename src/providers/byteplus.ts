@@ -2,9 +2,9 @@ import { OpenAIProvider } from './openai';
 import { config } from '../config';
 
 /**
-BytePlus ModelArk's OpenAI-compatible chat provider.
-* Model and pricing references: BytePlus ModelArk documentation
-(https://docs.byteplus.com/en/docs/ModelArk/Overview), checked 2026-10-20.
+ * BytePlus ModelArk's OpenAI-compatible chat provider.
+ * Model and pricing references: BytePlus ModelArk documentation
+ * (https://docs.byteplus.com/en/docs/ModelArk/Overview), checked 2026-10-20.
  */
 export class BytePlusProvider extends OpenAIProvider {
   name = 'BytePlus';
@@ -20,7 +20,7 @@ export class BytePlusProvider extends OpenAIProvider {
   }
 
   servesModel(capability: 'chat' | 'embeddings' | 'transcription' | 'speech', model: string): boolean {
-    return capability === 'chat' && Boolean(model);
+    return capability === 'chat' && /^(?:doubao|seed|deepseek|kimi)-/i.test(model);
   }
 
   defaultModelFor(capability: 'chat' | 'embeddings' | 'transcription' | 'speech'): string | undefined {

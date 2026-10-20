@@ -14,6 +14,13 @@ describe('BytePlusProvider', () => {
     expect(await new BytePlusProvider('').isAvailable()).toBe(false);
   });
 
+  it('does not claim unrelated OpenAI or Anthropic model ids', () => {
+    const provider = new BytePlusProvider('test-key');
+    expect(provider.servesModel('chat', 'gpt-5.6-luna')).toBe(false);
+    expect(provider.servesModel('chat', 'claude-sonnet-5-5')).toBe(false);
+    expect(provider.servesModel('chat', 'doubao-seed-1-6-251015')).toBe(true);
+  });
+
   it('supports normal OpenAI-compatible replies', async () => {
     const response = {
       id: 'ark-1',

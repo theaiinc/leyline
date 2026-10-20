@@ -33,6 +33,7 @@ export type { InstanceFamilyDefinition, InstanceFieldSpec } from './core/provide
 export { GeminiProvider } from './providers/gemini';
 export { HuggingFaceProvider } from './providers/huggingface';
 export { OpenAIProvider } from './providers/openai';
+export { BytePlusProvider } from './providers/byteplus';
 export { OpenRouterProvider } from './providers/openrouter';
 export { AnthropicProvider } from './providers/anthropic';
 export { OllamaProvider } from './providers/ollama';
@@ -92,6 +93,7 @@ import { QuotaManager } from './core/quota-manager';
 import { GeminiProvider } from './providers/gemini';
 import { HuggingFaceProvider } from './providers/huggingface';
 import { OpenAIProvider } from './providers/openai';
+import { BytePlusProvider } from './providers/byteplus';
 import { OpenRouterProvider } from './providers/openrouter';
 import { AnthropicProvider } from './providers/anthropic';
 import { OllamaProvider } from './providers/ollama';
@@ -207,6 +209,9 @@ export async function buildRouter(secretStore: SecretStore, opts: { workersAi?: 
   router.addProvider(new GeminiProvider());
   router.addProvider(new HuggingFaceProvider());
   router.addProvider(new OpenAIProvider());
+  if (process.env.BYTEPLUS_ARK_API_KEY) {
+    router.addProvider(new BytePlusProvider());
+  }
   router.addProvider(new OpenRouterProvider());
   router.addProvider(new AnthropicProvider());
   if (
