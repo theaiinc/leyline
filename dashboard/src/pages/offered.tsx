@@ -188,12 +188,9 @@ export function OfferedPage({ d }: { d: Dashboard }) {
                 <p className="text-xs text-muted-foreground">{settings.spend.requests.toLocaleString()} requests this month, including the playground.</p>
               </div>
             ) : null}
-            <div className="grid max-w-md gap-1.5">
+            <div className="grid max-w-56 gap-1.5">
               <Label htmlFor="budget">Monthly limit (US$)</Label>
-              <div className="flex items-end gap-2">
-                <Input id="budget" className="max-w-56" type="number" min={1} step={1} placeholder="No limit" value={budget} onChange={e => setBudget(e.target.value)} />
-                <Button type="button" onClick={save} disabled={!dirty || saving}>{saving ? 'Saving…' : 'Save'}</Button>
-              </div>
+              <Input id="budget" type="number" min={1} step={1} placeholder="No limit" value={budget} onChange={e => setBudget(e.target.value)} />
             </div>
             <div className="grid gap-2">
               <div className="grid gap-0.5">
