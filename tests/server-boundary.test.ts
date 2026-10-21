@@ -17,8 +17,8 @@ describe('server network boundary', () => {
 
     expect(internal.status).toBe(200);
     expect(internal.body).toEqual({ status: 'ok', service: 'leyline' });
-    expect(external.status).toBe(404);
-    expect(external.body.error.code).toBe('external_endpoint_not_exposed');
+    expect(external.status).toBe(200);
+    expect(external.body).toEqual({ status: 'ok', service: 'leyline' });
   });
 
   it('blocks dashboard and static assets through proxy headers', async () => {

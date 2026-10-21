@@ -75,12 +75,12 @@ describe('MCP Streamable HTTP endpoint', () => {
     expect(afterDelete.status).toBe(400);
   });
 
-  it('does not expose MCP through an external path other than /mcp', async () => {
+  it('keeps the public Render health check available without exposing MCP', async () => {
     const response = await request(createApp())
       .get('/healthz')
       .set('cf-connecting-ip', '203.0.113.10');
 
-    expect(response.status).toBe(404);
-    expect(response.body.error.code).toBe('external_endpoint_not_exposed');
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ status: 'ok', service: 'leyline' });
   });
 });
