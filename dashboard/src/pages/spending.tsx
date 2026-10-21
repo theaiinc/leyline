@@ -28,12 +28,8 @@ const lineLabel = (id: string) => {
   const [provider, ...model] = id.split('/');
   return `${model.join('/')} (${provider})`;
 };
-const chartColor = (id: string, index: number) => {
-  if (id === 'Other') return 'hsl(var(--muted-foreground))';
-  const provider = id.split('/')[0];
-  const tone = providerTone(provider);
-  return `hsl(${tone} ${Math.max(35, 62 - (index % 3) * 10)}%)`;
-};
+const CHART_COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#0ea5e9', '#a855f7'];
+const chartColor = (id: string, index: number) => id === 'Other' ? 'hsl(var(--muted-foreground))' : CHART_COLORS[index % CHART_COLORS.length];
 
 const share = (part: number, total: number) => {
   return total > 0 ? String(Math.round((100 * part) / total)) + '%' : '—';
@@ -127,7 +123,7 @@ export function SpendingPage() {
                         const maxTotal = Math.max(...daily.points.map((item) => daily.series.reduce((sum, id) => sum + Number(item[id] ?? 0), 0)));
                         return daily.points.map((point) => {
                           const total = daily.series.reduce((sum, id) => sum + Number(point[id] ?? 0), 0);
-                          const tooltip = Object.entries(spend.byDay?.[point.day] ?? {}).map(([id, line]) => `${lineLabel(id)} ${chartMode === 'usd' ? money(line.usd) : fmt(line.tokens) + ' tokens'}`).join('; ');
+                          const tooltip = Object.entries(spend.byDay?.[point.day] ?? {}).map(([id, line]) => `${lineLabel(id)} ${money(line.usd)} · ${fmt(line.tokens)} tokens`).join('; ');
                           const barHeight = total && maxTotal ? Math.max(2, (100 * total) / maxTotal) : 0;
                         return (
                           <div key={point.day} className="group flex h-full flex-1 flex-col justify-end" title={`${point.day}: ${tooltip}`}>
