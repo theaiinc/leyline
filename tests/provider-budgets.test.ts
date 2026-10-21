@@ -93,4 +93,17 @@ describe('per-provider monthly limits', () => {
     expect(saved.body.providerBudgetsUsd).toEqual({ Anthropic: 100 });
     expect((await request(app).get('/admin/api/settings').set({ Authorization: 'Bearer admin-secret-token' })).body.providerBudgetsUsd).toEqual({ Anthropic: 100 });
   });
+
+  it('re-arms budget alerts when the monthly limit changes', async () => {
+    const { keys } = await setup();
+    const { CostAlerts } = await import('../src/core/alerts');
+    const alerts = new CostAlerts(new MemoryDocStore(), keys, () => Date.parse('2026-10-20T12:00:00Z'));
+    const channels = {} as never;
+    const settings = { thresholds: [80, 100], keyThresholds: [], emails: [], webhookUrl: null, email: false };
+    await keys.record(null, 'm', { prompt_tokens: 1, completion_tokens: 0 }, 50, { provider: 'Anthropic', model: 'm' });
+    expect((await alerts.check(settings, 50, null, { to: [], publicUrl: 'https://leyline.test' }, channels)).map(a => a.threshold)).toEqual([100]);
+    expect((await alerts.check(settings, 100, null, { to: [], publicUrl: 'https://leyline.test' }, channels)).map(a => a.threshold)).toEqual([]);
+    await keys.record(null, 'm', { prompt_tokens: 1, completion_tokens: 0 }, 30, { provider: 'Anthropic', model: 'm' });
+    expect((await alerts.check(settings, 100, null, { to: [], publicUrl: 'https://leyline.test' }, channels)).map(a => a.threshold)).toEqual([80]);
+  });
 });

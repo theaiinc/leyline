@@ -19,9 +19,13 @@ type AlertsResponse = { log: Alert[]; settings: AlertSettings; emailAvailable: b
 const list = (v: string) => v.split(',').map(s => s.trim()).filter(Boolean);
 const deliveryTone = (d?: string) => (d === 'sent' ? 'success' : d === 'off' || !d ? 'neutral' : 'danger');
 
-/** The latest alert at or over 80% of the monthly limit this month, for a banner. */
-export function urgentAlert(log: Alert[]): Alert | undefined {
-  return log.find(a => a.kind === 'budget' && a.threshold >= 80);
+/** The latest budget alert that is still active at the current spend and limit. */
+export function urgentAlert(log: Alert[], currentSpendUsd?: number, currentLimitUsd?: number | null): Alert | undefined {
+  return log.find(a => {
+    if (a.kind !== 'budget' || a.threshold < 80) return false;
+    if (currentSpendUsd === undefined || currentLimitUsd == null) return true;
+    return currentLimitUsd > 0 && currentSpendUsd >= currentLimitUsd * (a.threshold / 100);
+  });
 }
 
 export function AlertsCard({ onLog }: { onLog?: (log: Alert[]) => void }) {

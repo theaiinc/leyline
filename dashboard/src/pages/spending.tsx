@@ -29,7 +29,6 @@ export function SpendingPage() {
   const [data, setData] = useState<SpendResponse | null>(null);
   const [keys, setKeys] = useState<IssuedKey[]>([]);
   const [alertLog, setAlertLog] = useState<Alert[]>([]);
-  const urgent = urgentAlert(alertLog);
 
   useEffect(() => {
     api<SpendResponse>(`/admin/api/spend${month ? `?month=${month}` : ''}`)
@@ -42,6 +41,10 @@ export function SpendingPage() {
 
   const spend = data?.spend;
   const current = !month || month === data?.months[0];
+  const currentLimit = current ? data?.monthlyBudgetUsd : null;
+  const urgent = currentLimit && spend && spend.usd >= currentLimit * 0.8
+    ? urgentAlert(alertLog, spend.usd, currentLimit)
+    : undefined;
   const months = data ? [...new Set([spend!.month, ...data.months])] : [];
   const providers = Object.entries(spend?.byProvider ?? {}).sort((a, b) => b[1].usd - a[1].usd || b[1].requests - a[1].requests);
   const models = Object.values(spend?.byModel ?? {}).sort((a, b) => b.usd - a.usd || b.requests - a.requests);
