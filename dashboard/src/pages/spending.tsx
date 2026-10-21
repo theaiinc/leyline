@@ -32,7 +32,7 @@ const CHART_COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#0ea5e9', '#a
 const chartColor = (id: string, index: number) => id === 'Other' ? 'hsl(var(--muted-foreground))' : CHART_COLORS[index % CHART_COLORS.length];
 
 const share = (part: number, total: number) => {
-  return total > 0 ? String(Math.round((100 * part) / total)) + '%' : '—';
+  return total > 0 ? `${Math.round((100 * part) / total)}%` : '—';
 };
 
 export function SpendingPage() {
@@ -42,7 +42,7 @@ export function SpendingPage() {
   const [alertLog, setAlertLog] = useState<Alert[]>([]);
 
   useEffect(() => {
-    api<SpendResponse>('/admin/api/spend' + (month ? '?month=' + month : ''))
+    api<SpendResponse>(`/admin/api/spend${month ? `?month=${month}` : ''}`)
       .then(setData)
       .catch(error => toast.error(error instanceof Error ? error.message : 'Could not load spending'));
   }, [month]);
@@ -79,7 +79,7 @@ export function SpendingPage() {
 
       {urgent ? (
         <AlertBox variant={urgent.threshold >= 100 ? 'destructive' : 'default'} className="mb-4">
-          <AlertTitle>{urgent.threshold >= 100 ? 'Monthly limit reached' : String(urgent.threshold) + '% of the monthly limit spent'}</AlertTitle>
+          <AlertTitle>{urgent.threshold >= 100 ? 'Monthly limit reached' : `${urgent.threshold}% of the monthly limit spent`}</AlertTitle>
           <AlertDescription>{urgent.message}</AlertDescription>
         </AlertBox>
       ) : null}
@@ -91,7 +91,7 @@ export function SpendingPage() {
               {current && data?.monthlyBudgetUsd ? (
                 <CardContent className="grid gap-1.5 px-4">
                   <Progress value={Math.min(100, (100 * spend.usd) / data.monthlyBudgetUsd)} className="h-1.5" />
-                  <span className="text-xs text-muted-foreground">{'of the $' + data.monthlyBudgetUsd + ' monthly limit'}</span>
+                  <span className="text-xs text-muted-foreground">{`of the $${data.monthlyBudgetUsd} monthly limit`}</span>
                 </CardContent>
               ) : null}
             </Card>
@@ -190,7 +190,7 @@ export function SpendingPage() {
                     <TableHeader><TableRow><TableHead className="pl-6">Model</TableHead><TableHead className="text-right">Spent</TableHead><TableHead className="text-right">Requests</TableHead><TableHead className="text-right">Tokens</TableHead><TableHead className="pr-6 text-right">Per request</TableHead></TableRow></TableHeader>
                     <TableBody>
                       {models.map(l => (
-                        <TableRow key={l.provider + '/' + l.model}>
+                        <TableRow key={`${l.provider}/${l.model}`}>
                           <TableCell className="pl-6">
                             <div className="font-mono text-xs">{l.model}</div>
                             <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><ProviderDot tone={providerTone(l.provider.split(':')[0])} className="size-2" />{l.provider}</div>
@@ -219,12 +219,12 @@ export function SpendingPage() {
                             <TableCell className="text-right tabular-nums">
                               {money(k.usage?.usd ?? 0)}
                               {k.caps.usdPerMonth ? (
-                                <span className="text-muted-foreground">{' / $' + k.caps.usdPerMonth}</span>
+                                <span className="text-muted-foreground">{` / $${k.caps.usdPerMonth}`}</span>
                               ) : null}
                             </TableCell>
                             <TableCell className="text-right tabular-nums">{fmt(k.usage?.requests ?? 0)}</TableCell>
                             <TableCell className="pr-6 text-xs text-muted-foreground">
-                              {Object.entries(k.usage?.byModel ?? {}).sort((a, b) => (b[1].usd ?? 0) - (a[1].usd ?? 0)).map(([m, l]) => m + " " + money(l.usd ?? 0)).join(" · ")}
+                              {Object.entries(k.usage?.byModel ?? {}).sort((a, b) => (b[1].usd ?? 0) - (a[1].usd ?? 0)).map(([m, l]) => `${m} ${money(l.usd ?? 0)}`).join(' · ')}
                             </TableCell>
                           </TableRow>
                         ))}
