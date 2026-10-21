@@ -40,6 +40,7 @@ export { LMStudioProvider } from './providers/lmstudio';
 export { LiteLLMProvider } from './providers/litellm';
 export { LlmApiProvider } from './providers/llm-api';
 export { AzureOpenAIProvider } from './providers/azure-openai';
+export { BytePlusProvider } from './providers/byteplus';
 export { DeepgramProvider } from './providers/deepgram';
 export { WorkersAiProvider } from './providers/workers-ai';
 export type { WorkersAiBinding } from './providers/workers-ai';
@@ -99,6 +100,7 @@ import { LMStudioProvider } from './providers/lmstudio';
 import { LiteLLMProvider } from './providers/litellm';
 import { LlmApiProvider } from './providers/llm-api';
 import { AzureOpenAIProvider } from './providers/azure-openai';
+import { BytePlusProvider } from './providers/byteplus';
 import { DeepgramProvider } from './providers/deepgram';
 import { WorkersAiProvider, type WorkersAiBinding } from './providers/workers-ai';
 import { config, DEFAULT_LEYLINE_CLIENT_API_KEY } from './config';
@@ -223,6 +225,9 @@ export async function buildRouter(secretStore: SecretStore, opts: { workersAi?: 
     router.addProvider(new LiteLLMProvider());
   }
   router.addProvider(new AzureOpenAIProvider());
+  if (process.env.BYTEPLUS_ARK_API_KEY) {
+    router.addProvider(new BytePlusProvider());
+  }
   if (process.env.OLLAMA_ENABLED === 'true') {
     router.addProvider(new OllamaProvider());
   }

@@ -225,6 +225,20 @@ function getDefaultVariants(): ModelVariant[] {
       billing_class: 'paid_api',
       resource_class: 'standard',
     },
+    // BytePlus ModelArk — pricing is not published yet; see https://ai.byteplus.com/ark/region:ap-southeast-1/docs/model-pricing.
+    {
+      id: 'deepseek-v4-1-flash-260910',
+      name: 'DeepSeek V4.1 Flash (BytePlus ModelArk)',
+      family: 'deepseek-v4',
+      provider: 'byteplus',
+      source: 'byteplus-modelark',
+      parameter_size_b: 0,
+      quantization: 'unknown',
+      context_length: 128_000,
+      capabilities: { tools: true, thinking: true, vision: false, code: true, embedding: false },
+      billing_class: 'paid_api',
+      resource_class: 'standard',
+    },
     // OpenAI
     {
       id: 'gpt-5.5',

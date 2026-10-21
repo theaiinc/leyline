@@ -29,6 +29,7 @@ export interface DefaultModelsConfig {
   ANTHROPIC: string;
   OLLAMA: string;
   AZURE_OPENAI: string;
+  BYTEPLUS_ARK: string;
 }
 
 export interface CompressionConfig {
@@ -200,6 +201,7 @@ export const config: LeylineConfig = {
       ANTHROPIC: process.env.ANTHROPIC_DEFAULT_MODEL || 'claude-sonnet-5-5',
       OLLAMA: process.env.OLLAMA_DEFAULT_MODEL || 'llama2',
       AZURE_OPENAI: process.env.AZURE_OPENAI_DEFAULT_MODEL || process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-5.5',
+      BYTEPLUS_ARK: process.env.BYTEPLUS_ARK_DEFAULT_MODEL || 'doubao-seed-1-6-250615',
   },
   routerModel: {
     model: process.env.LEYLINE_ROUTER_MODEL || '',

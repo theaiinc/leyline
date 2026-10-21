@@ -1,6 +1,6 @@
 import { Router } from '../src/core/router';
 import { QuotaManager } from '../src/core/quota-manager';
-import { Provider, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail } from '../src/core/types';
+import { Provider, Capability, CompletionRequest, CompletionResponse, StreamChunk, ModelDetail } from '../src/core/types';
 import { logger } from '../src/core/logger';
 
 // Mock Provider
@@ -13,6 +13,10 @@ class MockProvider implements Provider {
     constructor(name: string) {
         this.name = name;
         this.defaultModel = `default-${name}`;
+    }
+
+    servesModel(capability: Capability, model: string): boolean {
+        return capability === 'chat' && (model.startsWith('model-') || model.startsWith('gpt-'));
     }
 
     async isAvailable(): Promise<boolean> {
@@ -185,6 +189,27 @@ describe('Router', () => {
         expect(chunks.join('')).toContain('p2');
         expect(p1Spy).not.toHaveBeenCalled();
         expect(p2Spy).toHaveBeenCalledWith({ model: 'fixed-stream-model', messages: [] });
+    });
+
+    it('routes BytePlus DeepSeek models to BytePlus without stealing unrelated models', async () => {
+        const byteplus = new MockProvider('byteplus');
+        const fallback = new MockProvider('openai');
+        jest.spyOn(byteplus, 'servesModel').mockImplementation((capability, model) =>
+            capability === 'chat' && model === 'deepseek-v4-1-flash-260910',
+        );
+        jest.spyOn(fallback, 'servesModel').mockImplementation((capability, model) =>
+            capability === 'chat' && model === 'gpt-5.6-luna',
+        );
+        router = new Router(quotaManager);
+        router.addProvider(byteplus);
+        router.addProvider(fallback);
+
+        const deepseek = await router.route({ model: 'deepseek-v4-1-flash-260910', messages: [] });
+        expect(deepseek.choices[0].message.content).toContain('byteplus');
+
+        byteplus.shouldFail = true;
+        const gpt = await router.route({ model: 'gpt-5.6-luna', messages: [] });
+        expect(gpt.choices[0].message.content).toContain('openai');
     });
 
     it('logs token usage from streaming chunks when available', async () => {
