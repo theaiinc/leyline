@@ -70,6 +70,9 @@ OPENROUTER_API_KEY=your_key
 AZURE_OPENAI_API_KEY=your_key
 AZURE_OPENAI_BASE_URL=https://your-resource.services.ai.azure.com/openai/v1
 AZURE_OPENAI_DEFAULT_MODEL=gpt-5.5
+BYTEPLUS_ARK_API_KEY=your_key
+BYTEPLUS_ARK_BASE_URL=https://ark.ap-southeast.bytepluses.com/api/v3
+BYTEPLUS_ARK_DEFAULT_MODEL=doubao-seed-1-6-250615
 
 # Optional dashboard persistence for runtime API keys
 LEYLINE_KEYCHAIN_ENABLED=true
