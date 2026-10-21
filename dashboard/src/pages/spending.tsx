@@ -8,6 +8,7 @@ import { EmptyState, PageHeader, ProviderDot, fmt } from '@/components/common';
 import { api, type IssuedKey } from '@/api';
 import { money } from '@/pages/keys';
 import { providerTone } from '@/normalization';
+import { shapeDailySpend } from '@/lib/spending-shaping';
 import { Alert as AlertBox, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { AlertsCard, urgentAlert, type Alert } from '@/pages/alerts-card';
 
@@ -21,39 +22,18 @@ type Spend = {
   byModel?: Record<string, Line & { provider: string; model: string }>;
 };
 type SpendResponse = { spend: Spend; months: string[]; monthlyBudgetUsd: number | null };
-type DailyPoint = { day: string; [key: string]: string | number };
-
 const DAILY_DATA_START = '2026-10-21';
-const chartColor = (id: string, index: number) => id === 'Other'
-  ? 'hsl(var(--muted-foreground))'
-  : `hsl(${(index * 53) % 360} 65% 52%)`;
 const lineLabel = (id: string) => {
   if (!id.includes('/')) return id;
-  const parts = id.split('/');
-  return parts[1] + ' / ' + parts[0];
+  const [provider, ...model] = id.split('/');
+  return `${model.join('/')} (${provider})`;
 };
-
-export function shapeDailySpend(spend: Spend, mode: 'usd' | 'tokens'): { points: DailyPoint[]; series: string[]; other: boolean } | null {
-  if (!spend.byDay) return null;
-  const totals = new Map<string, number>();
-  for (const lines of Object.values(spend.byDay)) {
-    for (const [id, line] of Object.entries(lines)) totals.set(id, (totals.get(id) ?? 0) + (line[mode] ?? 0));
-  }
-  const series = [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
-  const top = series.slice(0, 6);
-  const other = series.length > top.length;
-  const points = Object.entries(spend.byDay).sort(([a], [b]) => a.localeCompare(b)).map(([day, lines]) => {
-    const point: DailyPoint = { day };
-    let rest = 0;
-    for (const [id, line] of Object.entries(lines)) {
-      if (top.includes(id)) point[id] = line[mode] ?? 0;
-      else rest += line[mode] ?? 0;
-    }
-    if (other) point.Other = rest;
-    return point;
-  });
-  return { points, series: [...top, ...(other ? ['Other'] : [])], other };
-}
+const chartColor = (id: string, index: number) => {
+  if (id === 'Other') return 'hsl(var(--muted-foreground))';
+  const provider = id.split('/')[0];
+  const tone = providerTone(provider);
+  return `hsl(${tone} ${Math.max(35, 62 - (index % 3) * 10)}%)`;
+};
 
 const share = (part: number, total: number) => {
   return total > 0 ? String(Math.round((100 * part) / total)) + '%' : '—';
@@ -143,12 +123,14 @@ export function SpendingPage() {
                 {daily?.points.length ? (
                   <div className="overflow-x-auto">
                     <div className="flex h-56 min-w-[640px] items-end gap-1 border-b border-l p-3">
-                      {daily.points.map((point) => {
-                        const total = daily.series.reduce((sum, id) => sum + Number(point[id] ?? 0), 0);
+                      {(() => {
                         const maxTotal = Math.max(...daily.points.map((item) => daily.series.reduce((sum, id) => sum + Number(item[id] ?? 0), 0)));
-                        const barHeight = total ? Math.max(2, (100 * total) / maxTotal) : 0;
+                        return daily.points.map((point) => {
+                          const total = daily.series.reduce((sum, id) => sum + Number(point[id] ?? 0), 0);
+                          const tooltip = Object.entries(spend.byDay?.[point.day] ?? {}).map(([id, line]) => `${lineLabel(id)} ${chartMode === 'usd' ? money(line.usd) : fmt(line.tokens) + ' tokens'}`).join('; ');
+                          const barHeight = total && maxTotal ? Math.max(2, (100 * total) / maxTotal) : 0;
                         return (
-                          <div key={point.day} className="group flex h-full flex-1 flex-col justify-end" title={point.day}>
+                          <div key={point.day} className="group flex h-full flex-1 flex-col justify-end" title={`${point.day}: ${tooltip}`}>
                             <div className="flex flex-col justify-end" style={{ height: String(barHeight) + '%' }}>
                               {daily.series.map((id, index) => {
                                 const value = Number(point[id] ?? 0);
@@ -158,8 +140,9 @@ export function SpendingPage() {
                             </div>
                             <span className="mt-1 truncate text-[10px] text-muted-foreground">{point.day.slice(8)}</span>
                           </div>
-                        );
-                      })}
+                          );
+                        });
+                      })()}
                     </div>
                     <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
                       {daily.series.map((id, index) => <span key={id}><i className="mr-1 inline-block size-2 rounded-sm" style={{ backgroundColor: chartColor(id, index) }} />{lineLabel(id)}</span>)}
