@@ -190,7 +190,10 @@ export function OfferedPage({ d }: { d: Dashboard }) {
             ) : null}
             <div className="grid max-w-56 gap-1.5">
               <Label htmlFor="budget">Monthly limit (US$)</Label>
-              <Input id="budget" type="number" min={1} step={1} placeholder="No limit" value={budget} onChange={e => setBudget(e.target.value)} />
+              <div className="flex items-center gap-2">
+                <Input id="budget" type="number" min={1} step={1} placeholder="No limit" value={budget} onChange={e => setBudget(e.target.value)} />
+                <Button type="button" size="sm" onClick={save} disabled={!dirty || saving}>{saving ? 'Saving…' : 'Save'}</Button>
+              </div>
             </div>
             <div className="grid gap-2">
               <div className="grid gap-0.5">

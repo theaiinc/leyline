@@ -96,6 +96,7 @@ export class CostAlerts {
       const t = crossed((100 * spend.usd) / budgetUsd, settings.thresholds);
       if (t !== null) {
         due.push({
+          // The alert id remains stable for API compatibility; claim compares the saved limit so changing it re-arms the threshold.
           id: `budget:${t}`,
           build: () => ({
             id: `budget:${t}`, at: this.now(), kind: 'budget', month, threshold: t, usd: spend.usd, limitUsd: budgetUsd,
@@ -139,16 +140,18 @@ export class CostAlerts {
     return this.deliver(month, alert, settings, ctx, channels);
   }
 
-  /** Mark a crossing as alerted; null when another request (or instance) got there first. */
+  /** Mark a crossing as alerted; a changed budget limit re-arms the same threshold. */
   private async claim(month: string, id: string, build: () => Alert): Promise<Alert | null> {
     let alert: Alert | null = null;
     await update<AlertDoc>(this.store, `alerts/${month}`, (cur) => {
       const doc = cur ?? { sent: {}, log: [] };
-      if (doc.sent[id]) {
+      const candidate = build();
+      const previous = doc.log.find((item) => item.id === id);
+      if (doc.sent[id] && (!previous || previous.limitUsd === candidate.limitUsd)) {
         alert = null;
         return doc;
       }
-      alert = build();
+      alert = candidate;
       return { sent: { ...doc.sent, [id]: alert.at }, log: [alert, ...doc.log].slice(0, 100) };
     });
     return alert;
