@@ -157,7 +157,7 @@ export function SpendingPage() {
 
           {spend.requests === 0 ? (
             <div className="mt-6 grid gap-4">
-              <EmptyState title={'Nothing spent in ' + spend.month} />
+              <EmptyState title={`Nothing spent in ${spend.month}`} />
               <AlertsCard onLog={setAlertLog} />
             </div>
           ) : (
