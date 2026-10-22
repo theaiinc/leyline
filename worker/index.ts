@@ -27,6 +27,8 @@ interface Env {
   /** Workers AI ("ai": {"binding": "AI"}): chat, embeddings and audio on @cf/ models, billed to this account. */
   AI?: WorkersAiBinding;
   LEYLINE_STORE_KEY: string;
+  /** Git commit injected by the CI deployment workflow. */
+  GIT_SHA?: string;
 }
 interface Ctx { waitUntil(p: Promise<unknown>): void }
 
@@ -196,6 +198,10 @@ export default {
       const page = new Response(res.body, res);
       page.headers.set('Cache-Control', 'no-store');
       return page;
+    }
+
+    if (url.pathname === '/healthz') {
+      return Response.json({ status: 'ok', service: 'leyline', ...(env.GIT_SHA ? { commit: env.GIT_SHA } : {}) });
     }
 
     const t0 = Date.now();
