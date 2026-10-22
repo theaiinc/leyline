@@ -1,0 +1,36 @@
+name: Deploy Worker
+
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.4
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build dashboard and application
+        run: npm run build
+      - name: Apply D1 migrations
+        run: npx wrangler d1 migrations apply leyline --remote
+      - name: Deploy Worker
+        run: npx wrangler deploy --var GIT_SHA:${{ github.sha }}

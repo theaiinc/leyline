@@ -1,4 +1,4 @@
-# Render blueprint for Leyline's multi-tenant hosted mode.
+# NOT PRODUCTION: this Render blueprint is retained for legacy/secondary deployments. Production is the Cloudflare Worker configured by wrangler.jsonc.
 # Identity/tenant auth is delegated to Aegis (id.theaiinc.com) — see
 # .env.example's "Aegis-verified hosted mode" section and the provisioning
 # steps in the project plan for how LEYLINE_AEGIS_ISSUER / LEYLINE_AEGIS_CLIENT_ID
