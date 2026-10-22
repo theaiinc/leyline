@@ -63,6 +63,8 @@ export type MonthSpend = {
   byProvider?: Record<string, SpendLine>;
   /** Keyed "provider/model": the model that answered and the provider that served it. */
   byModel?: Record<string, SpendLine & { provider: string; model: string }>;
+  /** Daily spend keyed by UTC date, then by provider/model. Older months may not have this field. */
+  byDay?: Record<string, Record<string, SpendLine>>;
 };
 
 export interface DocStore {
@@ -487,7 +489,11 @@ export class IssuedKeys {
       const byModel = { ...(s.byModel ?? {}) };
       const id = `${served.provider}/${served.model || 'unknown'}`;
       byModel[id] = { ...add(byModel[id]), provider: served.provider, model: served.model || 'unknown' };
-      return { month, usd: s.usd + usd, requests: s.requests + 1, tokens: (s.tokens ?? 0) + tokens, byProvider, byModel };
+      const byDay = { ...(s.byDay ?? {}) };
+      const day = dayOf(now);
+      byDay[day] = { ...(byDay[day] ?? {}) };
+      byDay[day][id] = add(byDay[day][id]);
+      return { month, usd: s.usd + usd, requests: s.requests + 1, tokens: (s.tokens ?? 0) + tokens, byProvider, byModel, byDay };
     });
     if (!key) return;
     await update<KeyUsage>(this.store, `usage/${key.id}/${month}`, (cur) => {
