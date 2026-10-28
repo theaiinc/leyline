@@ -12,7 +12,7 @@ import { shapeDailySpend } from '@/lib/spending-shaping';
 import { Alert as AlertBox, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { AlertsCard, urgentAlert, type Alert } from '@/pages/alerts-card';
 
-type Line = { usd: number; requests: number; tokens: number };
+type Line = { usd: number; requests: number; tokens: number; cachedTokens?: number };
 type Spend = {
   month: string;
   usd: number;
@@ -166,7 +166,7 @@ export function SpendingPage() {
                 <CardHeader><CardTitle>By provider</CardTitle></CardHeader>
                 <CardContent className="overflow-x-auto px-0">
                   <Table>
-                    <TableHeader><TableRow><TableHead className="pl-6">Provider</TableHead><TableHead className="text-right">Spent</TableHead><TableHead className="text-right">Share</TableHead><TableHead className="text-right">Requests</TableHead><TableHead className="pr-6 text-right">Tokens</TableHead></TableRow></TableHeader>
+                    <TableHeader><TableRow><TableHead className="pl-6">Provider</TableHead><TableHead className="text-right">Spent</TableHead><TableHead className="text-right">Share</TableHead><TableHead className="text-right">Requests</TableHead><TableHead className="text-right">Tokens</TableHead><TableHead className="pr-6 text-right">Cached</TableHead></TableRow></TableHeader>
                     <TableBody>
                       {providers.map(([name, l]) => (
                         <TableRow key={name}>
@@ -174,7 +174,7 @@ export function SpendingPage() {
                           <TableCell className="text-right tabular-nums">{money(l.usd)}</TableCell>
                           <TableCell className="text-right tabular-nums text-muted-foreground">{share(l.usd, spend.usd)}</TableCell>
                           <TableCell className="text-right tabular-nums">{fmt(l.requests)}</TableCell>
-                          <TableCell className="pr-6 text-right tabular-nums">{fmt(l.tokens)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{fmt(l.tokens)}</TableCell><TableCell className="pr-6 text-right tabular-nums">{fmt(l.cachedTokens ?? 0)}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -187,7 +187,7 @@ export function SpendingPage() {
                 <CardHeader><CardTitle>By model</CardTitle></CardHeader>
                 <CardContent className="overflow-x-auto px-0">
                   <Table>
-                    <TableHeader><TableRow><TableHead className="pl-6">Model</TableHead><TableHead className="text-right">Spent</TableHead><TableHead className="text-right">Requests</TableHead><TableHead className="text-right">Tokens</TableHead><TableHead className="pr-6 text-right">Per request</TableHead></TableRow></TableHeader>
+                    <TableHeader><TableRow><TableHead className="pl-6">Model</TableHead><TableHead className="text-right">Spent</TableHead><TableHead className="text-right">Requests</TableHead><TableHead className="text-right">Tokens</TableHead><TableHead className="text-right">Cached</TableHead><TableHead className="pr-6 text-right">Per request</TableHead></TableRow></TableHeader>
                     <TableBody>
                       {models.map(l => (
                         <TableRow key={`${l.provider}/${l.model}`}>
@@ -198,6 +198,7 @@ export function SpendingPage() {
                           <TableCell className="text-right tabular-nums">{money(l.usd)}</TableCell>
                           <TableCell className="text-right tabular-nums">{fmt(l.requests)}</TableCell>
                           <TableCell className="text-right tabular-nums">{fmt(l.tokens)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{fmt(l.cachedTokens ?? 0)}</TableCell>
                           <TableCell className="pr-6 text-right tabular-nums text-muted-foreground">{l.requests ? money(l.usd / l.requests) : '—'}</TableCell>
                         </TableRow>
                       ))}

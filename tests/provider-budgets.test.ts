@@ -6,12 +6,40 @@ import { ModelRegistry } from '../src/core/model-registry';
 import { IssuedKeys, MemoryDocStore, cleanSettings } from '../src/core/issued-keys';
 import { MemorySecretStore } from '../src/core/secret-store';
 import { providersOverBudget, type HostedOptions } from '../src/core/hosted';
+import { costUsd } from '../src/core/issued-keys';
 import type { CompletionRequest, CompletionResponse, Provider, StreamChunk } from '../src/core/types';
+
+describe('cached token pricing', () => {
+  it('uses the default 10% cached-input rate', () => {
+    expect(costUsd({ input: 2, output: 8 }, { prompt_tokens: 1_000_000, completion_tokens: 0, cached_tokens: 500_000 })).toBe(1.1);
+  });
+
+  it('uses an explicit cached-input rate', () => {
+    expect(costUsd({ input: 2, output: 8, cachedInput: 0.25 }, { prompt_tokens: 1_000_000, completion_tokens: 0, cached_tokens: 500_000 })).toBe(1.125);
+  });
+
+  it('prices Anthropic cache creation at 1.25 times input', () => {
+    expect(costUsd({ input: 2, output: 8 }, {
+      prompt_tokens: 1_000_000,
+      completion_tokens: 0,
+      cache_creation_input_tokens: 500_000,
+    })).toBe(3.25);
+  });
+
+  it('prices usage without cache fields as before', () => {
+    expect(costUsd({ input: 2, output: 8 }, { prompt_tokens: 1_000_000, completion_tokens: 0 })).toBe(2);
+  });
+});
 
 /** A provider serving `models`, with a price list like a gateway's (or none, like Anthropic). */
 class Fake implements Provider {
   served = 0;
-  constructor(public name: string, private models: string[], private price?: { input: number; output: number }) {}
+  constructor(
+    public name: string,
+    private models: string[],
+    private price?: { input: number; output: number },
+    private responseUsage: CompletionResponse['usage'] = { prompt_tokens: 1_000_000, completion_tokens: 0, total_tokens: 1_000_000 },
+  ) {}
   defaultModel = 'm';
   async isAvailable() { return true; }
   async getModels() { return this.models.map(id => ({ id, ...(this.price ? { pricing: this.price } : {}) })); }
@@ -20,7 +48,7 @@ class Fake implements Provider {
     return {
       id: 'c', object: 'chat.completion', created: 1, model: req.model,
       choices: [{ index: 0, message: { role: 'assistant', content: `from ${this.name}` }, finish_reason: 'stop' }],
-      usage: { prompt_tokens: 1_000_000, completion_tokens: 0, total_tokens: 1_000_000 },
+      usage: this.responseUsage,
     };
   }
   async *completeStream(): AsyncGenerator<StreamChunk> { /* not used */ }
@@ -47,6 +75,18 @@ async function setup(over: Partial<HostedOptions> = {}) {
 const chat = (app: any, key: string, model = 'claude-x') =>
   request(app).post('/v1/chat/completions').set('Authorization', `Bearer ${key}`).send({ model, messages: [{ role: 'user', content: 'hi' }] });
 
+describe('cached usage pricing', () => {
+  it('prices cached input at the default 10 percent, an explicit cachedInput rate, and Anthropic cache creation at 1.25x', () => {
+    expect(costUsd({ input: 10, output: 40 }, { prompt_tokens: 100, cached_tokens: 50, completion_tokens: 0 })).toBeCloseTo(0.00055);
+    expect(costUsd({ input: 10, output: 40, cachedInput: 2 }, { prompt_tokens: 100, cached_tokens: 50, completion_tokens: 0 })).toBeCloseTo(0.0006);
+    expect(costUsd({ input: 10, output: 40 }, { prompt_tokens: 100, cache_creation_input_tokens: 50, completion_tokens: 0 })).toBeCloseTo(0.001125);
+  });
+
+  it('keeps pricing unchanged when a response has no cache fields', () => {
+    expect(costUsd({ input: 10, output: 40 }, { prompt_tokens: 100, completion_tokens: 20 })).toBeCloseTo(0.0018);
+  });
+});
+
 describe('per-provider monthly limits', () => {
   it('keeps only positive limits by name, rounded to cents', () => {
     expect(cleanSettings({ providerBudgetsUsd: { Anthropic: 100.004, ' ': 5, Zero: 0, Bad: 'x' as never } } as never).providerBudgetsUsd).toEqual({ Anthropic: 100 });
@@ -56,6 +96,34 @@ describe('per-provider monthly limits', () => {
     const { router } = await setup();
     expect(router.publishedPrice('Anthropic', 'claude-x')).toBeUndefined();
     expect(router.anyPublishedPrice('claude-x')).toEqual({ input: 2, output: 8 });
+  });
+
+  it('records Azure cached tokens and bills them at the cached-input rate through the router', async () => {
+    const quotaManager = new QuotaManager();
+    const router = new Router({ quotaManager, modelRegistry: new ModelRegistry() });
+    router.addProvider(new Fake('AzureOpenAI', ['gpt-5.6-luna'], { input: 2, output: 8 }, {
+      prompt_tokens: 1_000_000,
+      completion_tokens: 0,
+      total_tokens: 1_000_000,
+      prompt_tokens_details: { cached_tokens: 500_000 },
+    }));
+    await router.reindexAll();
+    const keys = new IssuedKeys(new MemoryDocStore());
+    const hosted: HostedOptions = { keys, models: [], aliases: {}, login: null, adminEmails: [], publicUrl: 'https://leyline.test' };
+    const app = createServer(router, quotaManager, { hosted, enforceExternalSurface: false, apiKeyStore: new MemorySecretStore() });
+    const { key } = await keys.create({ name: 'azure-cache', by: 'test' });
+
+    const response = await request(app)
+      .post('/v1/chat/completions')
+      .set('Authorization', `Bearer ${key}`)
+      .send({ model: 'gpt-5.6-luna', messages: [{ role: 'user', content: 'hi' }] });
+
+    expect(response.status).toBe(200);
+    const spend = await keys.spend();
+    expect(spend.byProvider?.AzureOpenAI).toMatchObject({
+      usd: 1.1,
+      cachedTokens: 500_000,
+    });
   });
 
   it('sends a model to another provider once the first reaches its limit', async () => {
