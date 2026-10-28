@@ -20,7 +20,7 @@ export class BytePlusProvider extends OpenAIProvider {
   }
 
   servesModel(capability: 'chat' | 'embeddings' | 'transcription' | 'speech', model: string): boolean {
-    return capability === 'chat' && /^(doubao|seed|deepseek|kimi)-/i.test(model);
+    return capability === 'chat' && /^(?:doubao|seed|deepseek|kimi)-/i.test(model);
   }
 
   defaultModelFor(capability: 'chat' | 'embeddings' | 'transcription' | 'speech'): string | undefined {
