@@ -34,7 +34,12 @@ describe('cached token pricing', () => {
 /** A provider serving `models`, with a price list like a gateway's (or none, like Anthropic). */
 class Fake implements Provider {
   served = 0;
-  constructor(public name: string, private models: string[], private price?: { input: number; output: number }) {}
+  constructor(
+    public name: string,
+    private models: string[],
+    private price?: { input: number; output: number },
+    private responseUsage: CompletionResponse['usage'] = { prompt_tokens: 1_000_000, completion_tokens: 0, total_tokens: 1_000_000 },
+  ) {}
   defaultModel = 'm';
   async isAvailable() { return true; }
   async getModels() { return this.models.map(id => ({ id, ...(this.price ? { pricing: this.price } : {}) })); }
@@ -43,7 +48,7 @@ class Fake implements Provider {
     return {
       id: 'c', object: 'chat.completion', created: 1, model: req.model,
       choices: [{ index: 0, message: { role: 'assistant', content: `from ${this.name}` }, finish_reason: 'stop' }],
-      usage: { prompt_tokens: 1_000_000, completion_tokens: 0, total_tokens: 1_000_000 },
+      usage: this.responseUsage,
     };
   }
   async *completeStream(): AsyncGenerator<StreamChunk> { /* not used */ }
@@ -91,6 +96,34 @@ describe('per-provider monthly limits', () => {
     const { router } = await setup();
     expect(router.publishedPrice('Anthropic', 'claude-x')).toBeUndefined();
     expect(router.anyPublishedPrice('claude-x')).toEqual({ input: 2, output: 8 });
+  });
+
+  it('records Azure cached tokens and bills them at the cached-input rate through the router', async () => {
+    const quotaManager = new QuotaManager();
+    const router = new Router({ quotaManager, modelRegistry: new ModelRegistry() });
+    router.addProvider(new Fake('AzureOpenAI', ['gpt-5.6-luna'], { input: 2, output: 8 }, {
+      prompt_tokens: 1_000_000,
+      completion_tokens: 0,
+      total_tokens: 1_000_000,
+      prompt_tokens_details: { cached_tokens: 500_000 },
+    }));
+    await router.reindexAll();
+    const keys = new IssuedKeys(new MemoryDocStore());
+    const hosted: HostedOptions = { keys, models: [], aliases: {}, login: null, adminEmails: [], publicUrl: 'https://leyline.test' };
+    const app = createServer(router, quotaManager, { hosted, enforceExternalSurface: false, apiKeyStore: new MemorySecretStore() });
+    const { key } = await keys.create({ name: 'azure-cache', by: 'test' });
+
+    const response = await request(app)
+      .post('/v1/chat/completions')
+      .set('Authorization', `Bearer ${key}`)
+      .send({ model: 'gpt-5.6-luna', messages: [{ role: 'user', content: 'hi' }] });
+
+    expect(response.status).toBe(200);
+    const spend = await keys.spend();
+    expect(spend.byProvider?.AzureOpenAI).toMatchObject({
+      usd: 1.1,
+      cachedTokens: 500_000,
+    });
   });
 
   it('sends a model to another provider once the first reaches its limit', async () => {

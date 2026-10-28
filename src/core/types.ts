@@ -49,6 +49,7 @@ export interface CompletionResponse {
     completion_tokens: number;
     total_tokens: number;
     cached_tokens?: number;
+    prompt_tokens_details?: { cached_tokens?: number };
     cache_creation_input_tokens?: number;
   };
 }
