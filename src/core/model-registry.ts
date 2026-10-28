@@ -253,21 +253,6 @@ function getDefaultVariants(): ModelVariant[] {
       billing_class: 'paid_api',
       resource_class: 'standard',
     },
-    // BytePlus ModelArk chat models. Prices are provider-published and should be
-    // verified against https://docs.byteplus.com/en/docs/ModelArk/Price, checked 2026-10-20.
-    {
-      id: 'doubao-seed-1-6-250615',
-      name: 'Doubao Seed 1.6 (BytePlus ModelArk)',
-      family: 'doubao-seed-1-6',
-      provider: 'byteplus',
-      source: 'byteplus-modelark',
-      parameter_size_b: 0,
-      quantization: 'unknown',
-      context_length: 128_000,
-      capabilities: { tools: true, thinking: true, vision: true, code: true, embedding: false },
-      billing_class: 'paid_api',
-      resource_class: 'standard',
-    },
     // Azure OpenAI deployment defaults
     {
       id: 'gpt-4o-mini',

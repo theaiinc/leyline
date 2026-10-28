@@ -29,25 +29,32 @@ type UsageSnapshot = {
   cache_creation_input_tokens?: number;
 };
 
-function usageFromStreamChunk(chunk: StreamChunk): UsageSnapshot | undefined {
-  if (!chunk.usage) return undefined;
-  const usage = chunk.usage as StreamChunk['usage'] & {
+function normalizeUsage(usage: unknown): UsageSnapshot | undefined {
+  if (!usage || typeof usage !== 'object') return undefined;
+  const normalized = usage as {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    cached_tokens?: number;
     prompt_tokens_details?: { cached_tokens?: number };
     cache_read_input_tokens?: number;
     cache_creation_input_tokens?: number;
   };
-  const cached_tokens = usage.cached_tokens ?? usage.prompt_tokens_details?.cached_tokens ?? usage.cache_read_input_tokens;
-  const cache_creation_input_tokens = usage.cache_creation_input_tokens;
-  if (usage.prompt_tokens === undefined && usage.completion_tokens === undefined && usage.total_tokens === undefined && cached_tokens === undefined && cache_creation_input_tokens === undefined) {
-    return undefined;
-  }
+  const cached_tokens = normalized.cached_tokens ?? normalized.prompt_tokens_details?.cached_tokens ?? normalized.cache_read_input_tokens;
+  const cache_creation_input_tokens = normalized.cache_creation_input_tokens;
+  const hasUsage = normalized.prompt_tokens !== undefined || normalized.completion_tokens !== undefined || normalized.total_tokens !== undefined || cached_tokens !== undefined || cache_creation_input_tokens !== undefined;
+  if (!hasUsage) return undefined;
   return {
-    prompt_tokens: usage.prompt_tokens,
-    completion_tokens: usage.completion_tokens,
-    total_tokens: usage.total_tokens,
+    prompt_tokens: normalized.prompt_tokens,
+    completion_tokens: normalized.completion_tokens,
+    total_tokens: normalized.total_tokens,
     ...(cached_tokens === undefined ? {} : { cached_tokens }),
     ...(cache_creation_input_tokens === undefined ? {} : { cache_creation_input_tokens }),
   };
+}
+
+function usageFromStreamChunk(chunk: StreamChunk): UsageSnapshot | undefined {
+  return normalizeUsage(chunk.usage);
 }
 
 function streamLogUsage(providerUsage: UsageSnapshot | undefined, chars: number): UsageSnapshot | { chars: number } {
@@ -675,6 +682,19 @@ export class Router {
 
         await this.keyReady(provider);
         const response = await provider.complete({ ...routedRequest, model: effectiveModel });
+        const normalizedUsage = normalizeUsage(response.usage);
+        const normalizedResponse: CompletionResponse = normalizedUsage
+          ? {
+              ...response,
+              usage: {
+                prompt_tokens: normalizedUsage.prompt_tokens ?? response.usage?.prompt_tokens ?? 0,
+                completion_tokens: normalizedUsage.completion_tokens ?? response.usage?.completion_tokens ?? 0,
+                total_tokens: normalizedUsage.total_tokens ?? response.usage?.total_tokens ?? 0,
+                ...(normalizedUsage.cached_tokens === undefined ? {} : { cached_tokens: normalizedUsage.cached_tokens }),
+                ...(normalizedUsage.cache_creation_input_tokens === undefined ? {} : { cache_creation_input_tokens: normalizedUsage.cache_creation_input_tokens }),
+              },
+            }
+          : response;
         opts?.onServed?.(provider.name, effectiveModel);
         this.quotaManager.incrementUsage(provider.name);
         logger.log({
@@ -683,10 +703,10 @@ export class Router {
             model: effectiveModel,
             status: 'success',
             duration: Date.now() - start,
-            usage: response.usage,
+            usage: normalizedUsage,
         });
         console.log(`[Router] Successfully routed to ${provider.name}.`);
-        return response;
+        return normalizedResponse;
       } catch (error: any) {
         logger.log({ requestId, provider: provider.name, model: effectiveModel, status: 'error', error: error.message, duration: Date.now() - start });
         console.error(`[Router] Error with ${provider.name}:`, error.message);
