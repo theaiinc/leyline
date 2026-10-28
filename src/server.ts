@@ -149,8 +149,7 @@ function requireHostedAdmin(hosted: HostedOptions) {
 // Render/Cloudflare can perform health checks and Argus can distinguish a
 // sleeping service from an API-surface policy response.
 const EXTERNAL_ROUTES = new Set([
-  '/healthz',
-  '/v1/chat/completions', '/v1/route', '/mcp', '/v1/models', '/v1/messages', '/v1/messages/count_tokens',
+  '/healthz', '/readyz', '/v1/chat/completions', '/v1/route', '/mcp', '/v1/models', '/v1/messages', '/v1/messages/count_tokens',
   '/v1/embeddings', '/v1/audio/transcriptions', '/v1/audio/speech',
 ]);
 /** Hosted keys mode: the admin page and its sign-in (each is still guarded by its own route). */

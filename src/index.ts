@@ -209,9 +209,6 @@ export async function buildRouter(secretStore: SecretStore, opts: { workersAi?: 
   router.addProvider(new GeminiProvider());
   router.addProvider(new HuggingFaceProvider());
   router.addProvider(new OpenAIProvider());
-  if (process.env.BYTEPLUS_ARK_API_KEY) {
-    router.addProvider(new BytePlusProvider());
-  }
   router.addProvider(new OpenRouterProvider());
   router.addProvider(new AnthropicProvider());
   if (
@@ -228,6 +225,9 @@ export async function buildRouter(secretStore: SecretStore, opts: { workersAi?: 
     router.addProvider(new LiteLLMProvider());
   }
   router.addProvider(new AzureOpenAIProvider());
+  if (process.env.BYTEPLUS_ARK_API_KEY) {
+    router.addProvider(new BytePlusProvider());
+  }
   if (process.env.OLLAMA_ENABLED === 'true') {
     router.addProvider(new OllamaProvider());
   }

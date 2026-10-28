@@ -26,7 +26,7 @@ export function urgentAlert(log: Alert[], currentSpendUsd?: number, currentLimit
     if (currentSpendUsd === undefined || currentLimitUsd == null) return true;
     return currentLimitUsd > 0 && currentSpendUsd >= currentLimitUsd * (a.threshold / 100);
   });
-} 
+}
 
 export function AlertsCard({ onLog }: { onLog?: (log: Alert[]) => void }) {
   const [data, setData] = useState<AlertsResponse | null>(null);
