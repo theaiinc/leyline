@@ -295,7 +295,7 @@ export function costUsd(price: Price, usage: { prompt_tokens?: number; completio
   const cacheCreation = Math.max(0, usage?.cache_creation_input_tokens ?? 0);
   const cachedInput = price.cachedInput ?? price.input * 0.1;
   const cacheCreationInput = price.cacheCreationInput ?? price.input * 1.25;
-  return (((prompt - cached - cacheCreation) * price.input) + (cached * cachedInput) + (cacheCreation * cacheCreationInput) + ((usage?.completion_tokens ?? 0) * price.output)) / 1_000_000;
+  return (((prompt - cached) * price.input) + (cached * cachedInput) + (cacheCreation * cacheCreationInput) + ((usage?.completion_tokens ?? 0) * price.output)) / 1_000_000;
 }
 
 export const hashKey = (key: string) => createHash('sha256').update(key).digest('hex');

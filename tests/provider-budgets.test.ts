@@ -6,7 +6,30 @@ import { ModelRegistry } from '../src/core/model-registry';
 import { IssuedKeys, MemoryDocStore, cleanSettings } from '../src/core/issued-keys';
 import { MemorySecretStore } from '../src/core/secret-store';
 import { providersOverBudget, type HostedOptions } from '../src/core/hosted';
+import { costUsd } from '../src/core/issued-keys';
 import type { CompletionRequest, CompletionResponse, Provider, StreamChunk } from '../src/core/types';
+
+describe('cached token pricing', () => {
+  it('uses the default 10% cached-input rate', () => {
+    expect(costUsd({ input: 2, output: 8 }, { prompt_tokens: 1_000_000, completion_tokens: 0, cached_tokens: 500_000 })).toBe(1.1);
+  });
+
+  it('uses an explicit cached-input rate', () => {
+    expect(costUsd({ input: 2, output: 8, cachedInput: 0.25 }, { prompt_tokens: 1_000_000, completion_tokens: 0, cached_tokens: 500_000 })).toBe(1.125);
+  });
+
+  it('prices Anthropic cache creation at 1.25 times input', () => {
+    expect(costUsd({ input: 2, output: 8 }, {
+      prompt_tokens: 1_000_000,
+      completion_tokens: 0,
+      cache_creation_input_tokens: 500_000,
+    })).toBe(3.25);
+  });
+
+  it('prices usage without cache fields as before', () => {
+    expect(costUsd({ input: 2, output: 8 }, { prompt_tokens: 1_000_000, completion_tokens: 0 })).toBe(2);
+  });
+});
 
 /** A provider serving `models`, with a price list like a gateway's (or none, like Anthropic). */
 class Fake implements Provider {
@@ -46,6 +69,18 @@ async function setup(over: Partial<HostedOptions> = {}) {
 
 const chat = (app: any, key: string, model = 'claude-x') =>
   request(app).post('/v1/chat/completions').set('Authorization', `Bearer ${key}`).send({ model, messages: [{ role: 'user', content: 'hi' }] });
+
+describe('cached usage pricing', () => {
+  it('prices cached input at the default 10 percent, an explicit cachedInput rate, and Anthropic cache creation at 1.25x', () => {
+    expect(costUsd({ input: 10, output: 40 }, { prompt_tokens: 100, cached_tokens: 50, completion_tokens: 0 })).toBeCloseTo(0.00055);
+    expect(costUsd({ input: 10, output: 40, cachedInput: 2 }, { prompt_tokens: 100, cached_tokens: 50, completion_tokens: 0 })).toBeCloseTo(0.0006);
+    expect(costUsd({ input: 10, output: 40 }, { prompt_tokens: 100, cache_creation_input_tokens: 50, completion_tokens: 0 })).toBeCloseTo(0.001125);
+  });
+
+  it('keeps pricing unchanged when a response has no cache fields', () => {
+    expect(costUsd({ input: 10, output: 40 }, { prompt_tokens: 100, completion_tokens: 20 })).toBeCloseTo(0.0018);
+  });
+});
 
 describe('per-provider monthly limits', () => {
   it('keeps only positive limits by name, rounded to cents', () => {

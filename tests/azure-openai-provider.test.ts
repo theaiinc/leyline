@@ -99,6 +99,17 @@ describe('AzureOpenAIProvider', () => {
       .toBeDefined();
   });
 
+  it('preserves cached usage on non-streaming responses', async () => {
+    mockCreate.mockResolvedValueOnce({
+      id: 'azure-cached', object: 'chat.completion', created: 1, model: 'chat-deployment',
+      choices: [{ index: 0, message: { role: 'assistant', content: 'hello' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110, prompt_tokens_details: { cached_tokens: 90 } },
+    });
+    const provider = new AzureOpenAIProvider('key', 'https://example.openai.azure.com/', 'chat-deployment');
+    const response = await provider.complete({ model: 'chat-deployment', messages: [{ role: 'user', content: 'hi' }] });
+    expect(response.usage).toEqual(expect.objectContaining({ prompt_tokens: 100, completion_tokens: 10, total_tokens: 110, prompt_tokens_details: { cached_tokens: 90 } }));
+  });
+
   it('should call Azure deployment chat completions for non-streaming requests', async () => {
     mockCreate.mockResolvedValueOnce({
       id: 'azure-response',
