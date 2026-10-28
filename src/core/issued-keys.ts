@@ -52,7 +52,7 @@ export type KeyUsage = {
 };
 
 /** Spend, requests and tokens for one provider or model. */
-export type SpendLine = { usd: number; requests: number; tokens: number };
+export type SpendLine = { usd: number; requests: number; tokens: number; cachedTokens?: number };
 
 /** Everything spent this month, across keys (and the owner's playground), by provider and by model. */
 export type MonthSpend = {
@@ -230,7 +230,7 @@ export type HostedSettings = {
   updatedBy?: string;
 };
 
-export type Price = { input: number; output: number };
+export type Price = { input: number; output: number; cachedInput?: number; cacheCreationInput?: number };
 export const DEFAULT_PRICE: Price = { input: 10, output: 40 };
 
 function cleanPrice(p: unknown): Price | null {
@@ -289,8 +289,13 @@ export function priceOf(settings: Pick<HostedSettings, 'prices' | 'defaultPrice'
   return manualPriceOf(settings.prices, model) ?? published ?? settings.defaultPrice;
 }
 
-export function costUsd(price: Price, usage: { prompt_tokens?: number; completion_tokens?: number } | undefined): number {
-  return ((usage?.prompt_tokens ?? 0) * price.input + (usage?.completion_tokens ?? 0) * price.output) / 1_000_000;
+export function costUsd(price: Price, usage: { prompt_tokens?: number; completion_tokens?: number; cached_tokens?: number; cache_creation_input_tokens?: number } | undefined): number {
+  const prompt = Math.max(0, usage?.prompt_tokens ?? 0);
+  const cached = Math.min(prompt, Math.max(0, usage?.cached_tokens ?? 0));
+  const cacheCreation = Math.max(0, usage?.cache_creation_input_tokens ?? 0);
+  const cachedInput = price.cachedInput ?? price.input * 0.1;
+  const cacheCreationInput = price.cacheCreationInput ?? price.input * 1.25;
+  return (((prompt - cached - cacheCreation) * price.input) + (cached * cachedInput) + (cacheCreation * cacheCreationInput) + ((usage?.completion_tokens ?? 0) * price.output)) / 1_000_000;
 }
 
 export const hashKey = (key: string) => createHash('sha256').update(key).digest('hex');
@@ -468,7 +473,7 @@ export class IssuedKeys {
   async record(
     key: IssuedKey | null,
     model: string,
-    usage?: { prompt_tokens?: number; completion_tokens?: number },
+    usage?: { prompt_tokens?: number; completion_tokens?: number; cached_tokens?: number },
     usd = 0,
     served: { provider: string; model: string } = { provider: 'unknown', model },
   ): Promise<void> {
@@ -476,11 +481,13 @@ export class IssuedKeys {
     const month = monthOf(now);
     const prompt = Math.max(0, Math.round(usage?.prompt_tokens ?? 0));
     const completion = Math.max(0, Math.round(usage?.completion_tokens ?? 0));
+    const cached = Math.min(prompt, Math.max(0, Math.round(usage?.cached_tokens ?? 0)));
     const tokens = prompt + completion;
     const add = (line: SpendLine | undefined): SpendLine => ({
       usd: (line?.usd ?? 0) + usd,
       requests: (line?.requests ?? 0) + 1,
       tokens: (line?.tokens ?? 0) + tokens,
+      ...(cached || line?.cachedTokens ? { cachedTokens: (line?.cachedTokens ?? 0) + cached } : {}),
     });
     await update<MonthSpend>(this.store, `spend/${month}`, (cur) => {
       const s = cur ?? { month, usd: 0, requests: 0 };

@@ -48,6 +48,8 @@ export interface CompletionResponse {
     prompt_tokens: number;
     completion_tokens: number;
     total_tokens: number;
+    cached_tokens?: number;
+    cache_creation_input_tokens?: number;
   };
 }
 
@@ -65,6 +67,7 @@ export interface StreamChunk {
     prompt_tokens?: number;
     completion_tokens?: number;
     total_tokens?: number;
+    cached_tokens?: number;
   };
 }
 

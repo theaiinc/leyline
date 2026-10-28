@@ -2,7 +2,7 @@
  * Prices providers publish in their model lists. llmapi.ai and OpenRouter both give `pricing.prompt` and
  * `pricing.completion` as US dollars per token (strings); Leyline works in dollars per million tokens.
  */
-export function parsePublishedPricing(pricing: unknown): { input: number; output: number } | undefined {
+export function parsePublishedPricing(pricing: unknown): { input: number; output: number; cachedInput?: number } | undefined {
   if (!pricing || typeof pricing !== 'object') return undefined;
   const p = pricing as { prompt?: unknown; completion?: unknown };
   const input = Number(p.prompt);
@@ -12,7 +12,8 @@ export function parsePublishedPricing(pricing: unknown): { input: number; output
   }
   // Rounded to a millionth of a dollar per million tokens: per-token strings carry float noise.
   const perMillion = (n: number) => Math.round(n * 1e12) / 1e6;
-  return { input: perMillion(input), output: perMillion(output) };
+  const cached = Number((pricing as { cache_read?: unknown; cached_input?: unknown }).cache_read ?? (pricing as { cached_input?: unknown }).cached_input);
+  return { input: perMillion(input), output: perMillion(output), ...(Number.isFinite(cached) && cached >= 0 ? { cachedInput: perMillion(cached) } : {}) };
 }
 
 /**

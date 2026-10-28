@@ -109,6 +109,9 @@ export function fromAnthropicResponse(data: any): CompletionResponse {
     .map(b => ({ id: b.id, type: 'function', function: { name: b.name, arguments: JSON.stringify(b.input ?? {}) } }));
   const input = data?.usage?.input_tokens ?? 0;
   const output = data?.usage?.output_tokens ?? 0;
+  const cacheRead = data?.usage?.cache_read_input_tokens ?? 0;
+  const cacheCreation = data?.usage?.cache_creation_input_tokens ?? 0;
+  const cachedTokens = cacheRead + cacheCreation;
   const message: CompletionResponse['choices'][number]['message'] & { tool_calls?: unknown[] } = { role: 'assistant', content: text };
   if (toolCalls.length) message.tool_calls = toolCalls;
   return {
@@ -117,7 +120,12 @@ export function fromAnthropicResponse(data: any): CompletionResponse {
     created: Math.floor(Date.now() / 1000),
     model: data?.model || '',
     choices: [{ index: 0, message, finish_reason: FINISH[data?.stop_reason] || 'stop' }],
-    usage: { prompt_tokens: input, completion_tokens: output, total_tokens: input + output },
+    usage: {
+      prompt_tokens: input,
+      completion_tokens: output,
+      total_tokens: input + output,
+      ...(cachedTokens ? { cached_tokens: cachedTokens } : {}),
+    },
   };
 }
 
@@ -189,6 +197,7 @@ export class AnthropicProvider implements Provider {
     const created = Math.floor(Date.now() / 1000);
     let id = `msg_${Date.now()}`;
     let inputTokens = 0;
+    let cachedTokens = 0;
     /** Content block index → tool call index, for streamed tool arguments. */
     const toolIndex = new Map<number, number>();
     const chunk = (delta: Record<string, unknown>, finish: string | null = null, usage?: StreamChunk['usage']): StreamChunk => ({
@@ -216,6 +225,8 @@ export class AnthropicProvider implements Provider {
         if (event.type === 'message_start') {
           id = event.message?.id || id;
           inputTokens = event.message?.usage?.input_tokens ?? 0;
+          cachedTokens = (event.message?.usage?.cache_read_input_tokens ?? 0)
+            + (event.message?.usage?.cache_creation_input_tokens ?? 0);
           yield chunk({ role: 'assistant', content: '' });
         } else if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
           const index = toolIndex.size;
@@ -228,7 +239,12 @@ export class AnthropicProvider implements Provider {
           if (index !== undefined) yield chunk({ tool_calls: [{ index, function: { arguments: event.delta.partial_json } }] });
         } else if (event.type === 'message_delta') {
           const output = event.usage?.output_tokens ?? 0;
-          yield chunk({}, FINISH[event.delta?.stop_reason] || 'stop', { prompt_tokens: inputTokens, completion_tokens: output, total_tokens: inputTokens + output });
+          yield chunk({}, FINISH[event.delta?.stop_reason] || 'stop', {
+            prompt_tokens: inputTokens,
+            completion_tokens: output,
+            total_tokens: inputTokens + output,
+            ...(cachedTokens ? { cached_tokens: cachedTokens } : {}),
+          });
         } else if (event.type === 'error') {
           throw new Error(`Anthropic stream error: ${event.error?.message || 'unknown'}`);
         }

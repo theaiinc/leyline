@@ -16,6 +16,7 @@ const AZURE_CHAT_COMPLETION_FIELDS = new Set([
   'seed',
   'stop',
   'user',
+  'prompt_cache_key',
   'reasoning_effort',
   'logprobs',
   'top_logprobs',
@@ -37,7 +38,6 @@ const CURSOR_RESPONSES_ONLY_FIELDS = new Set([
   'metadata',
   'store',
   'prompt',
-  'prompt_cache_key',
 ]);
 
 const AZURE_ALLOWED_FIELDS = AZURE_CHAT_COMPLETION_FIELDS;

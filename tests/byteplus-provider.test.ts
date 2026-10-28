@@ -17,6 +17,7 @@ describe('BytePlusProvider', () => {
   it('only claims BytePlus ModelArk model ids', () => {
     const provider = new BytePlusProvider('test-key');
     expect(provider.servesModel('chat', 'deepseek-v4-1-flash-260910')).toBe(true);
+    expect(provider.servesModel('chat', 'doubao-seed-1-6-251015')).toBe(true);
     expect(provider.servesModel('chat', 'gpt-5.6-luna')).toBe(false);
     expect(provider.servesModel('chat', 'claude-sonnet-5-5')).toBe(false);
     expect(provider.servesModel('embeddings', 'seed-1-6-250915')).toBe(false);

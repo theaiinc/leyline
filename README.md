@@ -514,6 +514,9 @@ Dashboard key behavior:
 | `OPENROUTER_QUOTA_RPM` | `20` | OpenRouter RPM limit |
 | `AZURE_OPENAI_QUOTA_RPM` | `60` | Azure OpenAI RPM limit |
 | `AZURE_OPENAI_QUOTA_RPD` | `1000` | Azure OpenAI daily request limit |
+| `BYTEPLUS_ARK_API_KEY` | — | BytePlus ModelArk API key; enables the BytePlus provider |
+| `BYTEPLUS_ARK_BASE_URL` | `https://ark.ap-southeast.bytepluses.com/api/v3` | Optional BytePlus ModelArk API base URL override |
+| `BYTEPLUS_ARK_DEFAULT_MODEL` | `doubao-seed-1-6-250615` | Default BytePlus ModelArk chat model |
 
 Cloud provider API keys can also be set from `/dashboard`. Raw keys are accepted only in save/rehydration requests and are never returned by dashboard APIs.
 

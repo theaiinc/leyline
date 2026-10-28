@@ -25,15 +25,29 @@ type UsageSnapshot = {
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
+  cached_tokens?: number;
+  cache_creation_input_tokens?: number;
 };
 
 function usageFromStreamChunk(chunk: StreamChunk): UsageSnapshot | undefined {
   if (!chunk.usage) return undefined;
-  const { prompt_tokens, completion_tokens, total_tokens } = chunk.usage;
-  if (prompt_tokens === undefined && completion_tokens === undefined && total_tokens === undefined) {
+  const usage = chunk.usage as StreamChunk['usage'] & {
+    prompt_tokens_details?: { cached_tokens?: number };
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  };
+  const cached_tokens = usage.cached_tokens ?? usage.prompt_tokens_details?.cached_tokens ?? usage.cache_read_input_tokens;
+  const cache_creation_input_tokens = usage.cache_creation_input_tokens;
+  if (usage.prompt_tokens === undefined && usage.completion_tokens === undefined && usage.total_tokens === undefined && cached_tokens === undefined && cache_creation_input_tokens === undefined) {
     return undefined;
   }
-  return { prompt_tokens, completion_tokens, total_tokens };
+  return {
+    prompt_tokens: usage.prompt_tokens,
+    completion_tokens: usage.completion_tokens,
+    total_tokens: usage.total_tokens,
+    ...(cached_tokens === undefined ? {} : { cached_tokens }),
+    ...(cache_creation_input_tokens === undefined ? {} : { cache_creation_input_tokens }),
+  };
 }
 
 function streamLogUsage(providerUsage: UsageSnapshot | undefined, chars: number): UsageSnapshot | { chars: number } {

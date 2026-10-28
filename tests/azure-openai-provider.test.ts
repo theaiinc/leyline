@@ -126,6 +126,25 @@ describe('AzureOpenAIProvider', () => {
     });
   });
 
+  it('preserves cached usage on streaming responses', async () => {
+    async function* streamChunks() {
+      yield {
+        id: 'cached-stream',
+        object: 'chat.completion.chunk',
+        created: 1,
+        model: 'chat-deployment',
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110, prompt_tokens_details: { cached_tokens: 90 } },
+      };
+    }
+
+    mockCreate.mockResolvedValueOnce(streamChunks());
+    const provider = new AzureOpenAIProvider('key', 'https://example.openai.azure.com', 'chat-deployment');
+    const chunks = [] as Array<{ usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; cached_tokens?: number } }>;
+    for await (const chunk of provider.completeStream({ model: 'chat-deployment', messages: [{ role: 'user', content: 'hi' }] })) chunks.push(chunk);
+    expect(chunks[0].usage).toEqual(expect.objectContaining({ prompt_tokens: 100, completion_tokens: 10, total_tokens: 110, cached_tokens: 90 }));
+  });
+
   it('should stream chat completion chunks via the official SDK', async () => {
     async function* streamChunks() {
       yield {
