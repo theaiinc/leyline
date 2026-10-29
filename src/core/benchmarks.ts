@@ -138,7 +138,6 @@ export function refreshBenchmarks(
   });
   return benchmarkRefresh;
 }
-
 /** Refresh only an empty cache; callers can schedule this without delaying their response. */
 export function refreshEmptyBenchmarks(
   fetcher: BenchmarkFetcher,
@@ -146,6 +145,7 @@ export function refreshEmptyBenchmarks(
 ): Promise<BenchmarkSnapshot | null> {
   return refreshBenchmarks(fetcher, cache);
 }
+
 import { unzipSync, strFromU8 } from 'fflate';
 
 export type BenchmarkSource = {

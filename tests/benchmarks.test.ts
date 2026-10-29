@@ -94,7 +94,6 @@ describe('benchmark refresh behavior', () => {
     expect(result.benchmarks.find((benchmark) => benchmark.id === 'gpqa-diamond')?.scores).toHaveLength(1);
   });
 });
-
 describe('benchmark cache fallback', () => {
   it('returns cached data when refresh fails', async () => {
     const cache: BenchmarkCache = {
