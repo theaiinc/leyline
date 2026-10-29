@@ -6,6 +6,7 @@ import { adminOf, applySettings, type HostedOptions } from '../src/core/hosted';
 import { D1ArcanaCloudStore, D1DocStore, D1LogStore, D1SecretStore, type D1Database } from '../src/core/d1-stores';
 import { arcanaCloudConfigFromEnv, parseArcanaCloudReferences, type SecretStore } from '../src/core/secret-store';
 import { logger } from '../src/core/logger';
+import { fetchBenchmarkSnapshot, refreshEmptyBenchmarks, type BenchmarkCache } from '../src/core/benchmarks';
 import type { ModelListSnapshot } from '../src/core/router';
 import type { WorkersAiBinding } from '../src/providers/workers-ai';
 
@@ -29,6 +30,10 @@ interface Env {
   LEYLINE_STORE_KEY: string;
   /** Git commit injected by the CI deployment workflow. */
   GIT_SHA?: string;
+  ARTIFICIAL_ANALYSIS_API_KEY?: string;
+  ARTIFICIAL_ANALYSIS_URL?: string;
+  EPOCH_BENCHMARKS_URL?: string;
+  LM_ARENA_URL?: string;
 }
 interface Ctx { waitUntil(p: Promise<unknown>): void }
 
@@ -36,6 +41,27 @@ interface Ctx { waitUntil(p: Promise<unknown>): void }
 type SharedModelLists = { version: string; savedAt: number; lists: ModelListSnapshot };
 const MODEL_LISTS_DOC = 'model-lists';
 const MODEL_LISTS_REFRESH_MS = 30 * 60_000;
+const BENCHMARKS_DOC = 'benchmarks';
+
+function benchmarkCache(docs: D1DocStore, env: Env): BenchmarkCache {
+  return {
+    get: async () => (await docs.get<Awaited<ReturnType<typeof fetchBenchmarkSnapshot>>(never)> (BENCHMARKS_DOC)).value ?? null,
+    put: async (snapshot) => { await docs.put(BENCHMARKS_DOC, snapshot); },
+  };
+}
+
+function refreshBenchmarks(docs: D1DocStore, env: Env): Promise<unknown> {
+  const cache = benchmarkCache(docs, env);
+  return refreshEmptyBenchmarks(
+    () => fetchBenchmarkSnapshot({
+      artificialAnalysisApiKey: env.ARTIFICIAL_ANALYSIS_API_KEY,
+      artificialAnalysisUrl: env.ARTIFICIAL_ANALYSIS_URL,
+      epochUrl: env.EPOCH_BENCHMARKS_URL,
+      lmarenaUrl: env.LM_ARENA_URL,
+    }),
+    cache,
+  );
+}
 
 type Built = { port: number; server: Server; hosted: HostedOptions; version: string; stages: Record<string, number> };
 
