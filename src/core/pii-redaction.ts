@@ -1,5 +1,6 @@
 import { MaskPiiTransformer, TokenRehydrator, Veil, VeilRegistry } from '@theaiinc/veil';
   import { RegexDetector } from '@theaiinc/veil-regex';
+import { PresidioDetector } from '@theaiinc/veil-presidio';
 
   export type PiiRedactionMode = 'off' | 'regex' | 'presidio';
 
@@ -61,7 +62,12 @@ import { MaskPiiTransformer, TokenRehydrator, Veil, VeilRegistry } from '@theaii
     private readonly mode: PiiRedactionMode;
     private readonly startedAt = Date.now();
     private readonly fallback: boolean;
-    private streamBuffer = '';
+    private streamBuffers = new Map<string, string>();
+
+    /** True when Presidio was requested but no analyzer endpoint is configured. */
+    get presidioUnavailable(): boolean {
+      return this.fallback;
+    }
 
     constructor(options: PiiRedactionOptions = {}) {
       this.opts = options;
@@ -69,7 +75,10 @@ import { MaskPiiTransformer, TokenRehydrator, Veil, VeilRegistry } from '@theaii
       this.allowlist = compileAllowlist(options.allowlist ?? []);
       this.fallback = this.mode === 'presidio' && !options.presidioAnalyzerUrl;
       const registry = Veil.defaultRegistry();
-      if (this.mode !== 'off') registry.registerDetector(new RegexDetector());
+      if (this.mode === 'regex' || this.fallback) registry.registerDetector(new RegexDetector());
+      if (this.mode === 'presidio' && options.presidioAnalyzerUrl) {
+        registry.registerDetector(new PresidioDetector({ analyzerUrl: options.presidioAnalyzerUrl }));
+      }
       this.veil = new Veil(registry);
     }
 
@@ -85,7 +94,7 @@ import { MaskPiiTransformer, TokenRehydrator, Veil, VeilRegistry } from '@theaii
     private async redactText(input: string): Promise<string> {
       if (this.mode === 'off' || !input) return input;
       const protectedValue = protectAllowlisted(input, this.allowlist);
-      const result = await this.veil.process({ content: protectedValue.value, profile: 'public-cloud' });
+      const result = await this.veil.process({ content: protectedValue.value });
       for (const mapping of result.mappings) {
         const token = String(mapping.token);
         this.mappings.set(token, mapping.originalValue);
@@ -109,43 +118,74 @@ import { MaskPiiTransformer, TokenRehydrator, Veil, VeilRegistry } from '@theaii
     async redact<T>(value: T): Promise<T> {
       if (this.mode === 'off' || value == null) return value;
       if (typeof value === 'string') return await this.redactText(value) as T;
-      if (Array.isArray(value)) return await Promise.all(value.map((item) => this.redact(item))) as T;
-      if (typeof value === 'object') {
-        const output: Record<string, unknown> = {};
-        for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-          output[key] = await this.redact(item);
+      if (typeof value !== 'object') return value;
+      const request = value as Record<string, unknown>;
+      if (!Array.isArray(request.messages)) return value;
+      const redactBlock = async (part: unknown): Promise<unknown> => {
+        if (!part || typeof part !== 'object') return part;
+        const block = { ...(part as Record<string, unknown>) };
+        if (typeof block.text === 'string') block.text = await this.redactText(block.text);
+        if (block.type === 'tool_result') {
+          if (typeof block.content === 'string') block.content = await this.redactText(block.content);
+          else if (Array.isArray(block.content)) block.content = await Promise.all(block.content.map(redactBlock));
         }
-        return output as T;
-      }
-      return value;
+        return block;
+      };
+      const messages = await Promise.all(request.messages.map(async (message) => {
+        if (!message || typeof message !== 'object') return message;
+        const copy = { ...(message as Record<string, unknown>) };
+        // Only message content is PII-bearing input. Do not walk or clone tools,
+        // tool_choice, response_format, metadata, image data, or other request fields.
+        if (typeof copy.content === 'string') copy.content = await this.redactText(copy.content);
+        else if (Array.isArray(copy.content)) copy.content = await Promise.all(copy.content.map(redactBlock));
+        // Anthropic tool results can be represented as a top-level message content
+        // block; redactBlock handles only text-bearing blocks and preserves all else.
+        return copy;
+      }));
+      return { ...request, messages } as T;
     }
 
-    rehydrate(value: string): string {
+    private replace(value: string): string {
       if (this.mode === 'off' || !value) return value;
-      this.streamBuffer += value;
-      let safeEnd = this.streamBuffer.length;
-      const partial = this.streamBuffer.lastIndexOf('<');
-      if (partial >= 0 && /^[<][a-z-]*:?\d*$/.test(this.streamBuffer.slice(partial))) safeEnd = partial;
-      let output = this.streamBuffer.slice(0, safeEnd);
-      this.streamBuffer = this.streamBuffer.slice(safeEnd);
+      let output = value;
       for (const [token, original] of this.mappings) output = output.split(token).join(original);
       return output;
     }
 
     rehydrateValue<T>(value: T): T {
-      if (typeof value === 'string') return this.rehydrate(value) as T;
+      if (typeof value === 'string') return this.replace(value) as T;
       if (Array.isArray(value)) return value.map((item) => this.rehydrateValue(item)) as T;
-      if (value && typeof value === 'object') {
-        return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, this.rehydrateValue(item)])) as T;
-      }
+      if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, this.rehydrateValue(item)])) as T;
       return value;
     }
 
-    finishStream(): string {
-      let output = this.streamBuffer;
-      this.streamBuffer = '';
-      for (const [token, original] of this.mappings) output = output.split(token).join(original);
-      return output;
+    /** Rehydrate a complete, non-streamed value without retaining a partial-token buffer. */
+    rehydrate(value: string): string {
+      return this.replace(value);
+    }
+
+    /** Rehydrate a streamed delta, retaining only a possible incomplete Veil token for this channel. */
+    rehydrateStream(value: string, streamKey = 'default'): string {
+      if (this.mode === 'off' || !value) return value;
+      const combined = (this.streamBuffers.get(streamKey) ?? '') + value;
+      const tokenStart = combined.lastIndexOf('<');
+      if (tokenStart < 0) {
+        this.streamBuffers.delete(streamKey);
+        return this.replace(combined);
+      }
+      const suffix = combined.slice(tokenStart);
+      if (!/^<[a-z-]*:?\d*$/.test(suffix) || suffix.length > 128) {
+        this.streamBuffers.delete(streamKey);
+        return this.replace(combined);
+      }
+      this.streamBuffers.set(streamKey, suffix);
+      return this.replace(combined.slice(0, tokenStart));
+    }
+
+    finishStream(streamKey = 'default'): string {
+      const pending = this.streamBuffers.get(streamKey) ?? '';
+      this.streamBuffers.delete(streamKey);
+      return this.replace(pending);
     }
 
     async finish(): Promise<PiiRedactionStats> {

@@ -944,18 +944,16 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
               for (const call of choice.delta?.tool_calls ?? []) streamChars += call.function?.arguments?.length ?? 0;
             }
             if (pii) {
-              for (const choice of (chunk.choices ?? []) as Array<{ delta?: { content?: string | null; tool_calls?: Array<{ function?: { arguments?: string } }> } }>) {
-                if (choice.delta?.content) choice.delta.content = pii.rehydrate(choice.delta.content);
-                for (const call of choice.delta?.tool_calls ?? []) {
-                  if (call.function?.arguments) call.function.arguments = pii.rehydrate(call.function.arguments);
+              for (const [choiceIndex, choice] of (chunk.choices ?? []).entries() as Iterable<[number, { delta?: { content?: string | null; tool_calls?: Array<{ function?: { arguments?: string } }> } }]>) {
+                if (choice.delta?.content) choice.delta.content = pii.rehydrateStream(choice.delta.content, `choice:${choiceIndex}:content`);
+                for (const [toolIndex, call] of (choice.delta?.tool_calls ?? []).entries()) {
+                  if (call.function?.arguments) call.function.arguments = pii.rehydrateStream(call.function.arguments, `choice:${choiceIndex}:tool:${toolIndex}`);
                 }
               }
             }
             res.write(`data: ${JSON.stringify(chunk)}\n\n`);
         }
         if (pii) {
-          const tail = pii.finishStream();
-          if (tail) res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: tail } }] })}\n\n`);
           await pii.finish();
         }
         res.write('data: [DONE]\n\n');

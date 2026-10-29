@@ -369,7 +369,23 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
         };
         try {
           const excludeProviders = await providersOverBudget(opts);
-          for await (const chunk of await router.routeStream(request, { onServed: servedBy(req), excludeProviders })) send(out.push(chunk));
+          for await (const chunk of await router.routeStream(request, { onServed: servedBy(req), excludeProviders })) {
+            if (pii) {
+              for (const [choiceIndex, choice] of (chunk.choices ?? []).entries() as Iterable<[number, { delta?: { content?: string | null; tool_calls?: Array<{ function?: { arguments?: string } }> } }]>) {
+                if (choice.delta?.content) choice.delta.content = pii.rehydrateStream(choice.delta.content, `choice:${choiceIndex}:content`);
+                for (const [toolIndex, call] of (choice.delta?.tool_calls ?? []).entries()) {
+                  if (call.function?.arguments) call.function.arguments = pii.rehydrateStream(call.function.arguments, `choice:${choiceIndex}:tool:${toolIndex}`);
+                }
+              }
+            }
+            send(out.push(chunk));
+          }
+          if (pii) {
+            for (const [choiceIndex] of (request.messages ?? []).entries()) {
+              const contentTail = pii.finishStream(`choice:${choiceIndex}:content`);
+              if (contentTail) send([{ event: 'content_block_delta', data: { type: 'content_block_delta', index: choiceIndex, delta: { type: 'text_delta', text: contentTail } } }]);
+            }
+          }
           send(out.end());
         } catch (err) {
           console.error('[hosted] /v1/messages stream failed', err);
@@ -393,7 +409,7 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
           })),
         } : choice.message,
       })) } : response;
-      if (pii) { pii.finishStream(); await pii.finish(); }
+      if (pii) { await pii.finish(); }
       res.json(openAIToAnthropic(hydrated, asked));
       recordUsage(opts, req, response.usage);
     } catch (err) {

@@ -35,8 +35,8 @@ describe('request-scoped PII redaction', () => {
     const redactor = new RequestPiiRedactor({ mode: 'regex' });
     await redactor.redact('Email ada@example.com');
 
-    expect(redactor.rehydrate('answer <em')).toBe('answer ');
-    expect(redactor.rehydrate('ail:1>')).toBe('ada@example.com');
+    expect(redactor.rehydrateStream('answer <em')).toBe('answer ');
+    expect(redactor.rehydrateStream('ail:1>')).toBe('ada@example.com');
     expect(redactor.finishStream()).toBe('');
   });
 
