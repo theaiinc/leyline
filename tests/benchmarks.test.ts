@@ -1,7 +1,9 @@
 import { zipSync, strToU8 } from 'fflate';
 import {
+  fetchBenchmarkSnapshot,
   fetchEpochSnapshot,
   loadBenchmarks,
+  refreshBenchmarks,
   matchBenchmarkModel,
   rankBenchmarks,
   type BenchmarkCache,
@@ -55,6 +57,41 @@ describe('Epoch benchmark ZIP parsing', () => {
     global.fetch = originalFetch;
     expect(snapshot.benchmarks.find((benchmark: BenchmarkSnapshot['benchmarks'][number]) => benchmark.id === 'gpqa-diamond')?.scores[0]).toMatchObject({ model: 'gpt-6.1-terra_max', score: 0.943 });
     expect(snapshot.benchmarks.find((benchmark: BenchmarkSnapshot['benchmarks'][number]) => benchmark.id === 'hle')?.scores[0]).toMatchObject({ model: 'Claude Opus 5.5 (High)', score: 0.812 });
+  });
+});
+
+describe('benchmark refresh behavior', () => {
+  it('returns an empty cache immediately while refreshing it in the background', async () => {
+    let stored: BenchmarkSnapshot | null = null;
+    let resolveFetch!: (value: BenchmarkSnapshot) => void;
+    const fetchPromise = new Promise<BenchmarkSnapshot>((resolve) => { resolveFetch = resolve; });
+    const cache: BenchmarkCache = {
+      get: async () => stored,
+      put: async (value) => { stored = value; },
+    };
+    const refresh = refreshBenchmarks(() => fetchPromise, cache);
+    expect(await cache.get()).toBeNull();
+    resolveFetch(snapshot);
+    await refresh;
+    expect(stored).toBe(snapshot);
+  });
+
+  it('keeps successful source rows when another source fails', async () => {
+    const originalFetch = global.fetch;
+    let calls = 0;
+    global.fetch = async (input) => {
+      const url = String(input);
+      if (url.includes('benchmark_data.zip')) {
+        const zip = zipSync({ 'gpqa_diamond.csv': strToU8('Model version,mean_score,Release date\ngpt-6.1-terra,0.9,2026-10-26\n') });
+        return new Response(zip, { status: 200 });
+      }
+      calls += 1;
+      return new Response('upstream unavailable', { status: 502 });
+    };
+    const result = await fetchBenchmarkSnapshot({ epochUrl: 'https://example.test/benchmark_data.zip', lmarenaUrl: 'https://example.test/rows' });
+    global.fetch = originalFetch;
+    expect(calls).toBeGreaterThanOrEqual(1);
+    expect(result.benchmarks.find((benchmark) => benchmark.id === 'gpqa-diamond')?.scores).toHaveLength(1);
   });
 });
 
