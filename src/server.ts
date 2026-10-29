@@ -954,6 +954,25 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
             res.write(`data: ${JSON.stringify(chunk)}\n\n`);
         }
         if (pii) {
+          const channelKeys = pii.streamKeys;
+          for (const key of channelKeys) {
+            const tail = pii.finishStream(key);
+            if (!tail) continue;
+            const match = /^choice:(\d+):(content|tool:(\d+))$/.exec(key);
+            if (!match) continue;
+            const choiceIndex = Number(match[1]);
+            const finalChunk = {
+              id: `leyline-pii-flush-${Date.now()}`,
+              object: 'chat.completion.chunk',
+              choices: [{
+                index: choiceIndex,
+                delta: match[2] === 'content'
+                  ? { content: tail }
+                  : { tool_calls: [{ index: Number(match[3]), function: { arguments: tail } }] },
+              }],
+            };
+            res.write(`data: ${JSON.stringify(finalChunk)}\n\n`);
+          }
           await pii.finish();
         }
         res.write('data: [DONE]\n\n');
@@ -975,7 +994,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
             })),
           } : choice.message,
         })) } : response;
-        if (pii) { pii.finishStream(); await pii.finish(); }
+        if (pii) { await pii.finish(); }
         res.json(hydrated);
         logTenantUsage(req, request.model, response.usage);
       }

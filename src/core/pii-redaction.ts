@@ -182,6 +182,10 @@ import { PresidioDetector } from '@theaiinc/veil-presidio';
       return this.replace(combined.slice(0, tokenStart));
     }
 
+    get streamKeys(): string[] {
+      return [...this.streamBuffers.keys()];
+    }
+
     finishStream(streamKey = 'default'): string {
       const pending = this.streamBuffers.get(streamKey) ?? '';
       this.streamBuffers.delete(streamKey);

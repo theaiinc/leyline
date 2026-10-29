@@ -51,12 +51,50 @@ describe('request-scoped PII redaction', () => {
     expect(output).not.toContain('ada@other.test');
   });
 
-  it('falls back from presidio when no analyzer URL is configured', async () => {
-    const redactor = new RequestPiiRedactor({ mode: 'presidio' });
-    const output = await redactor.redact('ada@example.com');
+  it('flushes partial content and tool argument channels independently', async () => {
+    const redactor = new RequestPiiRedactor({ mode: 'regex' });
+    await redactor.redact('Email ada@example.com');
 
-    expect(output).not.toContain('ada@example.com');
-    expect(redactor.stats.presidioFallback).toBe(true);
-    expect(redactor.stats.mode).toBe('presidio');
+    expect(redactor.rehydrateStream('<em', 'choice:0:content')).toBe('');
+    expect(redactor.rehydrateStream('<ph', 'choice:0:tool:0')).toBe('');
+    expect(redactor.finishStream('choice:0:content')).toBe('<em');
+    expect(redactor.finishStream('choice:0:tool:0')).toBe('<ph');
   });
+
+  it('flushes a partial content tail before stream completion', async () => {
+    const redactor = new RequestPiiRedactor({ mode: 'regex' });
+    await redactor.redact('Email ada@example.com');
+    expect(redactor.rehydrateStream('Answer <email:', 'choice:0:content')).toBe('Answer ');
+    expect(redactor.finishStream('choice:0:content')).toBe('<email:');
+  });
+
+  it('flushes a partial tool-argument tail before stream completion', async () => {
+    const redactor = new RequestPiiRedactor({ mode: 'regex' });
+    await redactor.redact('Email ada@example.com');
+    expect(redactor.rehydrateStream('{"email":"<email:', 'choice:0:tool:0')).toBe('{"email":"');
+    expect(redactor.finishStream('choice:0:tool:0')).toBe('<email:');
+  });
+
+  it('rehydrates messages-format content and tool arguments', async () => {
+    const redactor = new RequestPiiRedactor({ mode: 'regex' });
+    const request = await redactor.redact({
+      messages: [
+        { role: 'user', content: 'Contact ada@example.com' },
+        { role: 'tool', content: 'Result for ada@example.com' },
+      ],
+});
+
+expect(JSON.stringify(request)).not.toContain('ada@example.com');
+expect(redactor.rehydrate('Answer for <email:1>')).toContain('ada@example.com');
+expect(redactor.rehydrateValue({ input: '<email:1>' })).toEqual({ input: 'ada@example.com' });
+});
+
+it('falls back from presidio when no analyzer URL is configured', async () => {
+  const redactor = new RequestPiiRedactor({ mode: 'presidio' });
+  const output = await redactor.redact('ada@example.com');
+
+  expect(output).not.toContain('ada@example.com');
+  expect(redactor.stats.presidioFallback).toBe(true);
+  expect(redactor.stats.mode).toBe('presidio');
+});
 });

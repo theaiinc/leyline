@@ -381,11 +381,33 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
             send(out.push(chunk));
           }
           if (pii) {
-            for (const [choiceIndex] of (request.messages ?? []).entries()) {
-              const contentTail = pii.finishStream(`choice:${choiceIndex}:content`);
-              if (contentTail) send([{ event: 'content_block_delta', data: { type: 'content_block_delta', index: choiceIndex, delta: { type: 'text_delta', text: contentTail } } }]);
+            for (const key of pii.streamKeys) {
+              const tail = pii.finishStream(key);
+              if (!tail) continue;
+              const match = /^choice:(\d+):(content|tool:(\d+))$/.exec(key);
+              if (!match) continue;
+              const choiceIndex = Number(match[1]);
+              if (match[2] === 'content') {
+                send([{
+                  event: 'content_block_delta',
+                  data: {
+                    type: 'content_block_delta',
+                    index: choiceIndex,
+                    delta: { type: 'text_delta', text: tail },
+                  },
+                }]);
+              } else {
+                send([{
+                  event: 'content_block_delta',
+                  data: {
+                    type: 'content_block_delta',
+                    index: Number(match[3]),
+                    delta: { type: 'input_json_delta', partial_json: tail },
+                  },
+                }]);
             }
           }
+        }
           send(out.end());
         } catch (err) {
           console.error('[hosted] /v1/messages stream failed', err);
