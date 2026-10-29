@@ -34,6 +34,8 @@ interface Env {
   ARTIFICIAL_ANALYSIS_URL?: string;
   EPOCH_BENCHMARKS_URL?: string;
   LM_ARENA_URL?: string;
+  /** Optional Veil Presidio analyzer endpoint; regex is used when unset. */
+  PRESIDIO_ANALYZER_URL?: string;
 }
 interface Ctx { waitUntil(p: Promise<unknown>): void }
 
