@@ -332,6 +332,20 @@ describe('spend by provider and model', () => {
   });
 });
 
+describe('empty offered model pool', () => {
+  it('lists provider models while excluding blocked and key-capped models', async () => {
+    const { app } = setup({ models: [], aliases: {}, blockedModels: ['claude-*'] });
+    const { key } = (await request(app).post('/admin/api/keys').set(ADMIN).send({
+      name: 'narrow',
+      caps: { models: ['gemini-*', 'gpt-*'] },
+    })).body;
+    const models = (await request(app).get('/v1/models').set({ Authorization: `Bearer ${key}` })).body.data.map((m: { id: string }) => m.id);
+    expect(models).toContain('gemini-2.5-pro');
+    expect(models).not.toContain('gpt-5.5');
+    expect(models.every((model: string) => !model.startsWith('claude-'))).toBe(true);
+  });
+});
+
 describe('turned-off models', () => {
   it('refuses them for every key (also through an alias) and hides them from /v1/models', async () => {
     const { app } = setup({ models: ['gemini-2.5-pro', 'gpt-5.5'], aliases: { 'claude-*': 'gemini-2.5-pro' } });
