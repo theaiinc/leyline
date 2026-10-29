@@ -1,7 +1,8 @@
+import { useEffect, useState } from 'react';
 import { Activity, Gauge, KeyRound, Server } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { CodeBlock, EmptyState, PageHeader, ProviderDot, SecretValue } from '@/components/common';
+import { CodeBlock, EmptyState, ProviderDot, SecretValue } from '@/components/common';
 import { apiUrl } from '@/api';
 import type { Dashboard } from '@/hooks/use-dashboard';
 import { providerTone, type LogEntry, type ProviderStats } from '@/normalization';
@@ -52,10 +53,49 @@ function analytics(providers: ProviderStats[], logs: LogEntry[]) {
   const fastest = [...byModel].map(([label, s]) => ({ label, avg: s.count ? Math.round(s.total / s.count) : 0, provider: s.provider }))
     .filter(x => x.avg > 0).sort((a, b) => a.avg - b.avg).slice(0, 5)
     .map(x => ({ label: x.label, value: `${x.avg}ms`, tone: providerTone(x.provider) }));
-  const quality = [...new Map(providers.flatMap(p => p.models.filter(m => m.score).map(m => [m.id, { ...m, provider: p.name }] as const))).values()]
-    .sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, 5)
-    .map(m => ({ label: m.name || m.id, value: `${m.score} Elo`, tone: providerTone(m.provider) }));
-  return { popular, fastest, quality };
+  return { popular, fastest };
+}
+
+type BenchmarkScore = { model: string; score: number | null; source: string; asOf: string };
+type Benchmark = { id: string; name: string; attribution?: string; scores: BenchmarkScore[] };
+type BenchmarkResponse = { fetchedAt: string | null; benchmarks: Benchmark[] };
+
+function BenchmarkLeaders({ base }: { base: string }) {
+  const [data, setData] = useState<BenchmarkResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    fetch(`${base}/v1/benchmarks`, { credentials: 'include' })
+      .then(async response => {
+        if (!response.ok) throw new Error(`Benchmark service returned ${response.status}`);
+        return response.json() as Promise<BenchmarkResponse>;
+      })
+      .then(value => { if (alive) setData(value); })
+      .catch(reason => { if (alive) setError(reason instanceof Error ? reason.message : 'Unable to load benchmarks'); });
+    return () => { alive = false; };
+  }, [base]);
+
+  if (error) return <Card><CardHeader><CardTitle className="text-base">Model benchmarks</CardTitle></CardHeader><CardContent><p className="text-sm text-muted-foreground">{error}</p></CardContent></Card>;
+  if (!data) return <Card><CardHeader><CardTitle className="text-base">Model benchmarks</CardTitle></CardHeader><CardContent><p className="text-sm text-muted-foreground">Loading benchmark rankings…</p></CardContent></Card>;
+  if (!data.benchmarks.length) return <Card><CardHeader><CardTitle className="text-base">Model benchmarks</CardTitle></CardHeader><CardContent><p className="text-sm text-muted-foreground">No benchmark data is available yet.</p></CardContent></Card>;
+
+  const benchmark = data.benchmarks[Math.min(selected, data.benchmarks.length - 1)];
+  const scores = [...benchmark.scores].sort((a, b) => (b.score === null ? -1 : a.score === null ? 1 : b.score - a.score) || a.model.localeCompare(b.model));
+  return <Card>
+    <CardHeader>
+      <CardTitle className="text-base">Model benchmarks</CardTitle>
+      <CardDescription>Rankings for models Leyline offers; unbenchmarked models are shown without borrowed scores.</CardDescription>
+      <div className="flex flex-wrap gap-2 pt-2" role="tablist" aria-label="Benchmarks">
+        {data.benchmarks.map((item, index) => <button key={item.id} type="button" role="tab" aria-selected={index === selected} onClick={() => setSelected(index)} className={`rounded-md px-2 py-1 text-xs ${index === selected ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}>{item.name}</button>)}
+      </div>
+    </CardHeader>
+    <CardContent className="space-y-2">
+      {scores.slice(0, 8).map(item => <div key={item.model} className="flex items-center justify-between gap-3 text-sm"><span className="truncate">{item.model}</span><span className="shrink-0 text-right tabular-nums">{item.score === null ? 'not benchmarked' : `${item.score} · ${item.source}`}</span></div>)}
+      {benchmark.attribution ? <p className="pt-2 text-xs text-muted-foreground">{benchmark.attribution}</p> : null}
+    </CardContent>
+  </Card>;
 }
 
 export function OverviewPage({ d, go }: { d: Dashboard; go: (page: string) => void }) {
@@ -66,7 +106,7 @@ export function OverviewPage({ d, go }: { d: Dashboard; go: (page: string) => vo
   const ok = logs.filter(l => l.status === 'success').length;
   const durations = logs.map(l => l.duration || 0).filter(Boolean);
   const avg = durations.length ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : 0;
-  const { popular, fastest, quality } = analytics(providers, logs);
+  const { popular, fastest } = analytics(providers, logs);
   const tunnel = stats.tunnel;
   const base = session?.hosted ? (session.publicUrl || window.location.origin) : tunnel?.publicBaseUrl?.replace(/\/v1$/, '') || apiUrl('');
 
@@ -114,10 +154,13 @@ export function OverviewPage({ d, go }: { d: Dashboard; go: (page: string) => vo
         </CardContent>
       </Card>
 
-      <div className="mt-6 grid gap-4 lg:grid-cols-3">
+      <div className="mt-6 grid gap-4 lg:grid-cols-2">
         <MetricCard title="Most popular" empty="No requests yet" rows={popular} />
         <MetricCard title="Fastest models" empty="No latency yet" rows={fastest} />
-        <MetricCard title="Quality leaders" empty="No scores available" rows={quality} />
+      </div>
+
+      <div className="mt-6">
+        <BenchmarkLeaders base={base} />
       </div>
 
       {providers.length === 0 && !d.waiting ? <div className="mt-6"><EmptyState title="No providers registered" /></div> : null}
