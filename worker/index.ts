@@ -6,7 +6,7 @@ import { adminOf, applySettings, type HostedOptions } from '../src/core/hosted';
 import { D1ArcanaCloudStore, D1DocStore, D1LogStore, D1SecretStore, type D1Database } from '../src/core/d1-stores';
 import { arcanaCloudConfigFromEnv, parseArcanaCloudReferences, type SecretStore } from '../src/core/secret-store';
 import { logger } from '../src/core/logger';
-import { fetchBenchmarkSnapshot, refreshEmptyBenchmarks, type BenchmarkCache, type BenchmarkSnapshot } from '../src/core/benchmarks';
+import { fetchBenchmarkSnapshot, refreshBenchmarks, type BenchmarkCache, type BenchmarkSnapshot } from '../src/core/benchmarks';
 import type { ModelListSnapshot } from '../src/core/router';
 import type { WorkersAiBinding } from '../src/providers/workers-ai';
 
@@ -55,9 +55,9 @@ function benchmarkCache(docs: D1DocStore, env: Env): BenchmarkCache {
   };
 }
 
-function refreshBenchmarks(docs: D1DocStore, env: Env): Promise<unknown> {
+function refreshStoredBenchmarks(docs: D1DocStore, env: Env, force = false): Promise<unknown> {
   const cache = benchmarkCache(docs, env);
-  return refreshEmptyBenchmarks(
+  return refreshBenchmarks(
     () => fetchBenchmarkSnapshot({
       artificialAnalysisApiKey: env.ARTIFICIAL_ANALYSIS_API_KEY,
       artificialAnalysisUrl: env.ARTIFICIAL_ANALYSIS_URL,
@@ -65,6 +65,7 @@ function refreshBenchmarks(docs: D1DocStore, env: Env): Promise<unknown> {
       lmarenaUrl: env.LM_ARENA_URL ?? 'https://datasets-server.huggingface.co/rows?dataset=lmarena-ai/leaderboard-dataset&config=text&split=latest',
     }),
     cache,
+    force,
   );
 }
 
@@ -139,7 +140,15 @@ async function build(env: Env): Promise<Built> {
   // Refresh missing/stale lists during Worker startup so a cold instance can advertise served models.
   await router.reindexStale();
   mark('router');
-  const hosted = hostedOptions(docs, { sharedMinute: true, watch: false });
+  const hosted = hostedOptions(docs, { sharedMinute: true, watch: false, benchmarks: {
+    fetch: () => fetchBenchmarkSnapshot({
+      artificialAnalysisApiKey: env.ARTIFICIAL_ANALYSIS_API_KEY,
+      artificialAnalysisUrl: env.ARTIFICIAL_ANALYSIS_URL,
+      epochUrl: env.EPOCH_BENCHMARKS_URL ?? 'https://epoch.ai/data/benchmark_data.zip',
+      lmarenaUrl: env.LM_ARENA_URL ?? 'https://datasets-server.huggingface.co/rows?dataset=lmarena-ai/leaderboard-dataset&config=text&split=latest',
+    }),
+    background: keepAlive,
+  } });
   hosted.background = keepAlive;
   const email = env.EMAIL;
   if (email) {
@@ -257,12 +266,7 @@ export default {
     const docs = new D1DocStore(env.DB);
     await Promise.all([
       docs.prune(),
-      fetchBenchmarkSnapshot({
-        artificialAnalysisApiKey: env.ARTIFICIAL_ANALYSIS_API_KEY,
-        artificialAnalysisUrl: env.ARTIFICIAL_ANALYSIS_URL,
-        epochUrl: env.EPOCH_BENCHMARKS_URL,
-        lmarenaUrl: env.LM_ARENA_URL,
-      }).then((snapshot: BenchmarkSnapshot) => docs.put(BENCHMARKS_DOC, snapshot)),
+      refreshStoredBenchmarks(docs, env, true),
     ]);
   },
 };

@@ -119,16 +119,17 @@ export async function loadBenchmarks(
 
 let benchmarkRefresh: Promise<BenchmarkSnapshot | null> | null = null;
 
-/** Refresh only an empty cache; callers can schedule this without delaying their response. */
-export function refreshEmptyBenchmarks(
+/** Schedule one refresh without allowing concurrent requests to stampede the sources. */
+export function refreshBenchmarks(
   fetcher: BenchmarkFetcher,
   cache: BenchmarkCache,
+  force = false,
 ): Promise<BenchmarkSnapshot | null> {
   if (benchmarkRefresh) return benchmarkRefresh;
   benchmarkRefresh = (async () => {
     const cached = await cache.get();
-    if (cached && cached.benchmarks.some((benchmark) => benchmark.scores.length > 0)) return cached;
-    return loadBenchmarks(fetcher, cache);
+    if (!force && cached && cached.benchmarks.some((benchmark) => benchmark.scores.length > 0)) return cached;
+    return loadBenchmarks(fetcher, cache, Date.now(), force ? 0 : undefined);
   })().catch((error) => {
     console.error('[benchmarks] background refresh failed', error instanceof Error ? error.message : 'unknown error');
     return null;
@@ -137,6 +138,14 @@ export function refreshEmptyBenchmarks(
   });
   return benchmarkRefresh;
 }
+/** Refresh only an empty cache; callers can schedule this without delaying their response. */
+export function refreshEmptyBenchmarks(
+  fetcher: BenchmarkFetcher,
+  cache: BenchmarkCache,
+): Promise<BenchmarkSnapshot | null> {
+  return refreshBenchmarks(fetcher, cache);
+}
+
 import { unzipSync, strFromU8 } from 'fflate';
 
 export type BenchmarkSource = {
@@ -210,14 +219,20 @@ function snapshotFromRows(rows: BenchmarkRow[], source: string, fetchedAt: numbe
   };
 }
 
-async function fetchResponse(url: string, headers: Record<string, string> = {}): Promise<Response> {
+async function fetchResponse(url: string, headers: Record<string, string> = {}, retries = 0): Promise<Response> {
   const response = await fetch(url, { headers });
-  if (!response.ok) throw new Error(`${new URL(url).hostname} returned ${response.status}`);
+  if (!response.ok) {
+    if (response.status >= 500 && response.status < 600 && retries > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return fetchResponse(url, headers, retries - 1);
+    }
+    throw new Error(`${new URL(url).hostname} returned ${response.status}`);
+  }
   return response;
 }
 
-async function fetchJson(url: string, headers: Record<string, string> = {}): Promise<unknown> {
-  const response = await fetchResponse(url, headers);
+async function fetchJson(url: string, headers: Record<string, string> = {}, retries = 0): Promise<unknown> {
+  const response = await fetchResponse(url, headers, retries);
   return response.json();
 }
 
@@ -277,7 +292,7 @@ export async function fetchEpochSnapshot(url: string): Promise<BenchmarkSnapshot
 async function fetchLMArena(url: string): Promise<BenchmarkSnapshot> {
   const rows: BenchmarkRow[] = [];
   for (let offset = 0; offset < 12000; offset += 100) {
-    const payload = await fetchJson(`${url}${url.includes('?') ? '&' : '?'}offset=${offset}&length=100`);
+    const payload = await fetchJson(`${url}${url.includes('?') ? '&' : '?'}offset=${offset}&length=100`, {}, 2);
     const page = rowsFromPayload(payload).filter((row) => row.benchmark.toLowerCase() === 'overall');
     rows.push(...page.map((row) => ({ ...row, benchmark: 'lmarena-text-elo' })));
     const root = asRecord(payload);
@@ -322,7 +337,15 @@ export async function fetchBenchmarkSnapshot(env: {
   epochUrl?: string;
   lmarenaUrl?: string;
 }): Promise<BenchmarkSnapshot> {
-  const snapshots = await Promise.all(benchmarkSources(env).map((source) => source.fetch()));
+  const sources = benchmarkSources(env);
+  const results = await Promise.allSettled(sources.map((source) => source.fetch()));
+  const snapshots = results.flatMap((result, index) => {
+    if (result.status === 'fulfilled') return [result.value];
+    const source = sources[index];
+    console.error(`[benchmarks] ${source?.name ?? 'unknown'} refresh failed`, result.reason instanceof Error ? result.reason.message : result.reason);
+    return [];
+  });
+  if (snapshots.length === 0) throw new Error('all benchmark sources failed');
   const benchmarks = benchmarkCatalog().map(({ id, name }) => {
     const scores = snapshots.flatMap((snapshot) => snapshot.benchmarks.find((benchmark) => benchmark.id === id)?.scores ?? []);
     const best = new Map<string, BenchmarkScore>();

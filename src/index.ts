@@ -84,6 +84,7 @@ import { FileDocStore, GcsDocStore, IssuedKeys, MemoryDocStore, type DocStore } 
 import type { SecretStore } from './core/secret-store';
 import { AegisAuth } from './core/admin-login';
 import { watchSettings, type HostedOptions } from './core/hosted';
+import { refreshBenchmarks, type BenchmarkSnapshot } from './core/benchmarks';
 import { SecretManagerSecretStore } from './core/secret-manager-store';
 import { startServer } from './server';
 import { Router } from './core/router';
@@ -354,7 +355,7 @@ if (typeof module !== 'undefined' && require.main === module) {
 }
 
 /** Hosted keys mode from the environment (LEYLINE_HOSTED_KEYS=on). `docs` overrides where keys live (the Worker passes D1). */
-export function hostedOptions(docs?: DocStore, opts: { sharedMinute?: boolean; watch?: boolean } = {}): HostedOptions {
+export function hostedOptions(docs?: DocStore, opts: { sharedMinute?: boolean; watch?: boolean; benchmarks?: { fetch: () => Promise<BenchmarkSnapshot>; background?: (work: Promise<unknown>) => void } } = {}): HostedOptions {
   const h = config.hosted;
   const store = docs ?? (h.keysBucket ? new GcsDocStore(h.keysBucket) : h.keysDir ? new FileDocStore(h.keysDir) : new MemoryDocStore());
   if (!docs && !h.keysBucket && !h.keysDir) console.warn('[Leyline] hosted keys are kept in memory only (set LEYLINE_KEYS_BUCKET or LEYLINE_KEYS_DIR)');
@@ -363,6 +364,20 @@ export function hostedOptions(docs?: DocStore, opts: { sharedMinute?: boolean; w
     : null;
   if (!login && !h.adminToken) console.warn('[Leyline] hosted keys: no admin sign-in and no LEYLINE_ADMIN_TOKEN; keys can\'t be managed');
   const hosted: HostedOptions = { keys: new IssuedKeys(store, { sharedMinute: opts.sharedMinute }), models: h.models, aliases: h.aliases, login, adminEmails: h.adminEmails, monthlyBudgetUsd: h.monthlyBudgetUsd, ...(h.adminToken ? { adminToken: h.adminToken } : {}), publicUrl: h.publicUrl };
+  if (opts.benchmarks) {
+    const benchmarkCache = {
+      get: async () => (await store.get<BenchmarkSnapshot>('benchmarks'))?.value ?? null,
+      put: async (snapshot: BenchmarkSnapshot) => { await store.put('benchmarks', snapshot); },
+    };
+    hosted.benchmarks = async () => {
+      const cached = await benchmarkCache.get();
+      if (!cached || Date.now() - cached.fetchedAt >= 24 * 60 * 60 * 1000) {
+        const refresh = refreshBenchmarks(opts.benchmarks!.fetch, benchmarkCache, true);
+        opts.benchmarks!.background?.(refresh);
+      }
+      return cached;
+    };
+  }
   if (opts.watch !== false) watchSettings(hosted);
   return hosted;
 }
