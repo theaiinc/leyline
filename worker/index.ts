@@ -6,7 +6,7 @@ import { adminOf, applySettings, type HostedOptions } from '../src/core/hosted';
 import { D1ArcanaCloudStore, D1DocStore, D1LogStore, D1SecretStore, type D1Database } from '../src/core/d1-stores';
 import { arcanaCloudConfigFromEnv, parseArcanaCloudReferences, type SecretStore } from '../src/core/secret-store';
 import { logger } from '../src/core/logger';
-import { fetchBenchmarkSnapshot, refreshEmptyBenchmarks, type BenchmarkCache } from '../src/core/benchmarks';
+import { fetchBenchmarkSnapshot, refreshEmptyBenchmarks, type BenchmarkCache, type BenchmarkSnapshot } from '../src/core/benchmarks';
 import type { ModelListSnapshot } from '../src/core/router';
 import type { WorkersAiBinding } from '../src/providers/workers-ai';
 
@@ -47,8 +47,11 @@ const BENCHMARKS_DOC = 'benchmarks';
 
 function benchmarkCache(docs: D1DocStore, env: Env): BenchmarkCache {
   return {
-    get: async () => (await docs.get<Awaited<ReturnType<typeof fetchBenchmarkSnapshot>>(never)> (BENCHMARKS_DOC)).value ?? null,
-    put: async (snapshot) => { await docs.put(BENCHMARKS_DOC, snapshot); },
+    get: async () => {
+      const record = await docs.get<BenchmarkSnapshot>(BENCHMARKS_DOC);
+      return record?.value ?? null;
+    },
+    put: async (snapshot: BenchmarkSnapshot) => { await docs.put(BENCHMARKS_DOC, snapshot); },
   };
 }
 
@@ -58,8 +61,8 @@ function refreshBenchmarks(docs: D1DocStore, env: Env): Promise<unknown> {
     () => fetchBenchmarkSnapshot({
       artificialAnalysisApiKey: env.ARTIFICIAL_ANALYSIS_API_KEY,
       artificialAnalysisUrl: env.ARTIFICIAL_ANALYSIS_URL,
-      epochUrl: env.EPOCH_BENCHMARKS_URL,
-      lmarenaUrl: env.LM_ARENA_URL,
+      epochUrl: env.EPOCH_BENCHMARKS_URL ?? 'https://epoch.ai/data/benchmark_data.zip',
+      lmarenaUrl: env.LM_ARENA_URL ?? 'https://datasets-server.huggingface.co/rows?dataset=lmarena-ai/leaderboard-dataset&config=text&split=latest',
     }),
     cache,
   );
@@ -249,8 +252,17 @@ export default {
     return out;
   },
 
-  /** Daily: drop old per-minute counters. */
+  /** Daily: refresh benchmark rankings and drop old per-minute counters. */
   async scheduled(_event: unknown, env: Env): Promise<void> {
-    await new D1DocStore(env.DB).prune();
+    const docs = new D1DocStore(env.DB);
+    await Promise.all([
+      docs.prune(),
+      fetchBenchmarkSnapshot({
+        artificialAnalysisApiKey: env.ARTIFICIAL_ANALYSIS_API_KEY,
+        artificialAnalysisUrl: env.ARTIFICIAL_ANALYSIS_URL,
+        epochUrl: env.EPOCH_BENCHMARKS_URL,
+        lmarenaUrl: env.LM_ARENA_URL,
+      }).then((snapshot: BenchmarkSnapshot) => docs.put(BENCHMARKS_DOC, snapshot)),
+    ]);
   },
 };

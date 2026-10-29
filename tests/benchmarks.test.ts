@@ -1,4 +1,6 @@
+import { zipSync, strToU8 } from 'fflate';
 import {
+  fetchEpochSnapshot,
   loadBenchmarks,
   matchBenchmarkModel,
   rankBenchmarks,
@@ -38,6 +40,21 @@ describe('benchmark matching and ranking', () => {
     const ranked = rankBenchmarks(['gpt-4o-mini', 'gpt-4o', 'claude-opus-5-5'], snapshot);
     expect(ranked.map((row) => row.id)).toEqual(['claude-opus-5-5', 'gpt-4o', 'gpt-4o-mini']);
     expect(ranked.find((row) => row.id === 'gpt-4o-mini')?.benchmarks['gpqa-diamond']).toBeNull();
+  });
+});
+
+describe('Epoch benchmark ZIP parsing', () => {
+  it('maps per-file score columns and preserves quoted newlines', async () => {
+    const zip = zipSync({
+      'gpqa_diamond.csv': strToU8('Model version,mean_score,Release date\ngpt-6.1-terra_max,0.943,2026-10-26\n'),
+      'hle_external.csv': strToU8('Model version,Accuracy,Notes\nClaude Opus 5.5 (High),0.812,"line one\nline two"\n'),
+    });
+    const originalFetch = global.fetch;
+    global.fetch = async () => new Response(zip, { status: 200 });
+    const snapshot = await fetchEpochSnapshot('https://example.test/benchmark_data.zip');
+    global.fetch = originalFetch;
+    expect(snapshot.benchmarks.find((benchmark: BenchmarkSnapshot['benchmarks'][number]) => benchmark.id === 'gpqa-diamond')?.scores[0]).toMatchObject({ model: 'gpt-6.1-terra_max', score: 0.943 });
+    expect(snapshot.benchmarks.find((benchmark: BenchmarkSnapshot['benchmarks'][number]) => benchmark.id === 'hle')?.scores[0]).toMatchObject({ model: 'Claude Opus 5.5 (High)', score: 0.812 });
   });
 });
 
