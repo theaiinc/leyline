@@ -106,11 +106,31 @@ export async function loadBenchmarks(
     await cache.put(fresh);
     return fresh;
   } catch (error) {
-    console.error('[benchmarks] refresh failed; using last good snapshot', error);
+    console.error('[benchmarks] refresh failed; using last good snapshot', error instanceof Error ? error.message : 'unknown error');
     return cached;
   }
 }
 
+let benchmarkRefresh: Promise<BenchmarkSnapshot | null> | null = null;
+
+/** Refresh only an empty cache; callers can schedule this without delaying their response. */
+export function refreshEmptyBenchmarks(
+  fetcher: BenchmarkFetcher,
+  cache: BenchmarkCache,
+): Promise<BenchmarkSnapshot | null> {
+  if (benchmarkRefresh) return benchmarkRefresh;
+  benchmarkRefresh = (async () => {
+    const cached = await cache.get();
+    if (cached && cached.benchmarks.some((benchmark) => benchmark.scores.length > 0)) return cached;
+    return loadBenchmarks(fetcher, cache);
+  })().catch((error) => {
+    console.error('[benchmarks] background refresh failed', error instanceof Error ? error.message : 'unknown error');
+    return null;
+  }).finally(() => {
+    benchmarkRefresh = null;
+  });
+  return benchmarkRefresh;
+}
 export type BenchmarkSource = {
   name: string;
   attribution: string;
@@ -218,9 +238,16 @@ export async function fetchBenchmarkSnapshot(env: Parameters<typeof benchmarkSou
   for (const source of sources) {
     try {
       const snapshot = await source.fetch();
-      if (snapshot.benchmarks.some((benchmark) => benchmark.scores.length)) snapshots.push(snapshot);
+      const rows = snapshot.benchmarks.reduce((count, benchmark) => count + benchmark.scores.length, 0);
+      console.log(JSON.stringify({ event: 'benchmark_source', source: source.name, rowsMatched: rows }));
+      if (rows > 0) snapshots.push(snapshot);
     } catch (error) {
-      console.warn(`[benchmarks] ${source.name} unavailable`, error);
+      console.warn(JSON.stringify({
+        event: 'benchmark_source',
+        source: source.name,
+        rowsMatched: 0,
+        error: error instanceof Error ? error.message : 'unknown error',
+      }));
     }
   }
   if (!snapshots.length) throw new Error('No benchmark source available');
