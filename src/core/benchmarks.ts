@@ -131,7 +131,6 @@ export function refreshEmptyBenchmarks(
   });
   return benchmarkRefresh;
 }
-
 export type BenchmarkSource = {
   name: string;
   attribution: string;
