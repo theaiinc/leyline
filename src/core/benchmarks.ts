@@ -5,7 +5,9 @@ export type BenchmarkId =
   | 'livecodebench'
   | 'aime'
   | 'lmarena-text-elo'
-  | 'intelligence-index';
+  | 'intelligence-index'
+  | 'livebench'
+  | 'terminal-bench';
 
 export type BenchmarkScore = {
   model: string;
@@ -42,6 +44,8 @@ const BENCHMARK_NAMES: Record<BenchmarkId, string> = {
   aime: 'AIME',
   'lmarena-text-elo': 'LMArena text Elo',
   'intelligence-index': 'Composite intelligence index',
+  livebench: 'LiveBench',
+  'terminal-bench': 'Terminal-Bench',
 };
 
 const MODEL_ALIASES: Record<string, string> = {
@@ -161,7 +165,9 @@ function benchmarkId(value: string): BenchmarkId | null {
   const aliases: Record<string, BenchmarkId> = {
     gpqa: 'gpqa-diamond', 'gpqa-diamond': 'gpqa-diamond',
     'swe-bench-verified': 'swe-bench-verified', 'swebench-verified': 'swe-bench-verified',
-    livecodebench: 'livecodebench', aime: 'aime', 'aime-2024': 'aime',
+    livecodebench: 'livecodebench', livebench: 'livebench',
+    'terminal-bench': 'terminal-bench', terminalbench: 'terminal-bench',
+    aime: 'aime', 'aime-2024': 'aime',
     'humanitys-last-exam': 'hle', hle: 'hle',
     'lmarena-text-elo': 'lmarena-text-elo',
   };
@@ -215,7 +221,7 @@ async function fetchJson(url: string, headers: Record<string, string> = {}): Pro
   return response.json();
 }
 
-function parseCsv(csv: string, benchmark: string): BenchmarkRow[] {
+function parseCsv(csv: string, benchmark: string, scoreColumn: string): BenchmarkRow[] {
   const records: string[][] = [];
   let record: string[] = [];
   let field = '';
@@ -235,10 +241,10 @@ function parseCsv(csv: string, benchmark: string): BenchmarkRow[] {
   }
   if (field || record.length) { record.push(field); records.push(record); }
   if (records.length < 2) return [];
-  const headers = records[0].map((header) => header.trim());
+  const headers = records[0].map((header) => header.replace(/^\uFEFF/, '').trim());
   const index = (name: string) => headers.findIndex((header) => header.toLowerCase() === name.toLowerCase());
   const modelIndex = index('Model version');
-  const scoreIndex = index('mean_score');
+  const scoreIndex = index(scoreColumn);
   const dateIndex = index('Release date');
   return records.slice(1).flatMap((fields) => {
     const model = asString(fields[modelIndex]);
@@ -248,19 +254,22 @@ function parseCsv(csv: string, benchmark: string): BenchmarkRow[] {
   });
 }
 
-async function fetchEpoch(url: string): Promise<BenchmarkSnapshot> {
+export async function fetchEpochSnapshot(url: string): Promise<BenchmarkSnapshot> {
   const response = await fetchResponse(url);
   const archive = unzipSync(new Uint8Array(await response.arrayBuffer()));
   const rows = Object.entries(archive).flatMap(([name, data]) => {
     const file = name.split('/').pop()?.toLowerCase() ?? '';
-    const mapped: Record<string, string> = {
-      gpqa_diamond: 'gpqa-diamond', swe_bench_verified: 'swe-bench-verified',
-      otis_mock_aime_2024_2025: 'aime', math_level_5: 'aime',
-      simpleqa_verified: 'hle',
+    const mapped: Record<string, { benchmark: BenchmarkId; scoreColumn: string }> = {
+      gpqa_diamond: { benchmark: 'gpqa-diamond', scoreColumn: 'mean_score' },
+      swe_bench_verified: { benchmark: 'swe-bench-verified', scoreColumn: 'mean_score' },
+      otis_mock_aime_2024_2025: { benchmark: 'aime', scoreColumn: 'mean_score' },
+      hle_external: { benchmark: 'hle', scoreColumn: 'Accuracy' },
+      live_bench_external: { benchmark: 'livebench', scoreColumn: 'Global average' },
+      terminalbench_external: { benchmark: 'terminal-bench', scoreColumn: 'Accuracy mean' },
     };
-    const stem = file.replace(/\.csv$/, '');
-    const benchmark = mapped[stem];
-    return benchmark ? parseCsv(strFromU8(data), benchmark) : [];
+    const stem = file.replace(/\.csv$/, '').replace(/-/g, '_');
+    const mapping = mapped[stem];
+    return mapping ? parseCsv(strFromU8(data), mapping.benchmark, mapping.scoreColumn) : [];
   });
   return snapshotFromRows(rows, 'Epoch AI Benchmarking Hub', Date.now());
 }
@@ -285,20 +294,18 @@ export function benchmarkSources(env: {
   lmarenaUrl?: string;
 }): BenchmarkSource[] {
   const sources: BenchmarkSource[] = [];
-  if (env.epochUrl) {
-    sources.push({
-      name: 'epoch',
-      attribution: 'Epoch AI Benchmarking Hub',
-      fetch: () => fetchEpoch(env.epochUrl!),
-    });
-  }
-  if (env.lmarenaUrl) {
-    sources.push({
-      name: 'lmarena',
-      attribution: 'LMArena',
-      fetch: () => fetchLMArena(env.lmarenaUrl!),
-    });
-  }
+  const epochUrl = env.epochUrl ?? 'https://epoch.ai/data/benchmark_data.zip';
+  const lmarenaUrl = env.lmarenaUrl ?? 'https://datasets-server.huggingface.co/rows?dataset=lmarena-ai/leaderboard-dataset&config=text&split=latest';
+  sources.push({
+    name: 'epoch',
+    attribution: 'Epoch AI Benchmarking Hub',
+    fetch: () => fetchEpochSnapshot(epochUrl),
+  });
+  sources.push({
+    name: 'lmarena',
+    attribution: 'LMArena',
+    fetch: () => fetchLMArena(lmarenaUrl),
+  });
   if (env.artificialAnalysisApiKey && env.artificialAnalysisUrl) {
     sources.push({
       name: 'artificial-analysis',
@@ -307,4 +314,23 @@ export function benchmarkSources(env: {
     });
   }
   return sources;
+}
+
+export async function fetchBenchmarkSnapshot(env: {
+  artificialAnalysisApiKey?: string;
+  artificialAnalysisUrl?: string;
+  epochUrl?: string;
+  lmarenaUrl?: string;
+}): Promise<BenchmarkSnapshot> {
+  const snapshots = await Promise.all(benchmarkSources(env).map((source) => source.fetch()));
+  const benchmarks = benchmarkCatalog().map(({ id, name }) => {
+    const scores = snapshots.flatMap((snapshot) => snapshot.benchmarks.find((benchmark) => benchmark.id === id)?.scores ?? []);
+    const best = new Map<string, BenchmarkScore>();
+    for (const score of scores) {
+      const key = normalizeModelId(score.model);
+      if (!best.has(key) || best.get(key)!.score < score.score) best.set(key, score);
+    }
+    return { id, name, scores: [...best.values()] };
+  });
+  return { fetchedAt: Date.now(), benchmarks };
 }
