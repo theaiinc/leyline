@@ -134,7 +134,6 @@ export function refreshEmptyBenchmarks(
   return benchmarkRefresh;
 }
 import { unzipSync, strFromU8 } from 'fflate';
-
 export type BenchmarkSource = {
   name: string;
   attribution: string;
