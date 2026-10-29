@@ -8,7 +8,6 @@ import { CompletionRequest, ClassifyRequest, Provider, ApiKeyConfigurableProvide
 import { mountMediaRoutes } from './core/media-routes';
 import { logger } from './core/logger';
 import { QuotaManager } from './core/quota-manager';
-import { getModelScore } from './core/leaderboard-data';
 import { config } from './config';
 import { requireClientApiKey } from './core/client-auth';
 import { adminOf, mountHosted, providersOverBudget, resumeAdminSession, recordUsage, servedBy, requireIssuedKey, resolveModel, sameOrigin, type HostedOptions } from './core/hosted';
@@ -473,7 +472,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
                 models = await p.getModels();
                 models = models.map(m => ({
                     ...m,
-                    score: getModelScore(m.id)
+                    capabilities: providerCapabilities(p),
                 }));
                 modelCache[p.name] = { models, timestamp: Date.now() };
             } catch (e) {
