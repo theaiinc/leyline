@@ -104,6 +104,9 @@ async function build(env: Env): Promise<Built> {
   // reuse lists made without it until the half-hourly refresh.
   const listsVersion = `${version}|${router.getProviders().map((p) => p.name).sort().join(',')}`;
   if (shared?.value.version === listsVersion) router.importModelLists(shared.value.lists);
+  // The hosted model route falls back to the provider index when no fixed pool is configured.
+  // Refresh missing/stale lists during Worker startup so a cold instance can advertise served models.
+  await router.reindexStale();
   mark('router');
   const hosted = hostedOptions(docs, { sharedMinute: true, watch: false });
   hosted.background = keepAlive;

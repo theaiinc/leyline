@@ -303,9 +303,14 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
   opts.publishedPriceCounts ??= () => router.publishedPriceCounts();
   opts.anyPublishedPrice ??= (model) => router.anyPublishedPrice(model);
   // ── models ──────────────────────────────────────────────────────────────────────────────────────────
-  app.get('/v1/models', requireIssuedKeyNoModel(opts), (req, res) => {
+  app.get('/v1/models', requireIssuedKeyNoModel(opts), async (req, res) => {
     const key = (req as WithKey).issuedKey!;
-    const ids = [...opts.models, ...Object.keys(opts.aliases).filter((a) => !a.includes('*'))].filter((m, i, all) => all.indexOf(m) === i && modelAllowed(key.caps, m) && !isBlocked(opts, m));
+    // An empty configured pool means "everything the providers currently serve", not "nothing".
+    // Refresh stale provider listings here as a safety net for Node and cold Worker instances.
+    if (opts.models.length === 0) await router.reindexStale();
+    const configured = [...opts.models, ...Object.keys(opts.aliases).filter((a) => !a.includes('*'))];
+    const providerModels = opts.models.length === 0 ? Object.keys(router.getModelIndex()) : [];
+    const ids = [...configured, ...providerModels].filter((m, i, all) => all.indexOf(m) === i && modelAllowed(key.caps, m) && !isBlocked(opts, m));
     res.json({ object: 'list', data: ids.map((id) => ({ id, object: 'model', created: 0, owned_by: 'leyline', type: 'model', display_name: id })) });
   });
 
