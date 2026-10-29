@@ -38,6 +38,9 @@
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
     "@huggingface/inference": "^4.13.5",
+    "@theaiinc/veil": "^0.1.1",
+    "@theaiinc/veil-presidio": "^0.1.1",
+    "@theaiinc/veil-regex": "^0.1.1",
     "axios": "^1.13.2",
     "cn": "^0.4.0",
     "cors": "^2.8.5",
