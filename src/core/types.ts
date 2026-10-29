@@ -41,7 +41,7 @@ export interface CompletionResponse {
   model: string;
   choices: Array<{
     index: number;
-    message: { role: string; content: string };
+    message: { role: string; content: string; tool_calls?: Array<{ id?: string; type?: string; function?: { name?: string; arguments?: string } }> };
     finish_reason: string;
   }>;
   usage?: {

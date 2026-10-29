@@ -9,6 +9,7 @@ import { errorStatus } from './media';
 import { estimateBodyTokens } from './content';
 import { DEFAULT_PRICE, IssuedKeys, costUsd, modelAllowed, priceOf, type HostedSettings, type IssuedKey, type KeyCaps, type Price } from './issued-keys';
 import type { BenchmarkSnapshot } from './benchmarks';
+import { RequestPiiRedactor } from './pii-redaction';
 
 function capabilitiesForModel(modelId: string): string[] {
   const id = modelId.toLowerCase();
@@ -73,7 +74,7 @@ export type HostedOptions = {
   background?: (work: Promise<unknown>) => void;
 };
 
-type WithKey = Request & { issuedKey?: IssuedKey; requestedModel?: string; ownerRequest?: boolean; served?: { provider: string; model: string }; timings?: { lookupMs: number; admitMs: number } };
+type WithKey = Request & { issuedKey?: IssuedKey; requestedModel?: string; ownerRequest?: boolean; served?: { provider: string; model: string }; timings?: { lookupMs: number; admitMs: number }; pii?: RequestPiiRedactor };
 
 /** Route option that remembers which provider and model served this request (for spend by provider and model). */
 export function servedBy(req: Request): (provider: string, model: string) => void {
@@ -133,6 +134,12 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
     if (refusal) return fail(refusal.status, refusal.code, refusal.message);
     (req as WithKey).issuedKey = key;
     (req as WithKey).requestedModel = requested;
+    (req as WithKey).pii = new RequestPiiRedactor({
+      mode: key.caps.piiRedaction ?? 'off',
+      allowlist: key.caps.piiAllowlist ?? [],
+      presidioAnalyzerUrl: process.env.PRESIDIO_ANALYZER_URL,
+      log: (event) => console.log(JSON.stringify(event)),
+    });
     next();
   };
 }
@@ -349,6 +356,8 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
     }
     const asked = request.model;
     request.model = resolveModel(opts.aliases, asked);
+    const pii = (req as WithKey).pii;
+    if (pii) request = await pii.redact(request);
     try {
       if (request.stream) {
         res.setHeader('Content-Type', 'text/event-stream');
@@ -360,7 +369,45 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
         };
         try {
           const excludeProviders = await providersOverBudget(opts);
-          for await (const chunk of await router.routeStream(request, { onServed: servedBy(req), excludeProviders })) send(out.push(chunk));
+          for await (const chunk of await router.routeStream(request, { onServed: servedBy(req), excludeProviders })) {
+            if (pii) {
+              for (const [choiceIndex, choice] of (chunk.choices ?? []).entries() as Iterable<[number, { delta?: { content?: string | null; tool_calls?: Array<{ function?: { arguments?: string } }> } }]>) {
+                if (choice.delta?.content) choice.delta.content = pii.rehydrateStream(choice.delta.content, `choice:${choiceIndex}:content`);
+                for (const [toolIndex, call] of (choice.delta?.tool_calls ?? []).entries()) {
+                  if (call.function?.arguments) call.function.arguments = pii.rehydrateStream(call.function.arguments, `choice:${choiceIndex}:tool:${toolIndex}`);
+                }
+              }
+            }
+            send(out.push(chunk));
+          }
+          if (pii) {
+            for (const key of pii.streamKeys) {
+              const tail = pii.finishStream(key);
+              if (!tail) continue;
+              const match = /^choice:(\d+):(content|tool:(\d+))$/.exec(key);
+              if (!match) continue;
+              const choiceIndex = Number(match[1]);
+              if (match[2] === 'content') {
+                send([{
+                  event: 'content_block_delta',
+                  data: {
+                    type: 'content_block_delta',
+                    index: choiceIndex,
+                    delta: { type: 'text_delta', text: tail },
+                  },
+                }]);
+              } else {
+                send([{
+                  event: 'content_block_delta',
+                  data: {
+                    type: 'content_block_delta',
+                    index: Number(match[3]),
+                    delta: { type: 'input_json_delta', partial_json: tail },
+                  },
+                }]);
+            }
+          }
+        }
           send(out.end());
         } catch (err) {
           console.error('[hosted] /v1/messages stream failed', err);
@@ -373,7 +420,19 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
         return;
       }
       const response = await router.route(request, { onServed: servedBy(req), excludeProviders: await providersOverBudget(opts) });
-      res.json(openAIToAnthropic(response, asked));
+      const hydrated = pii ? { ...response, choices: response.choices?.map((choice) => ({
+        ...choice,
+        message: choice.message ? {
+          ...choice.message,
+          content: typeof choice.message.content === 'string' ? pii.rehydrate(choice.message.content) : choice.message.content,
+          tool_calls: choice.message.tool_calls?.map((call) => ({
+            ...call,
+            function: call.function ? { ...call.function, arguments: pii.rehydrate(call.function.arguments ?? '') } : call.function,
+          })),
+        } : choice.message,
+      })) } : response;
+      if (pii) { await pii.finish(); }
+      res.json(openAIToAnthropic(hydrated, asked));
       recordUsage(opts, req, response.usage);
     } catch (err) {
       console.error('[hosted] /v1/messages failed', err);

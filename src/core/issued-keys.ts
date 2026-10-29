@@ -23,6 +23,10 @@ export type KeyCaps = {
   usdPerMonth?: number | null;
   /** Model ids (or glob patterns like "gemini-*") this key may use; unset: every model offered. */
   models?: string[] | null;
+  /** Request-scoped PII handling; omitted means disabled for existing keys. */
+  piiRedaction?: 'off' | 'regex' | 'presidio';
+  /** Regexes whose matches must remain usable by operational tools. */
+  piiAllowlist?: string[] | null;
 };
 
 export type IssuedKey = {
@@ -544,11 +548,19 @@ function dollars(v: unknown): number | null {
 
 export function cleanCaps(c: KeyCaps): KeyCaps {
   const models = Array.isArray(c.models) ? c.models.map((m) => String(m).trim()).filter(Boolean).slice(0, 50) : null;
+  const piiRedaction = c.piiRedaction === 'regex' || c.piiRedaction === 'presidio' || c.piiRedaction === 'off'
+    ? c.piiRedaction
+    : undefined;
+  const piiAllowlist = Array.isArray(c.piiAllowlist)
+    ? c.piiAllowlist.map((p) => String(p).trim()).filter(Boolean).slice(0, 50)
+    : null;
   return {
     tokensPerMonth: positive(c.tokensPerMonth),
     requestsPerDay: positive(c.requestsPerDay),
     requestsPerMinute: positive(c.requestsPerMinute),
     usdPerMonth: dollars(c.usdPerMonth),
     models: models && models.length ? models : null,
+    ...(piiRedaction ? { piiRedaction } : {}),
+    piiAllowlist,
   };
 }

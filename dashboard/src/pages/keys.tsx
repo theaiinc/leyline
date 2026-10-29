@@ -25,18 +25,21 @@ function capText(c: KeyCaps): string {
   return parts.length ? parts.join(' · ') : 'No limits';
 }
 
-type CapForm = { usdPerMonth: string; tokensPerMonth: string; requestsPerDay: string; requestsPerMinute: string; models: string };
+type CapForm = { usdPerMonth: string; tokensPerMonth: string; requestsPerDay: string; requestsPerMinute: string; models: string; piiRedaction: 'off' | 'regex' | 'presidio'; piiAllowlist: string };
 const toForm = (c: KeyCaps = {}): CapForm => ({
   usdPerMonth: c.usdPerMonth ? String(c.usdPerMonth) : '',
   tokensPerMonth: c.tokensPerMonth ? String(c.tokensPerMonth) : '',
   requestsPerDay: c.requestsPerDay ? String(c.requestsPerDay) : '',
   requestsPerMinute: c.requestsPerMinute ? String(c.requestsPerMinute) : '',
   models: (c.models ?? []).join(', '),
+  piiRedaction: c.piiRedaction ?? 'off',
+  piiAllowlist: (c.piiAllowlist ?? []).join(', '),
 });
 const fromForm = (f: CapForm): KeyCaps => {
   const n = (v: string) => (v.trim() ? Number(v) : null);
   const models = f.models.split(',').map(s => s.trim()).filter(Boolean);
-  return { usdPerMonth: f.usdPerMonth.trim() ? Number(f.usdPerMonth) : null, tokensPerMonth: n(f.tokensPerMonth), requestsPerDay: n(f.requestsPerDay), requestsPerMinute: n(f.requestsPerMinute), models: models.length ? models : null };
+  const piiAllowlist = f.piiAllowlist.split(',').map(s => s.trim()).filter(Boolean);
+  return { usdPerMonth: f.usdPerMonth.trim() ? Number(f.usdPerMonth) : null, tokensPerMonth: n(f.tokensPerMonth), requestsPerDay: n(f.requestsPerDay), requestsPerMinute: n(f.requestsPerMinute), models: models.length ? models : null, piiRedaction: f.piiRedaction, piiAllowlist: piiAllowlist.length ? piiAllowlist : null };
 };
 
 function CapFields({ value, onChange, offered }: { value: CapForm; onChange: (v: CapForm) => void; offered: string[] }) {
@@ -47,6 +50,20 @@ function CapFields({ value, onChange, offered }: { value: CapForm; onChange: (v:
       <div className="grid gap-1.5"><Label htmlFor="cap-tok">Tokens a month</Label><Input id="cap-tok" type="number" min={1} placeholder="No limit" value={value.tokensPerMonth} onChange={set('tokensPerMonth')} /></div>
       <div className="grid gap-1.5"><Label htmlFor="cap-day">Requests a day</Label><Input id="cap-day" type="number" min={1} placeholder="No limit" value={value.requestsPerDay} onChange={set('requestsPerDay')} /></div>
       <div className="grid gap-1.5"><Label htmlFor="cap-min">Requests a minute</Label><Input id="cap-min" type="number" min={1} placeholder="No limit" value={value.requestsPerMinute} onChange={set('requestsPerMinute')} /></div>
+      <div className="grid gap-1.5 sm:col-span-2">
+        <Label htmlFor="pii-redaction">PII redaction</Label>
+        <select id="pii-redaction" className="h-10 rounded-md border bg-background px-3 text-sm" value={value.piiRedaction} onChange={e => onChange({ ...value, piiRedaction: e.target.value as CapForm['piiRedaction'] })}>
+          <option value="off">Off</option>
+          <option value="regex">Regex (fast, recommended)</option>
+          <option value="presidio">Presidio (requires analyzer URL)</option>
+        </select>
+        <p className="text-xs text-muted-foreground">Existing keys remain off unless enabled. Presidio falls back to regex when PRESIDIO_ANALYZER_URL is not configured.</p>
+      </div>
+      <div className="grid gap-1.5 sm:col-span-2">
+        <Label htmlFor="pii-allowlist">PII allowlist patterns</Label>
+        <Input id="pii-allowlist" placeholder="example.com, ^https://internal\\.example/" value={value.piiAllowlist} onChange={set('piiAllowlist')} />
+        <p className="text-xs text-muted-foreground">Comma-separated regular expressions. Matching values pass through unchanged; use only patterns agents must act on.</p>
+      </div>
       <div className="grid gap-1.5 sm:col-span-2">
         <Label htmlFor="cap-models">Models</Label>
         <Input id="cap-models" placeholder={offered.length ? `All offered (${offered.join(', ')})` : 'All offered'} value={value.models} onChange={set('models')} />

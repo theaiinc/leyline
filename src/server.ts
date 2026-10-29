@@ -884,9 +884,11 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   // Existing: chat completions endpoint (with provider failover)
   app.post('/v1/chat/completions', authMiddleware, async (req, res) => {
     await apiKeyInitialization;
-    const request = normalizeCompletionRequest(req.body);
+    let request = normalizeCompletionRequest(req.body);
     // Hosted: a requested model can be an alias for what the owner's providers serve.
     if (hosted) request.model = resolveModel(hosted.aliases, request.model);
+    const pii = (req as Request & { pii?: import('./core/pii-redaction').RequestPiiRedactor }).pii;
+    if (pii) request = await pii.redact(request);
 
     if (request.messages.length === 0) {
       return res.status(400).json({
@@ -941,7 +943,37 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
               streamChars += choice.delta?.content?.length ?? 0;
               for (const call of choice.delta?.tool_calls ?? []) streamChars += call.function?.arguments?.length ?? 0;
             }
+            if (pii) {
+              for (const [choiceIndex, choice] of (chunk.choices ?? []).entries() as Iterable<[number, { delta?: { content?: string | null; tool_calls?: Array<{ function?: { arguments?: string } }> } }]>) {
+                if (choice.delta?.content) choice.delta.content = pii.rehydrateStream(choice.delta.content, `choice:${choiceIndex}:content`);
+                for (const [toolIndex, call] of (choice.delta?.tool_calls ?? []).entries()) {
+                  if (call.function?.arguments) call.function.arguments = pii.rehydrateStream(call.function.arguments, `choice:${choiceIndex}:tool:${toolIndex}`);
+                }
+              }
+            }
             res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+        }
+        if (pii) {
+          const channelKeys = pii.streamKeys;
+          for (const key of channelKeys) {
+            const tail = pii.finishStream(key);
+            if (!tail) continue;
+            const match = /^choice:(\d+):(content|tool:(\d+))$/.exec(key);
+            if (!match) continue;
+            const choiceIndex = Number(match[1]);
+            const finalChunk = {
+              id: `leyline-pii-flush-${Date.now()}`,
+              object: 'chat.completion.chunk',
+              choices: [{
+                index: choiceIndex,
+                delta: match[2] === 'content'
+                  ? { content: tail }
+                  : { tool_calls: [{ index: Number(match[3]), function: { arguments: tail } }] },
+              }],
+            };
+            res.write(`data: ${JSON.stringify(finalChunk)}\n\n`);
+          }
+          await pii.finish();
         }
         res.write('data: [DONE]\n\n');
         res.end();
@@ -951,7 +983,19 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
 
       } else {
         const response = await router.route(request, routeOptions);
-        res.json(response);
+        const hydrated = pii ? { ...response, choices: response.choices?.map((choice) => ({
+          ...choice,
+          message: choice.message ? {
+            ...choice.message,
+            content: typeof choice.message.content === 'string' ? pii.rehydrate(choice.message.content) : choice.message.content,
+            tool_calls: choice.message.tool_calls?.map((call) => ({
+              ...call,
+              function: call.function ? { ...call.function, arguments: pii.rehydrate(call.function.arguments ?? '') } : call.function,
+            })),
+          } : choice.message,
+        })) } : response;
+        if (pii) { await pii.finish(); }
+        res.json(hydrated);
         logTenantUsage(req, request.model, response.usage);
       }
     } catch (error: any) {
