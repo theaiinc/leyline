@@ -53,9 +53,11 @@ const MODEL_ALIASES: Record<string, string> = {
 
 export function normalizeModelId(id: string): string {
   let normalized = id.trim().toLowerCase()
+    .replace(/\s*\([^)]*\)\s*$/, '')
     .replace(/^[^/:]+[/:]/, '')
     .replace(/-\d{4}-\d{2}-\d{2}$/, '')
     .replace(/-latest$/, '')
+    .replace(/(?:[_-](?:max|high|low|medium|thinking|reasoning))$/, '')
     .replace(/[\s_]+/g, '-');
   return MODEL_ALIASES[normalized] ?? normalized;
 }
@@ -131,6 +133,8 @@ export function refreshEmptyBenchmarks(
   });
   return benchmarkRefresh;
 }
+import { unzipSync, strFromU8 } from 'fflate';
+
 export type BenchmarkSource = {
   name: string;
   attribution: string;
@@ -138,6 +142,7 @@ export type BenchmarkSource = {
 };
 
 type UnknownRecord = Record<string, unknown>;
+type BenchmarkRow = { model: string; score: number; benchmark: string; asOf?: string };
 
 function asRecord(value: unknown): UnknownRecord | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as UnknownRecord : null;
@@ -151,43 +156,126 @@ function asString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-function rowsFromPayload(payload: unknown): Array<{ model: string; score: number; benchmark: string; asOf?: string }> {
+function benchmarkId(value: string): BenchmarkId | null {
+  const normalized = value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const aliases: Record<string, BenchmarkId> = {
+    gpqa: 'gpqa-diamond', 'gpqa-diamond': 'gpqa-diamond',
+    'swe-bench-verified': 'swe-bench-verified', 'swebench-verified': 'swe-bench-verified',
+    livecodebench: 'livecodebench', aime: 'aime', 'aime-2024': 'aime',
+    'humanitys-last-exam': 'hle', hle: 'hle',
+    'lmarena-text-elo': 'lmarena-text-elo',
+  };
+  return aliases[normalized] ?? null;
+}
+
+export function rowsFromPayload(payload: unknown): BenchmarkRow[] {
   const root = asRecord(payload);
-  const rows = Array.isArray(payload) ? payload : root && (Array.isArray(root.data) ? root.data : root.results);
+  const rows = Array.isArray(payload) ? payload : root && (Array.isArray(root.rows) ? root.rows : Array.isArray(root.data) ? root.data : root.results);
   if (!Array.isArray(rows)) return [];
   return rows.flatMap((row) => {
-    const item = asRecord(row);
+    const outer = asRecord(row);
+    const item = asRecord(outer?.row) ?? asRecord(outer?.data) ?? outer;
     if (!item) return [];
-    const model = asString(item.model ?? item.model_id ?? item.name);
+    const model = asString(item.model ?? item.model_id ?? item.model_name ?? item.model_slug);
     const score = asNumber(item.score ?? item.value ?? item.elo ?? item.rating);
-    const benchmark = asString(item.benchmark ?? item.metric ?? item.task);
+    const benchmark = asString(item.benchmark ?? item.metric ?? item.task ?? item.benchmark_id ?? item.category);
     if (!model || score === null || !benchmark) return [];
-    return [{ model, score, benchmark, asOf: asString(item.as_of ?? item.date ?? item.updated_at) ?? undefined }];
+    return [{ model, score, benchmark, asOf: asString(item.as_of ?? item.date ?? item.updated_at ?? item.leaderboard_publish_date) ?? undefined }];
   });
 }
 
-function snapshotFromRows(rows: Array<{ model: string; score: number; benchmark: string; asOf?: string }>, source: string, fetchedAt: number): BenchmarkSnapshot {
-  const byBenchmark = new Map<string, BenchmarkScore[]>();
+function snapshotFromRows(rows: BenchmarkRow[], source: string, fetchedAt: number): BenchmarkSnapshot {
+  const best = new Map<string, BenchmarkScore>();
   for (const row of rows) {
-    const id = row.benchmark.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-    const scores = byBenchmark.get(id) ?? [];
-    scores.push({ model: row.model, score: row.score, source, asOf: row.asOf ?? new Date(fetchedAt).toISOString().slice(0, 10) });
-    byBenchmark.set(id, scores);
+    const id = benchmarkId(row.benchmark);
+    if (!id) continue;
+    const key = `${id}:${normalizeModelId(row.model)}`;
+    const score = { model: row.model, score: row.score, source, asOf: row.asOf ?? new Date(fetchedAt).toISOString().slice(0, 10) };
+    if (!best.has(key) || best.get(key)!.score < score.score) best.set(key, score);
   }
-  const benchmarks = benchmarkCatalog().map(({ id, name }) => ({
-    id,
-    name,
-    scores: byBenchmark.get(id) ?? [],
-    source,
-    asOf: new Date(fetchedAt).toISOString().slice(0, 10),
-  }));
-  return { fetchedAt, benchmarks };
+  return {
+    fetchedAt,
+    benchmarks: benchmarkCatalog().map(({ id, name }) => ({
+      id, name,
+      scores: [...best.entries()].filter(([key]) => key.startsWith(`${id}:`)).map(([, score]) => score),
+      source,
+      asOf: new Date(fetchedAt).toISOString().slice(0, 10),
+    })),
+  };
+}
+
+async function fetchResponse(url: string, headers: Record<string, string> = {}): Promise<Response> {
+  const response = await fetch(url, { headers });
+  if (!response.ok) throw new Error(`${new URL(url).hostname} returned ${response.status}`);
+  return response;
 }
 
 async function fetchJson(url: string, headers: Record<string, string> = {}): Promise<unknown> {
-  const response = await fetch(url, { headers });
-  if (!response.ok) throw new Error(`${url} returned ${response.status}`);
+  const response = await fetchResponse(url, headers);
   return response.json();
+}
+
+function parseCsv(csv: string, benchmark: string): BenchmarkRow[] {
+  const records: string[][] = [];
+  let record: string[] = [];
+  let field = '';
+  let quoted = false;
+  for (let i = 0; i < csv.length; i += 1) {
+    const char = csv[i];
+    if (char === '"') {
+      if (quoted && csv[i + 1] === '"') { field += '"'; i += 1; } else quoted = !quoted;
+    } else if (char === ',' && !quoted) {
+      record.push(field); field = '';
+    } else if ((char === '\n' || char === '\r') && !quoted) {
+      if (char === '\r' && csv[i + 1] === '\n') i += 1;
+      record.push(field); field = '';
+      if (record.some((value) => value.trim())) records.push(record);
+      record = [];
+    } else field += char;
+  }
+  if (field || record.length) { record.push(field); records.push(record); }
+  if (records.length < 2) return [];
+  const headers = records[0].map((header) => header.trim());
+  const index = (name: string) => headers.findIndex((header) => header.toLowerCase() === name.toLowerCase());
+  const modelIndex = index('Model version');
+  const scoreIndex = index('mean_score');
+  const dateIndex = index('Release date');
+  return records.slice(1).flatMap((fields) => {
+    const model = asString(fields[modelIndex]);
+    const score = Number(fields[scoreIndex]);
+    if (!model || !Number.isFinite(score)) return [];
+    return [{ model, score, benchmark, asOf: asString(fields[dateIndex]) ?? undefined }];
+  });
+}
+
+async function fetchEpoch(url: string): Promise<BenchmarkSnapshot> {
+  const response = await fetchResponse(url);
+  const archive = unzipSync(new Uint8Array(await response.arrayBuffer()));
+  const rows = Object.entries(archive).flatMap(([name, data]) => {
+    const file = name.split('/').pop()?.toLowerCase() ?? '';
+    const mapped: Record<string, string> = {
+      gpqa_diamond: 'gpqa-diamond', swe_bench_verified: 'swe-bench-verified',
+      otis_mock_aime_2024_2025: 'aime', math_level_5: 'aime',
+      simpleqa_verified: 'hle',
+    };
+    const stem = file.replace(/\.csv$/, '');
+    const benchmark = mapped[stem];
+    return benchmark ? parseCsv(strFromU8(data), benchmark) : [];
+  });
+  return snapshotFromRows(rows, 'Epoch AI Benchmarking Hub', Date.now());
+}
+
+async function fetchLMArena(url: string): Promise<BenchmarkSnapshot> {
+  const rows: BenchmarkRow[] = [];
+  for (let offset = 0; offset < 12000; offset += 100) {
+    const payload = await fetchJson(`${url}${url.includes('?') ? '&' : '?'}offset=${offset}&length=100`);
+    const page = rowsFromPayload(payload).filter((row) => row.benchmark.toLowerCase() === 'overall');
+    rows.push(...page.map((row) => ({ ...row, benchmark: 'lmarena-text-elo' })));
+    const root = asRecord(payload);
+    const pageRows = root && Array.isArray(root.rows) ? root.rows : Array.isArray(payload) ? payload : [];
+    if (pageRows.length < 100) break;
+  }
+  return snapshotFromRows(rows, 'LMArena', Date.now());
 }
 
 export function benchmarkSources(env: {
@@ -197,70 +285,26 @@ export function benchmarkSources(env: {
   lmarenaUrl?: string;
 }): BenchmarkSource[] {
   const sources: BenchmarkSource[] = [];
-  if (env.artificialAnalysisApiKey) {
+  if (env.epochUrl) {
     sources.push({
-      name: 'Artificial Analysis',
-      attribution: 'Data by Artificial Analysis',
-      fetch: async () => snapshotFromRows(
-        rowsFromPayload(await fetchJson(env.artificialAnalysisUrl ?? 'https://artificialanalysis.ai/api/v2/benchmarks', {
-          Authorization: `Bearer ${env.artificialAnalysisApiKey}`,
-          Accept: 'application/json',
-        })),
-        'Artificial Analysis',
-        Date.now(),
-      ),
+      name: 'epoch',
+      attribution: 'Epoch AI Benchmarking Hub',
+      fetch: () => fetchEpoch(env.epochUrl!),
     });
   }
-  sources.push({
-    name: 'Epoch AI Benchmarking Hub',
-    attribution: 'Data by Epoch AI',
-    fetch: async () => snapshotFromRows(
-      rowsFromPayload(await fetchJson(env.epochUrl ?? 'https://epoch.ai/data/benchmarks.json')),
-      'Epoch AI Benchmarking Hub',
-      Date.now(),
-    ),
-  });
-  sources.push({
-    name: 'LMArena',
-    attribution: 'Data by LMArena',
-    fetch: async () => snapshotFromRows(
-      rowsFromPayload(await fetchJson(env.lmarenaUrl ?? 'https://lmarena.ai/leaderboard.json')),
-      'LMArena',
-      Date.now(),
-    ),
-  });
+  if (env.lmarenaUrl) {
+    sources.push({
+      name: 'lmarena',
+      attribution: 'LMArena',
+      fetch: () => fetchLMArena(env.lmarenaUrl!),
+    });
+  }
+  if (env.artificialAnalysisApiKey && env.artificialAnalysisUrl) {
+    sources.push({
+      name: 'artificial-analysis',
+      attribution: 'Artificial Analysis',
+      fetch: () => fetchJson(env.artificialAnalysisUrl!, { Authorization: `Bearer ${env.artificialAnalysisApiKey}` }).then((payload) => snapshotFromRows(rowsFromPayload(payload), 'Artificial Analysis', Date.now())),
+    });
+  }
   return sources;
-}
-
-export async function fetchBenchmarkSnapshot(env: Parameters<typeof benchmarkSources>[0]): Promise<BenchmarkSnapshot> {
-  const sources = benchmarkSources(env);
-  const snapshots: BenchmarkSnapshot[] = [];
-  for (const source of sources) {
-    try {
-      const snapshot = await source.fetch();
-      const rows = snapshot.benchmarks.reduce((count, benchmark) => count + benchmark.scores.length, 0);
-      console.log(JSON.stringify({ event: 'benchmark_source', source: source.name, rowsMatched: rows }));
-      if (rows > 0) snapshots.push(snapshot);
-    } catch (error) {
-      console.warn(JSON.stringify({
-        event: 'benchmark_source',
-        source: source.name,
-        rowsMatched: 0,
-        error: error instanceof Error ? error.message : 'unknown error',
-      }));
-    }
-  }
-  if (!snapshots.length) throw new Error('No benchmark source available');
-  const merged = new Map<BenchmarkId, Benchmark>();
-  for (const snapshot of snapshots) {
-    for (const benchmark of snapshot.benchmarks) {
-      const current = merged.get(benchmark.id);
-      if (!current || current.scores.length === 0) merged.set(benchmark.id, benchmark);
-      else {
-        const known = new Set(current.scores.map((score) => normalizeModelId(score.model)));
-        current.scores.push(...benchmark.scores.filter((score) => !known.has(normalizeModelId(score.model))));
-      }
-    }
-  }
-  return { fetchedAt: Date.now(), benchmarks: [...merged.values()] };
 }
