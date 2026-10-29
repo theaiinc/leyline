@@ -8,6 +8,17 @@ import { builtinPrice } from './pricing';
 import { errorStatus } from './media';
 import { estimateBodyTokens } from './content';
 import { DEFAULT_PRICE, IssuedKeys, costUsd, modelAllowed, priceOf, type HostedSettings, type IssuedKey, type KeyCaps, type Price } from './issued-keys';
+import type { BenchmarkSnapshot } from './benchmarks';
+
+function capabilitiesForModel(modelId: string): string[] {
+  const id = modelId.toLowerCase();
+  if (/embed|bge|text-embedding/.test(id)) return ['embeddings'];
+  if (/whisper|transcri/.test(id)) return ['transcription'];
+  if (/tts|speech|aura|melotts|voice/.test(id)) return ['speech'];
+  if (/image|dall-e|flux|stable-diffusion/.test(id)) return ['image'];
+  if (/video|seedance|veo|sora|kling/.test(id)) return ['video'];
+  return ['chat'];
+}
 
 /**
  * Hosted Leyline: an LLM API the owner hands out keys for, so people can plug it into their coding agents.
@@ -53,6 +64,8 @@ export type HostedOptions = {
   sendEmail?: AlertChannels['sendEmail'];
   /** When the settings were last saved on the dashboard (null: env defaults). */
   settingsSaved?: { at: number; by: string } | null;
+  /** Cached benchmark snapshot used by the public benchmark API and dashboard. */
+  benchmarks?: () => Promise<BenchmarkSnapshot | null>;
   /**
    * Keeps work that finishes after the response alive (usage, spend). The Worker passes its waitUntil: Workers
    * cancels anything a finished request left running.
@@ -311,7 +324,15 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
     const configured = [...opts.models, ...Object.keys(opts.aliases).filter((a) => !a.includes('*'))];
     const providerModels = opts.models.length === 0 ? Object.keys(router.getModelIndex()) : [];
     const ids = [...configured, ...providerModels].filter((m, i, all) => all.indexOf(m) === i && modelAllowed(key.caps, m) && !isBlocked(opts, m));
-    res.json({ object: 'list', data: ids.map((id) => ({ id, object: 'model', created: 0, owned_by: 'leyline', type: 'model', display_name: id })) });
+    const capability = typeof req.query.capability === 'string' ? req.query.capability : undefined;
+    const data = ids.map((id) => ({ id, object: 'model', created: 0, owned_by: 'leyline', type: 'model', display_name: id, capabilities: capabilitiesForModel(id) }))
+      .filter((model) => !capability || model.capabilities.includes(capability));
+    res.json({ object: 'list', data });
+  });
+
+  app.get('/v1/benchmarks', requireIssuedKeyNoModel(opts), async (_req, res) => {
+    const snapshot = await opts.benchmarks?.();
+    res.json(snapshot ?? { fetchedAt: null, benchmarks: [] });
   });
 
   // ── Anthropic Messages (Claude Code: ANTHROPIC_BASE_URL) ───────────────────────────────────────────
