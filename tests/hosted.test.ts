@@ -337,7 +337,7 @@ describe('empty offered model pool', () => {
     const { app } = setup({ models: [], aliases: {}, blockedModels: ['claude-*'] });
     const { key } = (await request(app).post('/admin/api/keys').set(ADMIN).send({
       name: 'narrow',
-      caps: { models: ['gemini-*', 'gpt-*'] },
+      caps: { models: ['gemini-*'] },
     })).body;
     const models = (await request(app).get('/v1/models').set({ Authorization: `Bearer ${key}` })).body.data.map((m: { id: string }) => m.id);
     expect(models).toContain('gemini-2.5-pro');
