@@ -249,8 +249,17 @@ export default {
     return out;
   },
 
-  /** Daily: drop old per-minute counters. */
+  /** Daily: refresh benchmark rankings and drop old per-minute counters. */
   async scheduled(_event: unknown, env: Env): Promise<void> {
-    await new D1DocStore(env.DB).prune();
+    const docs = new D1DocStore(env.DB);
+    await Promise.all([
+      docs.prune(),
+      fetchBenchmarkSnapshot({
+        artificialAnalysisApiKey: env.ARTIFICIAL_ANALYSIS_API_KEY,
+        artificialAnalysisUrl: env.ARTIFICIAL_ANALYSIS_URL,
+        epochUrl: env.EPOCH_BENCHMARKS_URL,
+        lmarenaUrl: env.LM_ARENA_URL,
+      }).then((snapshot) => docs.put(BENCHMARKS_DOC, snapshot)),
+    ]);
   },
 };
