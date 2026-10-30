@@ -11,6 +11,8 @@ export type BenchmarkId =
 
 export type BenchmarkScore = {
   model: string;
+  leylineModel?: string | null;
+  aliases?: string[];
   score: number;
   source: string;
   asOf: string;
@@ -48,31 +50,62 @@ const BENCHMARK_NAMES: Record<BenchmarkId, string> = {
   'terminal-bench': 'Terminal-Bench',
 };
 
-const MODEL_ALIASES: Record<string, string> = {
-  'claude-opus-5-5': 'claude-opus-5.5',
-  'claude-sonnet-5-5': 'claude-sonnet-5.5',
-  'gpt-4o-latest': 'gpt-4o',
-  'gemini-2.5-pro-latest': 'gemini-2.5-pro',
-};
-
 export function normalizeModelId(id: string): string {
-  let normalized = id.trim().toLowerCase()
+  return id.trim().toLowerCase()
     .replace(/\s*\([^)]*\)\s*$/, '')
     .replace(/^[^/:]+[/:]/, '')
-    .replace(/-\d{4}-\d{2}-\d{2}$/, '')
+    .replace(/[-_]\d{4}[-_]\d{2}[-_]\d{2}(?=$|[-_])/, '')
+    .replace(/[-_]\d{8}(?=$|[-_])/, '')
+    .replace(/[-_](?:xhigh|high|medium|low|unknown|max|thinking|reasoning)$/, '')
     .replace(/-latest$/, '')
-    .replace(/(?:[_-](?:max|high|low|medium|thinking|reasoning))$/, '')
     .replace(/[\s_]+/g, '-');
-  return MODEL_ALIASES[normalized] ?? normalized;
 }
 
 export function modelAlias(id: string): string | undefined {
-  return MODEL_ALIASES[normalizeModelId(id)];
+  const normalized = normalizeModelId(id);
+  return normalized === id.trim().toLowerCase() ? undefined : normalized;
+}
+
+function modelMatchKey(id: string): string {
+  return normalizeModelId(id).replace(/\./g, '-');
+}
+
+export type LeylineModel = {
+  id: string;
+  aliases?: string[];
+};
+
+/** Map source rows to models Leyline actually serves, retaining unmatched rows. */
+export function mapBenchmarkScores(scores: BenchmarkScore[], models: LeylineModel[]): BenchmarkScore[] {
+  const candidates = models.flatMap((model) => [
+    { model: model.id, normalized: modelMatchKey(model.id), aliases: model.aliases ?? [] },
+    ...(model.aliases ?? []).map((alias) => ({ model: model.id, normalized: modelMatchKey(alias), aliases: model.aliases ?? [] })),
+  ]);
+  const best = new Map<string, BenchmarkScore>();
+  for (const score of scores) {
+    const match = candidates.find((candidate) => candidate.normalized === modelMatchKey(score.model));
+    const mapped: BenchmarkScore = match
+      ? { ...score, leylineModel: match.model, aliases: [...new Set(match.aliases)] }
+      : { ...score, leylineModel: null, aliases: [] };
+    const key = mapped.leylineModel ?? `unmatched:${normalizeModelId(mapped.model)}`;
+    if (!best.has(key) || best.get(key)!.score < mapped.score) best.set(key, mapped);
+  }
+  return [...best.values()];
 }
 
 export function matchBenchmarkModel(modelId: string, scores: BenchmarkScore[]): BenchmarkScore | undefined {
-  const wanted = normalizeModelId(modelId);
-  return scores.find((score) => normalizeModelId(score.model) === wanted);
+  const wanted = modelMatchKey(modelId);
+  return scores.find((score) => modelMatchKey(score.model) === wanted || (score.leylineModel ? modelMatchKey(score.leylineModel) === wanted : false));
+}
+
+export function mapBenchmarkSnapshot(snapshot: BenchmarkSnapshot, models: LeylineModel[]): BenchmarkSnapshot {
+  return {
+    ...snapshot,
+    benchmarks: snapshot.benchmarks.map((benchmark) => ({
+      ...benchmark,
+      scores: mapBenchmarkScores(benchmark.scores, models),
+    })),
+  };
 }
 
 export function rankBenchmarks(models: string[], snapshot: BenchmarkSnapshot): Array<{
@@ -205,22 +238,24 @@ function snapshotFromRows(rows: BenchmarkRow[], source: string, fetchedAt: numbe
     const id = benchmarkId(row.benchmark);
     if (!id) continue;
     const key = `${id}:${normalizeModelId(row.model)}`;
-    const score = { model: row.model, score: row.score, source, asOf: row.asOf ?? new Date(fetchedAt).toISOString().slice(0, 10) };
+    const score = { model: normalizeModelId(row.model), score: row.score, source, asOf: row.asOf ?? new Date(fetchedAt).toISOString().slice(0, 10) };
     if (!best.has(key) || best.get(key)!.score < score.score) best.set(key, score);
   }
   return {
     fetchedAt,
-    benchmarks: benchmarkCatalog().map(({ id, name }) => ({
-      id, name,
-      scores: [...best.entries()].filter(([key]) => key.startsWith(`${id}:`)).map(([, score]) => score),
-      source,
-      asOf: new Date(fetchedAt).toISOString().slice(0, 10),
-    })),
+    benchmarks: benchmarkCatalog().flatMap(({ id, name }) => {
+      const scores = [...best.entries()]
+        .filter(([key]) => key.startsWith(`${id}:`))
+        .map(([, score]) => score);
+      return scores.length > 0 ? [{ id, name, scores, source, asOf: new Date(fetchedAt).toISOString().slice(0, 10) }] : [];
+    }),
   };
 }
 
 async function fetchResponse(url: string, headers: Record<string, string> = {}, retries = 0): Promise<Response> {
-  const response = await fetch(url, { headers });
+  const response = await fetch(url, {
+    headers: { Accept: '*/*', ...headers },
+  });
   if (!response.ok) {
     if (response.status >= 500 && response.status < 600 && retries > 0) {
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -279,7 +314,14 @@ export async function fetchEpochSnapshot(url: string): Promise<BenchmarkSnapshot
     'live_bench_external.csv',
     'terminalbench_external.csv',
   ]);
-  const archive = unzipSync(new Uint8Array(await response.arrayBuffer()), {
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  // Epoch occasionally returns a successful HTML/JSON error body. Surface that
+  // as a useful source error instead of the opaque fflate "invalid zip data".
+  if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b || bytes[2] !== 0x03 || bytes[3] !== 0x04) {
+    const preview = new TextDecoder().decode(bytes.subarray(0, 120)).replace(/\s+/g, ' ').trim();
+    throw new Error(`Epoch returned non-ZIP data${preview ? `: ${preview}` : ''}`);
+  }
+  const archive = unzipSync(bytes, {
     filter: (file) => requiredFiles.has(file.name.split('/').pop()?.toLowerCase() ?? ''),
   });
   const rows = Object.entries(archive).flatMap(([name, data]) => {
@@ -303,8 +345,11 @@ async function fetchLMArena(url: string): Promise<BenchmarkSnapshot> {
   const rows: BenchmarkRow[] = [];
   for (let offset = 0; offset < 12000; offset += 100) {
     const payload = await fetchJson(`${url}${url.includes('?') ? '&' : '?'}offset=${offset}&length=100`, {}, 2);
-    const page = rowsFromPayload(payload).filter((row) => row.benchmark.toLowerCase() === 'overall');
-    rows.push(...page.map((row) => ({ ...row, benchmark: 'lmarena-text-elo' })));
+    const parsed = rowsFromPayload(payload);
+    // This dataset is already the text leaderboard. Depending on the
+    // datasets-server revision, category is `overall`, `text`, or absent.
+    // Do not discard valid rating rows merely because category is omitted.
+    rows.push(...parsed.map((row) => ({ ...row, benchmark: 'lmarena-text-elo' })));
     const root = asRecord(payload);
     const pageRows = root && Array.isArray(root.rows) ? root.rows : Array.isArray(payload) ? payload : [];
     if (pageRows.length < 100) break;

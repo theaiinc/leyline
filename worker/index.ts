@@ -6,7 +6,7 @@ import { adminOf, applySettings, type HostedOptions } from '../src/core/hosted';
 import { D1ArcanaCloudStore, D1DocStore, D1LogStore, D1SecretStore, type D1Database } from '../src/core/d1-stores';
 import { arcanaCloudConfigFromEnv, parseArcanaCloudReferences, type SecretStore } from '../src/core/secret-store';
 import { logger } from '../src/core/logger';
-import { fetchBenchmarkSnapshot, refreshBenchmarks, type BenchmarkCache, type BenchmarkSnapshot } from '../src/core/benchmarks';
+import { fetchBenchmarkSnapshot, mapBenchmarkSnapshot, refreshBenchmarks, type BenchmarkCache, type BenchmarkSnapshot } from '../src/core/benchmarks';
 import type { ModelListSnapshot } from '../src/core/router';
 import type { WorkersAiBinding } from '../src/providers/workers-ai';
 
@@ -140,14 +140,21 @@ async function build(env: Env): Promise<Built> {
   // Refresh missing/stale lists during Worker startup so a cold instance can advertise served models.
   await router.reindexStale();
   mark('router');
-  const hosted = hostedOptions(docs, { sharedMinute: true, watch: false, benchmarks: {
-    fetch: () => fetchBenchmarkSnapshot({
-      artificialAnalysisApiKey: env.ARTIFICIAL_ANALYSIS_API_KEY,
-      artificialAnalysisUrl: env.ARTIFICIAL_ANALYSIS_URL,
-      epochUrl: env.EPOCH_BENCHMARKS_URL ?? 'https://epoch.ai/data/benchmark_data.zip',
-      lmarenaUrl: env.LM_ARENA_URL ?? 'https://datasets-server.huggingface.co/rows?dataset=lmarena-ai/leaderboard-dataset&config=text&split=latest',
-    }),
-    background: keepAlive,
+  const hosted = hostedOptions(docs, { sharedMinute: true, watch: false, benchmarks: async () => {
+    const cache = benchmarkCache(docs, env);
+    const cached = await cache.get();
+    const stale = !cached || Date.now() - cached.fetchedAt >= 24 * 60 * 60 * 1000;
+    const mapSnapshot = (snapshot: BenchmarkSnapshot | null) => snapshot ? mapBenchmarkSnapshot(snapshot, router.exportModelLists().flatMap((list) => list.models.map((model) => ({ id: model.id, aliases: model.aliases ?? [] })))) : null;
+    if (!stale) return mapSnapshot(cached);
+    try {
+      // Await the refresh here: a Worker may terminate ordinary background work
+      // after the response unless it is reliably attached to waitUntil. Returning
+      // the newly written snapshot also makes the first stale request useful.
+      return mapSnapshot(await refreshStoredBenchmarks(docs, env, true)) ?? mapSnapshot(cached);
+    } catch (error) {
+      console.error('[benchmarks] request refresh failed', error instanceof Error ? error.message : error);
+      return cached;
+    }
   } });
   hosted.background = keepAlive;
   const email = env.EMAIL;

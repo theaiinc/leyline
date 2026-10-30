@@ -332,8 +332,23 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
     const providerModels = opts.models.length === 0 ? Object.keys(router.getModelIndex()) : [];
     const ids = [...configured, ...providerModels].filter((m, i, all) => all.indexOf(m) === i && modelAllowed(key.caps, m) && !isBlocked(opts, m));
     const capability = typeof req.query.capability === 'string' ? req.query.capability : undefined;
-    const data = ids.map((id) => ({ id, object: 'model', created: 0, owned_by: 'leyline', type: 'model', display_name: id, capabilities: capabilitiesForModel(id) }))
-      .filter((model) => !capability || model.capabilities.includes(capability));
+    const snapshot = await opts.benchmarks?.();
+    const data = ids.map((id) => {
+      const benchmarks = Object.fromEntries((snapshot?.benchmarks ?? []).map((benchmark) => [
+        benchmark.id,
+        benchmark.scores.find((score) => score.leylineModel === id || score.model === id) ?? null,
+      ]));
+      return {
+        id,
+        object: 'model',
+        created: 0,
+        owned_by: 'leyline',
+        type: 'model',
+        display_name: id,
+        capabilities: capabilitiesForModel(id),
+        benchmarks,
+      };
+    }).filter((model) => !capability || model.capabilities.includes(capability));
     res.json({ object: 'list', data });
   });
 
