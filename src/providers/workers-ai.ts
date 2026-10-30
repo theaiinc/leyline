@@ -28,14 +28,14 @@ const CATALOG: Array<ModelDetail & { capability: Capability }> = [
   { id: '@cf/myshell-ai/melotts', name: 'MeloTTS (text-to-speech, MP3)', capability: 'speech' },
 ];
 
-const DEFAULTS: Record<Capability, string> = {
+const DEFAULTS: Partial<Record<Capability, string>> = {
   chat: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
   embeddings: '@cf/baai/bge-m3',
   transcription: '@cf/openai/whisper-large-v3-turbo',
   speech: '@cf/myshell-ai/melotts',
 };
 
-const PATTERNS: Record<Exclude<Capability, 'chat'>, RegExp> = {
+const PATTERNS: Partial<Record<Exclude<Capability, 'chat'>, RegExp>> = {
   embeddings: /^@cf\/[\w.-]+\/[\w.-]*(bge|embed)[\w.-]*$/i,
   transcription: /^@cf\/openai\/whisper[\w.-]*$/,
   speech: /^@cf\/myshell-ai\/melotts$/,
@@ -57,7 +57,7 @@ export class WorkersAiProvider implements Provider {
   name = 'WorkersAI';
   label = 'Cloudflare Workers AI';
   capabilities: Capability[] = ['chat', 'embeddings', 'transcription', 'speech'];
-  defaultModel = DEFAULTS.chat;
+  defaultModel: string = DEFAULTS.chat!;
   private apiToken: string;
   private accountId: string;
   private readonly binding?: WorkersAiBinding;
@@ -101,7 +101,7 @@ export class WorkersAiProvider implements Provider {
   }
 
   servesModel(capability: Capability, model: string): boolean {
-    return capability !== 'chat' && PATTERNS[capability].test(model);
+    return capability !== 'chat' && Boolean(PATTERNS[capability]?.test(model));
   }
 
   defaultModelFor(capability: Capability): string | undefined {

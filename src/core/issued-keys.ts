@@ -429,7 +429,7 @@ export class IssuedKeys {
 
   async admit(key: IssuedKey, model: string, budgetUsd: number | null = null): Promise<Refusal | null> {
     if (key.revokedAt) return { status: 401, code: 'key_revoked', message: 'This API key has been revoked.' };
-    if (model && model !== 'auto' && !modelAllowed(key.caps, model)) {
+    if (model && model !== 'auto' && model !== 'auto-vision' && !modelAllowed(key.caps, model)) {
       return { status: 403, code: 'model_not_allowed', message: `This key may not use the model "${model}".` };
     }
     const now = this.now();

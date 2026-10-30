@@ -1,3 +1,4 @@
+import { config } from '../config';
 import {
   Provider,
   CompletionRequest,
@@ -289,10 +290,39 @@ export class Router {
    * Pick the model a provider should serve for an 'auto' request, or null
    * when the provider has no enabled models and must be skipped.
    */
-  private autoModelFor(provider: Provider): string | null {
+  private autoModelFor(provider: Provider, request?: CompletionRequest): string | null {
     const enabled = this.enabledModelsFor(provider);
+    if (enabled && enabled.length === 0) return null;
+
+    const parts = (request?.messages ?? []).flatMap(message =>
+      Array.isArray(message.content) ? message.content : [],
+    );
+    const needsVision = parts.some(part => part.type === 'image_url');
+    const needsAudio = parts.some(part => part.type === 'input_audio');
+
+    if (needsVision || needsAudio) {
+      const capabilities = provider.capabilities;
+      // Metadata is an optimization, not the source of truth. Providers without
+      // declared capabilities are checked later by providerAcceptsContent().
+      if (capabilities?.length &&
+          ((needsVision && !capabilities.includes('vision')) ||
+           (needsAudio && !capabilities.includes('audio')))) {
+        return null;
+      }
+      const preferredMediaModel = config.autoVisionModel ?? 'gemini-2.5-flash-lite';
+      const hasPreferredCapability = !provider.capabilities?.length
+        || (needsVision && provider.capabilities.includes('vision'))
+        || (needsAudio && provider.capabilities.includes('audio'));
+      if (preferredMediaModel && hasPreferredCapability && (!enabled || enabled.includes(preferredMediaModel))) {
+        return preferredMediaModel;
+      }
+      const mediaModel = provider.defaultModelFor?.(
+        needsAudio ? 'audio' : 'vision',
+      );
+      if (mediaModel && (!enabled || enabled.includes(mediaModel))) return mediaModel;
+    }
+
     if (!enabled) return provider.defaultModel;
-    if (enabled.length === 0) return null;
     return enabled.includes(provider.defaultModel) ? provider.defaultModel : enabled[0];
   }
 
@@ -626,8 +656,8 @@ export class Router {
         overBudget.push(provider.name);
         continue;
       }
-      const autoModel = request.model === 'auto' ? this.autoModelFor(provider) : null;
-      if (request.model === 'auto' && autoModel === null) {
+      const autoModel = (request.model === 'auto' || request.model === 'auto-vision') ? this.autoModelFor(provider, routedRequest) : null;
+      if ((request.model === 'auto' || request.model === 'auto-vision') && autoModel === null) {
         console.log(`[Router] Skipping ${provider.name} — no models enabled for routing.`);
         continue;
       }
@@ -641,7 +671,7 @@ export class Router {
       console.log(`[Router] Attempting to route to ${provider.name}...`);
       let effectiveModel = request.model;
       try {
-        effectiveModel = request.model === 'auto' ? autoModel! : request.model;
+        effectiveModel = (request.model === 'auto' || request.model === 'auto-vision') ? autoModel! : request.model;
         const isAvailable = await provider.isAvailable();
         if (!isAvailable) {
             logger.log({
@@ -802,8 +832,8 @@ export class Router {
         overBudget.push(provider.name);
         continue;
       }
-        const autoModel = request.model === 'auto' ? this.autoModelFor(provider) : null;
-        if (request.model === 'auto' && autoModel === null) {
+        const autoModel = (request.model === 'auto' || request.model === 'auto-vision') ? this.autoModelFor(provider, routedRequest) : null;
+        if ((request.model === 'auto' || request.model === 'auto-vision') && autoModel === null) {
           console.log(`[Router] Skipping ${provider.name} — no models enabled for routing.`);
           continue;
         }
@@ -826,7 +856,7 @@ export class Router {
         let providerUsage: UsageSnapshot | undefined;
         let effectiveModel = request.model;
         try {
-            effectiveModel = request.model === 'auto' ? autoModel! : request.model;
+            effectiveModel = (request.model === 'auto' || request.model === 'auto-vision') ? autoModel! : request.model;
             const isAvailable = await provider.isAvailable();
             if (!isAvailable) {
                 logger.log({
@@ -857,7 +887,7 @@ export class Router {
               continue;
             }
 
-            if (!providerAcceptsContent(provider, routedRequest, effectiveModel)) {
+            if (!providerAcceptsContent(provider, { ...routedRequest, messages: currentMessages }, effectiveModel)) {
               cannotRead.push(provider.name);
               logger.log({ requestId, provider: provider.name, model: effectiveModel, status: 'error', error: `${provider.name} can't read images for ${effectiveModel}`, duration: Date.now() - start });
               console.warn(`[Router] Skipping ${provider.name} — can't read the request's images with ${effectiveModel}`);
@@ -1172,6 +1202,8 @@ export class Router {
  * alternatives. Providers not named here come after, in registration order.
  */
 export const CAPABILITY_PREFERENCE: Record<Exclude<Capability, 'chat'>, string[]> = {
+  vision: ['Gemini', 'OpenRouter', 'OpenAI', 'AzureOpenAI', 'WorkersAI'],
+  audio: ['Gemini', 'OpenAI', 'AzureOpenAI', 'WorkersAI', 'OpenRouter'],
   embeddings: ['OpenAI', 'AzureOpenAI', 'WorkersAI', 'Gemini', 'OpenRouter'],
   transcription: ['OpenAI', 'Deepgram', 'WorkersAI'],
   speech: ['OpenAI', 'WorkersAI'],

@@ -77,6 +77,8 @@ export interface ModelDetail {
   name?: string;
   description?: string;
   score?: number;
+  /** Modalities accepted by this model. */
+  capabilities?: Capability[];
   /** The price the provider publishes for this model, in US dollars per million tokens. */
   pricing?: { input: number; output: number };
 }
@@ -84,7 +86,7 @@ export interface ModelDetail {
 // ── Capabilities beyond chat (embeddings, speech-to-text, text-to-speech) ──
 
 /** What a provider serves. Providers that don't say serve chat only. */
-export type Capability = 'chat' | 'embeddings' | 'transcription' | 'speech';
+export type Capability = 'chat' | 'vision' | 'audio' | 'embeddings' | 'transcription' | 'speech';
 
 export interface EmbeddingRequest {
   model: string;
