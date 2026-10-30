@@ -37,12 +37,12 @@ const IMAGE_CONTENT = [
 
 type Upstream = { url: string; bodies: Array<Record<string, any>>; close: () => Promise<void> };
 
-async function startUpstream(models = ['gemini-3.8-flash']): Promise<Upstream> {
+async function startUpstream(models: Array<string | { id: string; capabilities?: string[] }> = ['gemini-3.8-flash']): Promise<Upstream> {
   const bodies: Array<Record<string, any>> = [];
   const server = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url?.endsWith('/models')) {
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ data: models.map(id => ({ id })) }));
+      res.end(JSON.stringify({ data: models.map(model => typeof model === 'string' ? { id: model } : model) }));
       return;
     }
     let raw = '';
@@ -256,8 +256,8 @@ describe('gateway model capabilities', () => {
   it('routes image requests through an LLM-API-like gateway to its listed vision model', async () => {
     const upstream = await startUpstream([
       { id: 'text-only-model', capabilities: ['chat'] },
-      { id: 'gemini-2.5-flash-lite', capabilities: ['chat', 'vision', 'audio'] },
-    ] as never);
+      { id: 'gemini-2.5-flash-lite', capabilities: ['chat'] },
+    ]);
     try {
       const router = new Router({ quotaManager: new QuotaManager(), modelRegistry: new ModelRegistry() });
       router.addProvider(new LlmApiProvider('key', 'text-only-model', upstream.url));

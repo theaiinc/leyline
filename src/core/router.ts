@@ -290,7 +290,7 @@ export class Router {
    * Pick the model a provider should serve for an 'auto' request, or null
    * when the provider has no enabled models and must be skipped.
    */
-  private autoModelFor(provider: Provider, request?: CompletionRequest): string | null {
+  private async autoModelFor(provider: Provider, request?: CompletionRequest): Promise<string | null> {
     const enabled = this.enabledModelsFor(provider);
     if (enabled && enabled.length === 0) return null;
 
@@ -301,25 +301,20 @@ export class Router {
     const needsAudio = parts.some(part => part.type === 'input_audio');
 
     if (needsVision || needsAudio) {
-      const capabilities = provider.capabilities;
-      // Metadata is an optimization, not the source of truth. Providers without
-      // declared capabilities are checked later by providerAcceptsContent().
-      if (capabilities?.length &&
-          ((needsVision && !capabilities.includes('vision')) ||
-           (needsAudio && !capabilities.includes('audio')))) {
-        return null;
-      }
+      // Gateways may advertise only chat/embeddings provider capabilities while
+      // publishing media-capable models from /models. Model metadata is authoritative.
       const preferredMediaModel = config.autoVisionModel ?? 'gemini-2.5-flash-lite';
-      const hasPreferredCapability = !provider.capabilities?.length
-        || (needsVision && provider.capabilities.includes('vision'))
-        || (needsAudio && provider.capabilities.includes('audio'));
-      if (preferredMediaModel && hasPreferredCapability && (!enabled || enabled.includes(preferredMediaModel))) {
+      if (preferredMediaModel && (!enabled || enabled.includes(preferredMediaModel))
+          && await this.providerListsModel(provider, preferredMediaModel)) {
         return preferredMediaModel;
       }
       const mediaModel = provider.defaultModelFor?.(
         needsAudio ? 'audio' : 'vision',
       );
-      if (mediaModel && (!enabled || enabled.includes(mediaModel))) return mediaModel;
+      if (mediaModel && (!enabled || enabled.includes(mediaModel))
+          && await this.providerListsModel(provider, mediaModel)) {
+        return mediaModel;
+      }
     }
 
     if (!enabled) return provider.defaultModel;
@@ -491,7 +486,8 @@ export class Router {
   private async capabilityServers(capability: Capability, model: string): Promise<Provider[]> {
     const out: Provider[] = [];
     for (const provider of this.providers) {
-      if (!provider.capabilities?.includes(capability)) continue;
+      // A gateway may publish a media-capable model without advertising a provider-wide
+      // vision/audio capability. Listed model metadata is authoritative for gateways.
       if (provider.servesModel?.(capability, model)
         || (provider.servesListedModels?.(capability) && await this.providerListsModel(provider, model))) {
         out.push(provider);
@@ -656,7 +652,7 @@ export class Router {
         overBudget.push(provider.name);
         continue;
       }
-      const autoModel = (request.model === 'auto' || request.model === 'auto-vision') ? this.autoModelFor(provider, routedRequest) : null;
+      const autoModel = (request.model === 'auto' || request.model === 'auto-vision') ? await this.autoModelFor(provider, routedRequest) : null;
       if ((request.model === 'auto' || request.model === 'auto-vision') && autoModel === null) {
         console.log(`[Router] Skipping ${provider.name} — no models enabled for routing.`);
         continue;
@@ -856,7 +852,7 @@ export class Router {
         let providerUsage: UsageSnapshot | undefined;
         let effectiveModel = request.model;
         try {
-            effectiveModel = (request.model === 'auto' || request.model === 'auto-vision') ? autoModel! : request.model;
+            effectiveModel = (request.model === 'auto' || request.model === 'auto-vision') ? (await autoModel)! : request.model;
             const isAvailable = await provider.isAvailable();
             if (!isAvailable) {
                 logger.log({
