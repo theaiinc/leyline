@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Activity, Gauge, KeyRound, Server } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { CodeBlock, EmptyState, ProviderDot, SecretValue } from '@/components/common';
+import { CodeBlock, EmptyState, PageHeader, ProviderDot, SecretValue } from '@/components/common';
 import { apiUrl } from '@/api';
 import type { Dashboard } from '@/hooks/use-dashboard';
 import { providerTone, type LogEntry, type ProviderStats } from '@/normalization';

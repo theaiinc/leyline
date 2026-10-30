@@ -13,7 +13,8 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc && vite build && node -e \"require('fs').copyFileSync('dashboard/public/logo.png','public/logo.png')\"",
+    "build": "tsc && npm run dashboard:typecheck && vite build && node -e \"require('fs').copyFileSync('dashboard/public/logo.png','public/logo.png')\"",
+  "dashboard:typecheck": "tsc --noEmit -p dashboard/tsconfig.json",
     "prestart": "tsc",
     "start": "node dist/index.js",
     "litellm:azure": "npm run build && node scripts/start-litellm-azure.mjs",
