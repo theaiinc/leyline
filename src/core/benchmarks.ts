@@ -24,6 +24,8 @@ export type Benchmark = {
   scores: BenchmarkScore[];
   source?: string;
   asOf?: string;
+  available?: boolean;
+  unavailableReason?: string;
 };
 
 export type BenchmarkSnapshot = {
@@ -135,6 +137,16 @@ export function rankBenchmarks(models: string[], snapshot: BenchmarkSnapshot): A
 
 export function benchmarkCatalog(): Array<{ id: BenchmarkId; name: string }> {
   return (Object.keys(BENCHMARK_NAMES) as BenchmarkId[]).map((id) => ({ id, name: BENCHMARK_NAMES[id] }));
+}
+
+export function unavailableBenchmark(id: BenchmarkId, reason: string): Benchmark {
+  return {
+    id,
+    name: BENCHMARK_NAMES[id],
+    scores: [],
+    available: false,
+    unavailableReason: reason,
+  };
 }
 
 export async function loadBenchmarks(
