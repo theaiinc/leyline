@@ -261,6 +261,16 @@ describe('Router', () => {
         expect(vision.servedModel).toBe('gemini-2.5-flash-lite');
     });
 
+    it('uses the configured automatic media model', async () => {
+        const vision = new MockProvider('vision', ['chat', 'vision']);
+        router = new Router(quotaManager);
+        router.addProvider(vision);
+
+        await router.route({ model: 'auto', messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'https://example.com/image.png' } }] }] });
+
+        expect(vision.servedModel).toBe('gemini-2.5-flash-lite');
+    });
+
     it('returns a clear error when no enabled model can read the media', async () => {
         await expect(router.route({ model: 'auto', messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'https://example.com/image.png' } }] }] }))
             .rejects.toThrow(/can't read|capable|All providers failed/i);
