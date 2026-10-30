@@ -253,7 +253,11 @@ describe('providers that cannot read images are not used for them', () => {
 });
 
 describe('gateway model capabilities', () => {
+<<<<<<< HEAD
   it('routes auto image and audio requests through a chat/embeddings-only gateway to its listed media model', async () => {
+=======
+  it('routes auto image and audio requests through a gateway declaring vision/audio model capabilities', async () => {
+>>>>>>> edf86be (Clarify gateway media capability test name)
     const upstream = await startUpstream([
       { id: 'text-only-model', capabilities: ['chat'] },
       { id: 'gemini-2.5-flash-lite', capabilities: ['chat', 'vision', 'audio'] },
