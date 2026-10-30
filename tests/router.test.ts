@@ -9,14 +9,25 @@ class MockProvider implements Provider {
     shouldFail: boolean = false;
     shouldThrow: boolean = false;
     defaultModel: string;
+    capabilities: Capability[] = ['chat'];
+    servedModel = '';
     
-    constructor(name: string) {
+    constructor(name: string, capabilities: Capability[] = ['chat']) {
         this.name = name;
         this.defaultModel = `default-${name}`;
+        this.capabilities = capabilities;
     }
 
     servesModel(capability: Capability, model: string): boolean {
-        return capability === 'chat' && (model.startsWith('model-') || model.startsWith('gpt-'));
+        return this.capabilities.includes(capability) && (model.startsWith('model-') || model.startsWith('gpt-') || model.startsWith('gemini-'));
+    }
+
+    acceptsNonTextContent(): boolean {
+        return this.capabilities.includes('vision') || this.capabilities.includes('audio');
+    }
+
+    defaultModelFor(capability: Capability): string | undefined {
+        return this.capabilities.includes(capability) ? `gemini-2.5-flash-lite` : undefined;
     }
 
     async isAvailable(): Promise<boolean> {
@@ -26,11 +37,13 @@ class MockProvider implements Provider {
     async getModels(): Promise<ModelDetail[]> {
         return [
             { id: 'model-a', name: 'Model A' },
-            { id: 'model-b', name: 'Model B' }
+            { id: 'model-b', name: 'Model B' },
+            { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash-Lite' }
         ];
     }
 
     async complete(request: CompletionRequest): Promise<CompletionResponse> {
+        this.servedModel = request.model;
         if (this.shouldThrow) throw new Error('Simulated failure');
         return {
             id: 'mock',
@@ -210,6 +223,47 @@ describe('Router', () => {
         byteplus.shouldFail = true;
         const gpt = await router.route({ model: 'gpt-5.6-luna', messages: [] });
         expect(gpt.choices[0].message.content).toContain('openai');
+    });
+
+    it('routes image-only auto requests to a vision-capable model', async () => {
+        const vision = new MockProvider('vision', ['chat', 'vision']);
+        router = new Router(quotaManager);
+        router.addProvider(vision);
+
+        await router.route({ model: 'auto', messages: [{ role: 'user', content: [{ type: 'text', text: 'What is this?' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }] }] });
+
+        expect(vision.servedModel).toBe('gemini-2.5-flash-lite');
+    });
+
+    it('routes audio-only auto requests to an audio-capable model', async () => {
+        const audio = new MockProvider('audio', ['chat', 'audio']);
+        router = new Router(quotaManager);
+        router.addProvider(audio);
+
+        await router.route({ model: 'auto', messages: [{ role: 'user', content: [{ type: 'input_audio', input_audio: { data: 'AA==', format: 'mp3' } }] }] });
+
+        expect(audio.servedModel).toBe('gemini-2.5-flash-lite');
+    });
+
+    it('keeps text-only auto routing on the normal chat model', async () => {
+        await router.route({ model: 'auto', messages: [{ role: 'user', content: 'hello' }] });
+
+        expect(p1.servedModel).toBe('default-p1');
+    });
+
+    it('routes hosted auto-vision requests through the same media selection', async () => {
+        const vision = new MockProvider('vision', ['chat', 'vision']);
+        router = new Router(quotaManager);
+        router.addProvider(vision);
+
+        await router.route({ model: 'auto-vision', messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'https://example.com/image.png' } }] }] });
+
+        expect(vision.servedModel).toBe('gemini-2.5-flash-lite');
+    });
+
+    it('returns a clear error when no enabled model can read the media', async () => {
+        await expect(router.route({ model: 'auto', messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'https://example.com/image.png' } }] }] }))
+            .rejects.toThrow(/can't read|capable|All providers failed/i);
     });
 
     it('logs token usage from streaming chunks when available', async () => {

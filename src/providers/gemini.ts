@@ -8,6 +8,18 @@ import { config } from '../config';
 
 dotenv.config();
 
+const GEMINI_MULTIMODAL_MODELS = new Set([
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
+  'gemini-3.1-flash-lite',
+]);
+
+function geminiCapabilities(model: string): Capability[] {
+  if (/embedding/i.test(model)) return ['embeddings'];
+  if (GEMINI_MULTIMODAL_MODELS.has(model)) return ['chat', 'vision', 'audio'];
+  return ['chat'];
+}
+
 export class GeminiProvider implements Provider {
   name = 'Gemini';
   capabilities: Capability[] = ['chat', 'embeddings'];
@@ -65,7 +77,8 @@ export class GeminiProvider implements Provider {
               .map((m: any) => ({
                   id: m.name.replace('models/', ''),
                   name: m.displayName,
-                  description: m.description
+                  description: m.description,
+                  capabilities: geminiCapabilities(m.name.replace('models/', '')),
               }));
       } catch (error) {
           console.error('[Gemini] Failed to list models:', error);
