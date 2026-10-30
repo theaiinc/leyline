@@ -301,8 +301,19 @@ export class Router {
     const needsAudio = parts.some(part => part.type === 'input_audio');
 
     if (needsVision || needsAudio) {
-      // Gateways may advertise only chat/embeddings provider capabilities while
-      // publishing media-capable models from /models. Model metadata is authoritative.
+      const capabilities = provider.capabilities;
+      // Provider-wide metadata can exclude providers that cannot handle the
+      // requested modality; gateway model metadata remains authoritative when
+      // it advertises a specific media-capable model.
+      if (capabilities?.length &&
+          ((needsVision && !capabilities.includes('vision')) ||
+           (needsAudio && !capabilities.includes('audio')))) {
+        const preferredMediaModel = config.autoVisionModel ?? 'gemini-2.5-flash-lite';
+        if (!preferredMediaModel || (enabled && !enabled.includes(preferredMediaModel))
+            || !(await this.providerListsModel(provider, preferredMediaModel))) {
+          return null;
+        }
+      }
       const preferredMediaModel = config.autoVisionModel ?? 'gemini-2.5-flash-lite';
       if (preferredMediaModel && (!enabled || enabled.includes(preferredMediaModel))
           && await this.providerListsModel(provider, preferredMediaModel)) {
