@@ -10,7 +10,6 @@
 
 ### Fixed
 
-- Automatic multimodal routing now selects a gateway-listed model with the required vision/audio capabilities and preserves WAV `input_audio` parts when forwarding requests. In the production-shaped image test, `gpt-5.6-luna-2026-07-09` was selected because `gemini-2.5-flash-lite` was not eligible in that provider configuration; this is intentional capability-based routing, not a fixed preference for flash-lite.
 - Images (and audio, files) in OpenAI content-part arrays and Anthropic `/v1/messages` image blocks reach the upstream model instead of being flattened to text; requests with images skip providers that can't read them (HuggingFace, Workers AI) and get a clear 400 when only those serve the model. Gemini inlines `data:` URL images; Ollama sends them as `images`.
 
 ## [1.3.3] - 2026-06-25
