@@ -256,8 +256,8 @@ describe('gateway model capabilities', () => {
   it('routes image requests through an LLM-API-like gateway to its listed vision model', async () => {
     const upstream = await startUpstream([
       { id: 'text-only-model', capabilities: ['chat'] },
-      { id: 'gemini-2.5-flash-lite', capabilities: ['chat'] },
-    ]);
+      { id: 'gemini-2.5-flash-lite', capabilities: ['chat', 'vision', 'audio'] },
+    ] as never);
     try {
       const router = new Router({ quotaManager: new QuotaManager(), modelRegistry: new ModelRegistry() });
       router.addProvider(new LlmApiProvider('key', 'text-only-model', upstream.url));
