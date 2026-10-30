@@ -33,12 +33,16 @@ const DEFAULTS: Record<Capability, string> = {
   embeddings: '@cf/baai/bge-m3',
   transcription: '@cf/openai/whisper-large-v3-turbo',
   speech: '@cf/myshell-ai/melotts',
+  vision: 'gemini-2.5-flash-lite',
+  audio: 'gemini-2.5-flash-lite',
 };
 
 const PATTERNS: Record<Exclude<Capability, 'chat'>, RegExp> = {
   embeddings: /^@cf\/[\w.-]+\/[\w.-]*(bge|embed)[\w.-]*$/i,
   transcription: /^@cf\/openai\/whisper[\w.-]*$/,
   speech: /^@cf\/myshell-ai\/melotts$/,
+  vision: /^$a/,
+  audio: /^$a/,
 };
 /** MeloTTS's languages (OpenAI's `voice` picks one; anything else is English). */
 const MELO_LANGS = new Set(['en', 'es', 'fr', 'zh', 'jp', 'kr']);

@@ -101,6 +101,8 @@ export function resolveClientApiKey(): string {
 }
 
 export interface LeylineConfig {
+  /** Preferred model for automatic image/audio requests. */
+  autoVisionModel: string;
   port: number;
   quotas: {
     /** When false, Leyline does not enforce RPM/RPD caps (providers enforce their own limits). */
@@ -165,6 +167,7 @@ export interface HostedConfig {
 }
 
 export const config: LeylineConfig = {
+  autoVisionModel: process.env.LEYLINE_AUTO_VISION_MODEL || 'gemini-2.5-flash-lite',
   port: parseInt(process.env.PORT || '3000', 10),
   quotas: {
     enabled: process.env.LEYLINE_QUOTAS_ENABLED === 'true',
