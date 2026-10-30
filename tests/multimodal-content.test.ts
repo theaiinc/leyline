@@ -254,10 +254,14 @@ describe('providers that cannot read images are not used for them', () => {
 
 describe('gateway model capabilities', () => {
 <<<<<<< HEAD
+<<<<<<< HEAD
   it('routes auto image and audio requests through a gateway declaring vision/audio model capabilities', async () => {
 =======
   it('routes auto image and audio requests through a gateway with listed vision/audio model capabilities', async () => {
 >>>>>>> 4a49c8e (Clarify gateway media capability test name)
+=======
+  it('routes auto image and audio requests through a gateway listing vision/audio model capabilities', async () => {
+>>>>>>> d555eec (Clarify gateway media capability test)
     const upstream = await startUpstream([
       { id: 'text-only-model', capabilities: ['chat'] },
       { id: 'gemini-2.5-flash-lite', capabilities: ['chat'] },
