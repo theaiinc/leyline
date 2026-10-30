@@ -249,6 +249,23 @@ export default {
 
     const t0 = Date.now();
     const b = await current(env);
+    if (url.pathname === '/v1/benchmarks/refresh' && request.method === 'POST') {
+      const req = { headers: { cookie: request.headers.get('cookie') ?? undefined, authorization: request.headers.get('authorization') ?? undefined } };
+      if (!adminOf(b.hosted, req as never)) return new Response('Unauthorized', { status: 401 });
+      try {
+        const snapshot = await refreshStoredBenchmarks(new D1DocStore(reads(env), env.DB), env, true);
+        const benchmarks = snapshot && 'benchmarks' in snapshot ? snapshot.benchmarks.map((benchmark) => ({ id: benchmark.id, rows: benchmark.scores.length })) : [];
+        return Response.json({
+          ok: true,
+          fetchedAt: snapshot && 'fetchedAt' in snapshot ? snapshot.fetchedAt : null,
+          rows: benchmarks.reduce((total, benchmark) => total + benchmark.rows, 0),
+          benchmarks,
+        });
+      } catch (error) {
+        console.error('[benchmarks] admin refresh failed', error instanceof Error ? error.message : error);
+        return Response.json({ ok: false, error: error instanceof Error ? error.message : 'refresh failed' }, { status: 502 });
+      }
+    }
     const appMs = Date.now() - t0;
     const res = await handleAsNodeRequest(b.port, request, env, ctx as never);
     // Where a request's time to its first byte goes: getting the app (a cold build), then the app itself.

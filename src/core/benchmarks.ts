@@ -271,7 +271,17 @@ function parseCsv(csv: string, benchmark: string, scoreColumn: string): Benchmar
 
 export async function fetchEpochSnapshot(url: string): Promise<BenchmarkSnapshot> {
   const response = await fetchResponse(url);
-  const archive = unzipSync(new Uint8Array(await response.arrayBuffer()));
+  const requiredFiles = new Set([
+    'gpqa_diamond.csv',
+    'swe_bench_verified.csv',
+    'otis_mock_aime_2024_2025.csv',
+    'hle_external.csv',
+    'live_bench_external.csv',
+    'terminalbench_external.csv',
+  ]);
+  const archive = unzipSync(new Uint8Array(await response.arrayBuffer()), {
+    filter: (file) => requiredFiles.has(file.name.split('/').pop()?.toLowerCase() ?? ''),
+  });
   const rows = Object.entries(archive).flatMap(([name, data]) => {
     const file = name.split('/').pop()?.toLowerCase() ?? '';
     const mapped: Record<string, { benchmark: BenchmarkId; scoreColumn: string }> = {
