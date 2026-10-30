@@ -351,7 +351,7 @@ async function fetchLMArena(url: string): Promise<BenchmarkSnapshot> {
   // paging through eleven thousand rows. The endpoint accepts a SQL-like
   // where expression; retain the caller's URL override for tests/mirrors.
   const separator = url.includes('?') ? '&' : '?';
-  const filtered = `${url}${separator}where=${encodeURIComponent("category='overall'")}`;
+  const filtered = `${url}${separator}where=${encodeURIComponent('"category"=\'overall\'')}`;
   const rows: BenchmarkRow[] = [];
   for (let offset = 0; offset < 2000; offset += 100) {
     const payload = await fetchJson(`${filtered}&offset=${offset}&length=100`, {}, 2);
