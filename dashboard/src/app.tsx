@@ -9,6 +9,7 @@ import { useDashboard } from '@/hooks/use-dashboard';
 import { useHashRoute } from '@/hooks/use-hash-route';
 import { cn } from '@/lib/utils';
 import { ActivityPage } from '@/pages/activity';
+import { BenchmarksPage } from '@/pages/benchmarks';
 import { KeysPage } from '@/pages/keys';
 import { OfferedPage } from '@/pages/offered';
 import { OverviewPage } from '@/pages/overview';
@@ -20,6 +21,7 @@ import { SpendingPage } from '@/pages/spending';
 type Nav = { id: string; label: string; icon: typeof Activity; hosted?: true };
 const NAV: Nav[] = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+  { id: 'benchmarks', label: 'Benchmarks', icon: FlaskConical },
   { id: 'providers', label: 'Providers', icon: Server },
   { id: 'routing', label: 'Routing', icon: Route },
   { id: 'keys', label: 'Access keys', icon: KeyRound, hosted: true },
@@ -98,6 +100,7 @@ export function App() {
       <main className="min-w-0 px-4 py-6 md:px-8 md:py-8">
         <div className="mx-auto max-w-6xl">
           {d.waiting ? <div className="mb-4"><ToneBadge tone="warning">Waiting for the Leyline API…</ToneBadge></div> : null}
+          {current === 'benchmarks' ? <BenchmarksPage base={d.session?.hosted ? (d.session.publicUrl || window.location.origin) : d.stats.tunnel?.publicBaseUrl?.replace(/\/v1$/, '') || apiUrl('')} /> : null}
           {!d.status ? (
             <div className="grid gap-4"><Skeleton className="h-8 w-48" /><Skeleton className="h-28" /><Skeleton className="h-64" /></div>
           ) : current === 'overview' ? <OverviewPage d={d} go={go} />

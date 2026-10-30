@@ -20,7 +20,7 @@ export class OpenAIProvider implements Provider {
   capabilities: Capability[] = ['chat', 'embeddings', 'transcription', 'speech'];
   defaultModel: string;
   private apiKey: string;
-  private baseUrl: string;
+  protected baseUrl: string;
   private model: string;
 
   constructor(
@@ -212,7 +212,7 @@ export class OpenAIProvider implements Provider {
     };
   }
 
-  private headers(): Record<string, string> {
+  protected headers(): Record<string, string> {
     return {
       'Authorization': `Bearer ${this.apiKey}`,
       'Content-Type': 'application/json',

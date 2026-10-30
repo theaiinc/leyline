@@ -54,6 +54,7 @@ export class OpenRouterProvider implements Provider {
               name: m.name,
               description: m.description,
               ...(parsePublishedPricing(m.pricing) ? { pricing: parsePublishedPricing(m.pricing) } : {}),
+              ...(Array.isArray(m.architecture?.input_modalities) ? { capabilities: m.architecture.input_modalities.includes('image') ? ['chat', 'vision'] : ['chat'] } : {}),
           }));
       } catch (error) {
           console.error('[OpenRouter] Failed to list models:', error);

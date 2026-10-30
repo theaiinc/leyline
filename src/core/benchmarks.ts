@@ -51,14 +51,19 @@ const BENCHMARK_NAMES: Record<BenchmarkId, string> = {
 };
 
 export function normalizeModelId(id: string): string {
+  // Sources use provider prefixes, dated snapshots, effort suffixes, and
+  // display labels such as "Claude Opus 5.5 (High)". Keep this deliberately
+  // conservative: remove presentation metadata, not meaningful model names.
   return id.trim().toLowerCase()
-    .replace(/\s*\([^)]*\)\s*$/, '')
     .replace(/^[^/:]+[/:]/, '')
+    .replace(/\s*\((?:high|medium|low|max|thinking|reasoning|xhigh)\)\s*$/i, '')
+    .replace(/[-_](?:xhigh|high|medium|low|unknown|max|thinking|reasoning)(?=$|[-_])/g, '')
     .replace(/[-_]\d{4}[-_]\d{2}[-_]\d{2}(?=$|[-_])/, '')
     .replace(/[-_]\d{8}(?=$|[-_])/, '')
-    .replace(/[-_](?:xhigh|high|medium|low|unknown|max|thinking|reasoning)$/, '')
-    .replace(/-latest$/, '')
-    .replace(/[\s_]+/g, '-');
+    .replace(/[-_](?:latest|preview|experimental)(?=$|[-_])/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/_/g, '-')
+    .replace(/-+/g, '-');
 }
 
 export function modelAlias(id: string): string | undefined {
@@ -342,13 +347,15 @@ export async function fetchEpochSnapshot(url: string): Promise<BenchmarkSnapshot
 }
 
 async function fetchLMArena(url: string): Promise<BenchmarkSnapshot> {
+  // Filter at datasets-server rather than downloading every category and
+  // paging through eleven thousand rows. The endpoint accepts a SQL-like
+  // where expression; retain the caller's URL override for tests/mirrors.
+  const separator = url.includes('?') ? '&' : '?';
+  const filtered = `${url}${separator}where=${encodeURIComponent("category='overall'")}`;
   const rows: BenchmarkRow[] = [];
-  for (let offset = 0; offset < 12000; offset += 100) {
-    const payload = await fetchJson(`${url}${url.includes('?') ? '&' : '?'}offset=${offset}&length=100`, {}, 2);
+  for (let offset = 0; offset < 2000; offset += 100) {
+    const payload = await fetchJson(`${filtered}&offset=${offset}&length=100`, {}, 2);
     const parsed = rowsFromPayload(payload);
-    // This dataset is already the text leaderboard. Depending on the
-    // datasets-server revision, category is `overall`, `text`, or absent.
-    // Do not discard valid rating rows merely because category is omitted.
     rows.push(...parsed.map((row) => ({ ...row, benchmark: 'lmarena-text-elo' })));
     const root = asRecord(payload);
     const pageRows = root && Array.isArray(root.rows) ? root.rows : Array.isArray(payload) ? payload : [];

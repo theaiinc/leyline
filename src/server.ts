@@ -669,8 +669,8 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     await apiKeyInitialization;
     const { mode, pinnedProvider, pinnedModel, enabledModels, modelPins } = req.body || {};
 
-    if (mode !== undefined && mode !== 'auto' && mode !== 'pinned') {
-      return res.status(400).json({ error: "mode must be 'auto' or 'pinned'" });
+    if (mode !== undefined && mode !== 'auto' && mode !== 'auto-vision' && mode !== 'pinned') {
+      return res.status(400).json({ error: "mode must be 'auto', 'auto-vision' or 'pinned'" });
     }
     if (pinnedProvider !== undefined && typeof pinnedProvider !== 'string') {
       return res.status(400).json({ error: 'pinnedProvider must be a string' });

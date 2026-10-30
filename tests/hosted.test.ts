@@ -204,6 +204,7 @@ describe('hosted dashboard', () => {
     const cookie = cookieFor('owner@example.com');
     expect((await request(app).post('/dashboard/routing').set('Cookie', cookie).set('Origin', 'https://evil.example').send({ mode: 'auto' })).status).toBe(403);
     expect((await request(app).post('/dashboard/routing').set('Cookie', cookie).set('Origin', 'https://leyline.test').send({ mode: 'auto' })).status).toBe(200);
+    expect((await request(app).post('/dashboard/routing').set('Cookie', cookie).set('Origin', 'https://leyline.test').send({ mode: 'auto-vision' })).status).toBe(200);
   });
 
   it('the playground works with the owner session and no key, and is not counted', async () => {

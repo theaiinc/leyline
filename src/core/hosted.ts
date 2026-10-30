@@ -123,7 +123,7 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
     }
     if (!key) return fail(401, 'invalid_api_key', 'Incorrect API key provided.');
     const requested = typeof req.body?.model === 'string' ? req.body.model : '';
-    const offered = !requested || requested === 'auto' || opts.models.length === 0 || opts.models.some((m) => modelAllowed({ models: [m] }, requested)) || !!resolveAlias(opts, requested);
+    const offered = !requested || requested === 'auto' || requested === 'auto-vision' || opts.models.length === 0 || opts.models.some((m) => modelAllowed({ models: [m] }, requested)) || !!resolveAlias(opts, requested);
     if (!offered) return fail(404, 'model_not_found', `The model "${requested}" is not offered here; see /v1/models.`);
     if (requested && isBlocked(opts, requested)) {
       return fail(403, 'model_disabled', `The model "${requested}" is turned off here; see /v1/models for what you can use.`);
