@@ -308,14 +308,26 @@ export class Router {
       if (capabilities?.length &&
           ((needsVision && !capabilities.includes('vision')) ||
            (needsAudio && !capabilities.includes('audio')))) {
+      const preferredMediaModel = config.autoVisionModel ?? 'gemini-2.5-flash-lite';
+      if (!preferredMediaModel || (enabled && !enabled.includes(preferredMediaModel))
+          || !(await this.providerListsModel(provider, preferredMediaModel))) {
         return null;
       }
+    }
       const preferredMediaModel = config.autoVisionModel ?? 'gemini-2.5-flash-lite';
-      const hasPreferredCapability = !provider.capabilities?.length
-        || (needsVision && provider.capabilities.includes('vision'))
-        || (needsAudio && provider.capabilities.includes('audio'));
-      if (preferredMediaModel && hasPreferredCapability && (!enabled || enabled.includes(preferredMediaModel))
+      if (preferredMediaModel && (!enabled || enabled.includes(preferredMediaModel))
           && await this.providerListsModel(provider, preferredMediaModel)) {
+        return preferredMediaModel;
+      }
+      const mediaModel = provider.defaultModelFor?.(
+        needsAudio ? 'audio' : 'vision',
+      );
+      if (mediaModel && (!enabled || enabled.includes(mediaModel))
+          && await this.providerListsModel(provider, mediaModel)) {
+        return mediaModel;
+      }
+      }
+    }
         return preferredMediaModel;
       }
       const mediaModel = provider.defaultModelFor?.(
@@ -496,12 +508,19 @@ export class Router {
   private async capabilityServers(capability: Capability, model: string): Promise<Provider[]> {
     const out: Provider[] = [];
     for (const provider of this.providers) {
+<<<<<<< HEAD
       const providerCapability = provider.capabilities?.includes(capability) ?? false;
       const listedModel = provider.servesListedModels?.(capability)
         && await this.providerListsModel(provider, model);
       const servesListedModel = providerCapability && listedModel;
       const listedMediaModel = (capability === 'vision' || capability === 'audio') && listedModel;
       if ((providerCapability && (provider.servesModel?.(capability, model) || servesListedModel)) || listedMediaModel) {
+=======
+      // A gateway may publish a media-capable model without advertising a provider-wide
+      // vision/audio capability. Listed model metadata is authoritative for gateways.
+      if (provider.servesModel?.(capability, model)
+        || (provider.servesListedModels?.(capability) && await this.providerListsModel(provider, model))) {
+>>>>>>> 39ab6e6 (Fix gateway media capability routing)
         out.push(provider);
       }
     }
@@ -864,7 +883,7 @@ export class Router {
         let providerUsage: UsageSnapshot | undefined;
         let effectiveModel = request.model;
         try {
-            effectiveModel = (request.model === 'auto' || request.model === 'auto-vision') ? autoModel! : request.model;
+            effectiveModel = (request.model === 'auto' || request.model === 'auto-vision') ? (await autoModel)! : request.model;
             const isAvailable = await provider.isAvailable();
             if (!isAvailable) {
                 logger.log({

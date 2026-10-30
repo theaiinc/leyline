@@ -256,8 +256,8 @@ describe('gateway model capabilities', () => {
   it('routes auto image and audio requests through a gateway declaring vision/audio model capabilities', async () => {
     const upstream = await startUpstream([
       { id: 'text-only-model', capabilities: ['chat'] },
-      { id: 'gemini-2.5-flash-lite', capabilities: ['chat', 'vision', 'audio'] },
-    ] as never);
+      { id: 'gemini-2.5-flash-lite', capabilities: ['chat'] },
+    ]);
     try {
       const router = new Router({ quotaManager: new QuotaManager(), modelRegistry: new ModelRegistry() });
       router.addProvider(new LlmApiProvider('key', 'text-only-model', upstream.url));
