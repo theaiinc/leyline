@@ -261,7 +261,6 @@ describe('gateway model capabilities', () => {
     try {
       const router = new Router({ quotaManager: new QuotaManager(), modelRegistry: new ModelRegistry() });
       router.addProvider(new LlmApiProvider('key', 'text-only-model', upstream.url));
-
       const image = await router.route(normalizeCompletionRequest({
         model: 'auto',
         messages: [{ role: 'user', content: IMAGE_CONTENT }],

@@ -708,7 +708,7 @@ export class Router {
           continue;
         }
 
-        if (!providerAcceptsContent(provider, request, effectiveModel)) {
+        if (!providerAcceptsContent(provider, routedRequest, effectiveModel)) {
           cannotRead.push(provider.name);
           logger.log({ requestId, provider: provider.name, model: effectiveModel, status: 'error', error: `${provider.name} can't read images for ${effectiveModel}`, duration: Date.now() - start });
           console.warn(`[Router] Skipping ${provider.name} — can't read the request's images with ${effectiveModel}`);
