@@ -38,6 +38,8 @@ export type KeyCaps = {
   requestsPerMinute?: number | null;
   usdPerMonth?: number | null;
   models?: string[] | null;
+  piiRedaction?: 'off' | 'regex' | 'presidio';
+  piiAllowlist?: string[] | null;
 };
 
 export type IssuedKey = {
