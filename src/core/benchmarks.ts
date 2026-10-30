@@ -285,7 +285,7 @@ export async function fetchEpochSnapshot(url: string): Promise<BenchmarkSnapshot
   // Epoch occasionally returns a successful HTML/JSON error body. Surface that
   // as a useful source error instead of the opaque fflate "invalid zip data".
   if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b || bytes[2] !== 0x03 || bytes[3] !== 0x04) {
-    const preview = new TextDecoder().decode(bytes.subarray(0, 120)).replace(/\\s+/g, ' ').trim();
+    const preview = new TextDecoder().decode(bytes.subarray(0, 120)).replace(/\s+/g, ' ').trim();
     throw new Error(`Epoch returned non-ZIP data${preview ? `: ${preview}` : ''}`);
   }
   const archive = unzipSync(bytes, {
