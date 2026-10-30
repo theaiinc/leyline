@@ -22,7 +22,7 @@ function geminiCapabilities(model: string): Capability[] {
 
 export class GeminiProvider implements Provider {
   name = 'Gemini';
-  capabilities: Capability[] = ['chat', 'embeddings'];
+  capabilities: Capability[] = ['chat', 'vision', 'audio', 'embeddings'];
   defaultModel: string;
   private apiKey: string;
   private client: GoogleGenerativeAI;
