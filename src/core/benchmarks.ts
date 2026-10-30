@@ -11,6 +11,8 @@ export type BenchmarkId =
 
 export type BenchmarkScore = {
   model: string;
+  leylineModel?: string | null;
+  aliases?: string[];
   score: number;
   source: string;
   asOf: string;
@@ -48,31 +50,62 @@ const BENCHMARK_NAMES: Record<BenchmarkId, string> = {
   'terminal-bench': 'Terminal-Bench',
 };
 
-const MODEL_ALIASES: Record<string, string> = {
-  'claude-opus-5-5': 'claude-opus-5.5',
-  'claude-sonnet-5-5': 'claude-sonnet-5.5',
-  'gpt-4o-latest': 'gpt-4o',
-  'gemini-2.5-pro-latest': 'gemini-2.5-pro',
-};
-
 export function normalizeModelId(id: string): string {
-  let normalized = id.trim().toLowerCase()
+  return id.trim().toLowerCase()
     .replace(/\s*\([^)]*\)\s*$/, '')
     .replace(/^[^/:]+[/:]/, '')
-    .replace(/-\d{4}-\d{2}-\d{2}$/, '')
+    .replace(/[-_]\d{4}[-_]\d{2}[-_]\d{2}(?=$|[-_])/, '')
+    .replace(/[-_]\d{8}(?=$|[-_])/, '')
+    .replace(/[-_](?:xhigh|high|medium|low|unknown|max|thinking|reasoning)$/, '')
     .replace(/-latest$/, '')
-    .replace(/(?:[_-](?:max|high|low|medium|thinking|reasoning|unknown))$/, '')
     .replace(/[\s_]+/g, '-');
-  return MODEL_ALIASES[normalized] ?? normalized;
 }
 
 export function modelAlias(id: string): string | undefined {
-  return MODEL_ALIASES[normalizeModelId(id)];
+  const normalized = normalizeModelId(id);
+  return normalized === id.trim().toLowerCase() ? undefined : normalized;
+}
+
+function modelMatchKey(id: string): string {
+  return normalizeModelId(id).replace(/\./g, '-');
+}
+
+export type LeylineModel = {
+  id: string;
+  aliases?: string[];
+};
+
+/** Map source rows to models Leyline actually serves, retaining unmatched rows. */
+export function mapBenchmarkScores(scores: BenchmarkScore[], models: LeylineModel[]): BenchmarkScore[] {
+  const candidates = models.flatMap((model) => [
+    { model: model.id, normalized: modelMatchKey(model.id), aliases: model.aliases ?? [] },
+    ...(model.aliases ?? []).map((alias) => ({ model: model.id, normalized: modelMatchKey(alias), aliases: model.aliases ?? [] })),
+  ]);
+  const best = new Map<string, BenchmarkScore>();
+  for (const score of scores) {
+    const match = candidates.find((candidate) => candidate.normalized === modelMatchKey(score.model));
+    const mapped: BenchmarkScore = match
+      ? { ...score, leylineModel: match.model, aliases: [...new Set(match.aliases)] }
+      : { ...score, leylineModel: null, aliases: [] };
+    const key = mapped.leylineModel ?? `unmatched:${normalizeModelId(mapped.model)}`;
+    if (!best.has(key) || best.get(key)!.score < mapped.score) best.set(key, mapped);
+  }
+  return [...best.values()];
 }
 
 export function matchBenchmarkModel(modelId: string, scores: BenchmarkScore[]): BenchmarkScore | undefined {
-  const wanted = normalizeModelId(modelId);
-  return scores.find((score) => normalizeModelId(score.model) === wanted);
+  const wanted = modelMatchKey(modelId);
+  return scores.find((score) => modelMatchKey(score.model) === wanted || (score.leylineModel ? modelMatchKey(score.leylineModel) === wanted : false));
+}
+
+export function mapBenchmarkSnapshot(snapshot: BenchmarkSnapshot, models: LeylineModel[]): BenchmarkSnapshot {
+  return {
+    ...snapshot,
+    benchmarks: snapshot.benchmarks.map((benchmark) => ({
+      ...benchmark,
+      scores: mapBenchmarkScores(benchmark.scores, models),
+    })),
+  };
 }
 
 export function rankBenchmarks(models: string[], snapshot: BenchmarkSnapshot): Array<{

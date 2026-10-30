@@ -6,7 +6,7 @@ import { adminOf, applySettings, type HostedOptions } from '../src/core/hosted';
 import { D1ArcanaCloudStore, D1DocStore, D1LogStore, D1SecretStore, type D1Database } from '../src/core/d1-stores';
 import { arcanaCloudConfigFromEnv, parseArcanaCloudReferences, type SecretStore } from '../src/core/secret-store';
 import { logger } from '../src/core/logger';
-import { fetchBenchmarkSnapshot, refreshBenchmarks, type BenchmarkCache, type BenchmarkSnapshot } from '../src/core/benchmarks';
+import { fetchBenchmarkSnapshot, mapBenchmarkSnapshot, refreshBenchmarks, type BenchmarkCache, type BenchmarkSnapshot } from '../src/core/benchmarks';
 import type { ModelListSnapshot } from '../src/core/router';
 import type { WorkersAiBinding } from '../src/providers/workers-ai';
 
@@ -144,10 +144,17 @@ async function build(env: Env): Promise<Built> {
     const cache = benchmarkCache(docs, env);
     const cached = await cache.get();
     const stale = !cached || Date.now() - cached.fetchedAt >= 24 * 60 * 60 * 1000;
-    if (stale) {
-      keepAlive(refreshStoredBenchmarks(docs, env, true));
+    const mapSnapshot = (snapshot: BenchmarkSnapshot | null) => snapshot ? mapBenchmarkSnapshot(snapshot, router.exportModelLists().flatMap((list) => list.models.map((model) => ({ id: model.id, aliases: model.aliases ?? [] })))) : null;
+    if (!stale) return mapSnapshot(cached);
+    try {
+      // Await the refresh here: a Worker may terminate ordinary background work
+      // after the response unless it is reliably attached to waitUntil. Returning
+      // the newly written snapshot also makes the first stale request useful.
+      return mapSnapshot(await refreshStoredBenchmarks(docs, env, true)) ?? mapSnapshot(cached);
+    } catch (error) {
+      console.error('[benchmarks] request refresh failed', error instanceof Error ? error.message : error);
+      return cached;
     }
-    return cached;
   } });
   hosted.background = keepAlive;
   const email = env.EMAIL;
