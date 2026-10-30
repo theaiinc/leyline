@@ -20,6 +20,7 @@ type Spend = {
   tokens?: number;
   byProvider?: Record<string, Line>;
   byModel?: Record<string, Line & { provider: string; model: string }>;
+  byDay?: Record<string, Record<string, Line>>;
 };
 type SpendResponse = { spend: Spend; months: string[]; monthlyBudgetUsd: number | null };
 const DAILY_DATA_START = '2026-10-21';

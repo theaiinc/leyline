@@ -38,6 +38,7 @@ export type KeyCaps = {
   requestsPerMinute?: number | null;
   usdPerMonth?: number | null;
   models?: string[] | null;
+
 };
 
 export type IssuedKey = {
