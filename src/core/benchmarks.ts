@@ -61,7 +61,7 @@ export function normalizeModelId(id: string): string {
     .replace(/^[^/:]+[/:]/, '')
     .replace(/-\d{4}-\d{2}-\d{2}$/, '')
     .replace(/-latest$/, '')
-    .replace(/(?:[_-](?:max|high|low|medium|thinking|reasoning))$/, '')
+    .replace(/(?:[_-](?:max|high|low|medium|thinking|reasoning|unknown))$/, '')
     .replace(/[\s_]+/g, '-');
   return MODEL_ALIASES[normalized] ?? normalized;
 }
@@ -205,22 +205,24 @@ function snapshotFromRows(rows: BenchmarkRow[], source: string, fetchedAt: numbe
     const id = benchmarkId(row.benchmark);
     if (!id) continue;
     const key = `${id}:${normalizeModelId(row.model)}`;
-    const score = { model: row.model, score: row.score, source, asOf: row.asOf ?? new Date(fetchedAt).toISOString().slice(0, 10) };
+    const score = { model: normalizeModelId(row.model), score: row.score, source, asOf: row.asOf ?? new Date(fetchedAt).toISOString().slice(0, 10) };
     if (!best.has(key) || best.get(key)!.score < score.score) best.set(key, score);
   }
   return {
     fetchedAt,
-    benchmarks: benchmarkCatalog().map(({ id, name }) => ({
-      id, name,
-      scores: [...best.entries()].filter(([key]) => key.startsWith(`${id}:`)).map(([, score]) => score),
-      source,
-      asOf: new Date(fetchedAt).toISOString().slice(0, 10),
-    })),
+    benchmarks: benchmarkCatalog().flatMap(({ id, name }) => {
+      const scores = [...best.entries()]
+        .filter(([key]) => key.startsWith(`${id}:`))
+        .map(([, score]) => score);
+      return scores.length > 0 ? [{ id, name, scores, source, asOf: new Date(fetchedAt).toISOString().slice(0, 10) }] : [];
+    }),
   };
 }
 
 async function fetchResponse(url: string, headers: Record<string, string> = {}, retries = 0): Promise<Response> {
-  const response = await fetch(url, { headers });
+  const response = await fetch(url, {
+    headers: { Accept: '*/*', ...headers },
+  });
   if (!response.ok) {
     if (response.status >= 500 && response.status < 600 && retries > 0) {
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -279,7 +281,14 @@ export async function fetchEpochSnapshot(url: string): Promise<BenchmarkSnapshot
     'live_bench_external.csv',
     'terminalbench_external.csv',
   ]);
-  const archive = unzipSync(new Uint8Array(await response.arrayBuffer()), {
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  // Epoch occasionally returns a successful HTML/JSON error body. Surface that
+  // as a useful source error instead of the opaque fflate "invalid zip data".
+  if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b || bytes[2] !== 0x03 || bytes[3] !== 0x04) {
+    const preview = new TextDecoder().decode(bytes.subarray(0, 120)).replace(/\\s+/g, ' ').trim();
+    throw new Error(`Epoch returned non-ZIP data${preview ? `: ${preview}` : ''}`);
+  }
+  const archive = unzipSync(bytes, {
     filter: (file) => requiredFiles.has(file.name.split('/').pop()?.toLowerCase() ?? ''),
   });
   const rows = Object.entries(archive).flatMap(([name, data]) => {
@@ -303,8 +312,11 @@ async function fetchLMArena(url: string): Promise<BenchmarkSnapshot> {
   const rows: BenchmarkRow[] = [];
   for (let offset = 0; offset < 12000; offset += 100) {
     const payload = await fetchJson(`${url}${url.includes('?') ? '&' : '?'}offset=${offset}&length=100`, {}, 2);
-    const page = rowsFromPayload(payload).filter((row) => row.benchmark.toLowerCase() === 'overall');
-    rows.push(...page.map((row) => ({ ...row, benchmark: 'lmarena-text-elo' })));
+    const parsed = rowsFromPayload(payload);
+    // This dataset is already the text leaderboard. Depending on the
+    // datasets-server revision, category is `overall`, `text`, or absent.
+    // Do not discard valid rating rows merely because category is omitted.
+    rows.push(...parsed.map((row) => ({ ...row, benchmark: 'lmarena-text-elo' })));
     const root = asRecord(payload);
     const pageRows = root && Array.isArray(root.rows) ? root.rows : Array.isArray(payload) ? payload : [];
     if (pageRows.length < 100) break;

@@ -140,14 +140,14 @@ async function build(env: Env): Promise<Built> {
   // Refresh missing/stale lists during Worker startup so a cold instance can advertise served models.
   await router.reindexStale();
   mark('router');
-  const hosted = hostedOptions(docs, { sharedMinute: true, watch: false, benchmarks: {
-    fetch: () => fetchBenchmarkSnapshot({
-      artificialAnalysisApiKey: env.ARTIFICIAL_ANALYSIS_API_KEY,
-      artificialAnalysisUrl: env.ARTIFICIAL_ANALYSIS_URL,
-      epochUrl: env.EPOCH_BENCHMARKS_URL ?? 'https://epoch.ai/data/benchmark_data.zip',
-      lmarenaUrl: env.LM_ARENA_URL ?? 'https://datasets-server.huggingface.co/rows?dataset=lmarena-ai/leaderboard-dataset&config=text&split=latest',
-    }),
-    background: keepAlive,
+  const hosted = hostedOptions(docs, { sharedMinute: true, watch: false, benchmarks: async () => {
+    const cache = benchmarkCache(docs, env);
+    const cached = await cache.get();
+    const stale = !cached || Date.now() - cached.fetchedAt >= 24 * 60 * 60 * 1000;
+    if (stale) {
+      keepAlive(refreshStoredBenchmarks(docs, env, true));
+    }
+    return cached;
   } });
   hosted.background = keepAlive;
   const email = env.EMAIL;

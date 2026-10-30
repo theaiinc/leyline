@@ -43,10 +43,23 @@ describe('benchmark matching and ranking', () => {
     expect(ranked.map((row) => row.id)).toEqual(['claude-opus-5-5', 'gpt-4o', 'gpt-4o-mini']);
     expect(ranked.find((row) => row.id === 'gpt-4o-mini')?.benchmarks['gpqa-diamond']).toBeNull();
   });
+
+  it('parses LMArena datasets-server rows and keeps the best normalized model score', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = async () => new Response(JSON.stringify({ rows: [
+      { row: { model_name: 'Gemini 4 Argon (High)', rating: 1500, category: 'overall', leaderboard_publish_date: '2026-10-28' } },
+      { row: { model_name: 'Gemini 4 Argon (Low)', rating: 1490, category: 'overall', leaderboard_publish_date: '2026-10-28' } },
+    ] }), { status: 200 });
+    const result = await fetchBenchmarkSnapshot({ epochUrl: 'https://example.test/epoch.zip', lmarenaUrl: 'https://example.test/rows' });
+    global.fetch = originalFetch;
+    const scores = result.benchmarks.find((benchmark) => benchmark.id === 'lmarena-text-elo')?.scores ?? [];
+    expect(scores).toEqual(expect.arrayContaining([expect.objectContaining({ model: 'gemini-4-argon', score: 1500 })]));
+    expect(scores.filter((score) => score.model === 'gemini-4-argon')).toHaveLength(1);
+  });
 });
 
 describe('Epoch benchmark ZIP parsing', () => {
-  it('maps per-file score columns and preserves quoted newlines', async () => {
+  it('maps per-file score columns, normalizes effort suffixes, and preserves quoted newlines', async () => {
     const zip = zipSync({
       'gpqa_diamond.csv': strToU8('Model version,mean_score,Release date\ngpt-6.1-terra_max,0.943,2026-10-26\n'),
       'hle_external.csv': strToU8('Model version,Accuracy,Notes\nClaude Opus 5.5 (High),0.812,"line one\nline two"\n'),
@@ -55,8 +68,21 @@ describe('Epoch benchmark ZIP parsing', () => {
     global.fetch = async () => new Response(zip, { status: 200 });
     const snapshot = await fetchEpochSnapshot('https://example.test/benchmark_data.zip');
     global.fetch = originalFetch;
-    expect(snapshot.benchmarks.find((benchmark: BenchmarkSnapshot['benchmarks'][number]) => benchmark.id === 'gpqa-diamond')?.scores[0]).toMatchObject({ model: 'gpt-6.1-terra_max', score: 0.943 });
-    expect(snapshot.benchmarks.find((benchmark: BenchmarkSnapshot['benchmarks'][number]) => benchmark.id === 'hle')?.scores[0]).toMatchObject({ model: 'Claude Opus 5.5 (High)', score: 0.812 });
+    expect(snapshot.benchmarks.find((benchmark: BenchmarkSnapshot['benchmarks'][number]) => benchmark.id === 'gpqa-diamond')?.scores[0]).toMatchObject({ model: 'gpt-6.1-terra', score: 0.943 });
+    expect(snapshot.benchmarks.find((benchmark: BenchmarkSnapshot['benchmarks'][number]) => benchmark.id === 'hle')?.scores[0]).toMatchObject({ model: 'claude-opus-5.5', score: 0.812 });
+  });
+
+  it('parses LMArena datasets-server rows and keeps the best normalized model score', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = async () => new Response(JSON.stringify({ rows: [
+      { row: { model_name: 'Gemini 4 Argon (High)', rating: 1500, category: 'overall', leaderboard_publish_date: '2026-10-28' } },
+      { row: { model_name: 'Gemini 4 Argon (Low)', rating: 1490, category: 'overall', leaderboard_publish_date: '2026-10-28' } },
+    ] }), { status: 200 });
+    const result = await fetchBenchmarkSnapshot({ epochUrl: 'https://example.test/epoch.zip', lmarenaUrl: 'https://example.test/rows' });
+    global.fetch = originalFetch;
+    const scores = result.benchmarks.find((benchmark) => benchmark.id === 'lmarena-text-elo')?.scores ?? [];
+    expect(scores).toEqual(expect.arrayContaining([expect.objectContaining({ model: 'gemini-4-argon', score: 1500 })]));
+    expect(scores.filter((score) => score.model === 'gemini-4-argon')).toHaveLength(1);
   });
 });
 
@@ -92,6 +118,19 @@ describe('benchmark refresh behavior', () => {
     global.fetch = originalFetch;
     expect(calls).toBeGreaterThanOrEqual(1);
     expect(result.benchmarks.find((benchmark) => benchmark.id === 'gpqa-diamond')?.scores).toHaveLength(1);
+  });
+
+  it('parses LMArena datasets-server rows and keeps the best normalized model score', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = async () => new Response(JSON.stringify({ rows: [
+      { row: { model_name: 'Gemini 4 Argon (High)', rating: 1500, category: 'overall', leaderboard_publish_date: '2026-10-28' } },
+      { row: { model_name: 'Gemini 4 Argon (Low)', rating: 1490, category: 'overall', leaderboard_publish_date: '2026-10-28' } },
+    ] }), { status: 200 });
+    const result = await fetchBenchmarkSnapshot({ epochUrl: 'https://example.test/epoch.zip', lmarenaUrl: 'https://example.test/rows' });
+    global.fetch = originalFetch;
+    const scores = result.benchmarks.find((benchmark) => benchmark.id === 'lmarena-text-elo')?.scores ?? [];
+    expect(scores).toEqual(expect.arrayContaining([expect.objectContaining({ model: 'gemini-4-argon', score: 1500 })]));
+    expect(scores.filter((score) => score.model === 'gemini-4-argon')).toHaveLength(1);
   });
 });
 describe('benchmark cache fallback', () => {
