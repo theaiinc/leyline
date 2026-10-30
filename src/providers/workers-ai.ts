@@ -101,7 +101,8 @@ export class WorkersAiProvider implements Provider {
   }
 
   servesModel(capability: Capability, model: string): boolean {
-    return capability !== 'chat' && Boolean(PATTERNS[capability]?.test(model));
+    if (capability === 'chat') return CATALOG.some((entry) => entry.capability === 'chat' && entry.id === model);
+    return Boolean(PATTERNS[capability]?.test(model));
   }
 
   defaultModelFor(capability: Capability): string | undefined {
