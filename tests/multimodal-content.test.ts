@@ -253,7 +253,7 @@ describe('providers that cannot read images are not used for them', () => {
 });
 
 describe('gateway model capabilities', () => {
-  it('routes image requests through an LLM-API-like gateway to its listed vision model', async () => {
+  it('routes auto image and audio requests through a chat/embeddings-only gateway to its listed media model', async () => {
     const upstream = await startUpstream([
       { id: 'text-only-model', capabilities: ['chat'] },
       { id: 'gemini-2.5-flash-lite', capabilities: ['chat', 'vision', 'audio'] },
@@ -261,12 +261,23 @@ describe('gateway model capabilities', () => {
     try {
       const router = new Router({ quotaManager: new QuotaManager(), modelRegistry: new ModelRegistry() });
       router.addProvider(new LlmApiProvider('key', 'text-only-model', upstream.url));
-      const response = await router.route(normalizeCompletionRequest({
+
+      const image = await router.route(normalizeCompletionRequest({
         model: 'auto',
         messages: [{ role: 'user', content: IMAGE_CONTENT }],
       }));
-      expect(response.choices[0].message.content).toBe('Red.');
+      expect(image.choices[0].message.content).toBe('Red.');
       expect(upstream.bodies[0].model).toBe('gemini-2.5-flash-lite');
+
+      const audio = await router.route(normalizeCompletionRequest({
+        model: 'auto',
+        messages: [{ role: 'user', content: [
+          { type: 'text', text: 'transcribe this' },
+          { type: 'input_audio', input_audio: { data: 'UklGR', format: 'wav' } },
+        ] }],
+      }));
+      expect(audio.choices[0].message.content).toBe('Red.');
+      expect(upstream.bodies[1].model).toBe('gemini-2.5-flash-lite');
     } finally {
       await upstream.close();
     }

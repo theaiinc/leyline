@@ -486,10 +486,12 @@ export class Router {
   private async capabilityServers(capability: Capability, model: string): Promise<Provider[]> {
     const out: Provider[] = [];
     for (const provider of this.providers) {
-      // A gateway may publish a media-capable model without advertising a provider-wide
-      // vision/audio capability. Listed model metadata is authoritative for gateways.
-      if (provider.servesModel?.(capability, model)
-        || (provider.servesListedModels?.(capability) && await this.providerListsModel(provider, model))) {
+      const providerCapability = provider.capabilities?.includes(capability) ?? false;
+      const listedModel = provider.servesListedModels?.(capability)
+        && await this.providerListsModel(provider, model);
+      const servesListedModel = providerCapability && listedModel;
+      const listedMediaModel = (capability === 'vision' || capability === 'audio') && listedModel;
+      if ((providerCapability && (provider.servesModel?.(capability, model) || servesListedModel)) || listedMediaModel) {
         out.push(provider);
       }
     }
@@ -828,7 +830,7 @@ export class Router {
         overBudget.push(provider.name);
         continue;
       }
-        const autoModel = (request.model === 'auto' || request.model === 'auto-vision') ? this.autoModelFor(provider, routedRequest) : null;
+        const autoModel = (request.model === 'auto' || request.model === 'auto-vision') ? await this.autoModelFor(provider, routedRequest) : null;
         if ((request.model === 'auto' || request.model === 'auto-vision') && autoModel === null) {
           console.log(`[Router] Skipping ${provider.name} — no models enabled for routing.`);
           continue;
@@ -852,7 +854,7 @@ export class Router {
         let providerUsage: UsageSnapshot | undefined;
         let effectiveModel = request.model;
         try {
-            effectiveModel = (request.model === 'auto' || request.model === 'auto-vision') ? (await autoModel)! : request.model;
+            effectiveModel = (request.model === 'auto' || request.model === 'auto-vision') ? autoModel! : request.model;
             const isAvailable = await provider.isAvailable();
             if (!isAvailable) {
                 logger.log({
