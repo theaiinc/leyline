@@ -7,6 +7,7 @@ import { IssuedKeys, MemoryDocStore } from '../src/core/issued-keys';
 import { MemorySecretStore } from '../src/core/secret-store';
 import { logger } from '../src/core/logger';
 import { OpenAIProvider } from '../src/providers/openai';
+
 import { LlmApiProvider } from '../src/providers/llm-api';
 import { DeepgramProvider } from '../src/providers/deepgram';
 import { WorkersAiProvider, type WorkersAiBinding } from '../src/providers/workers-ai';
@@ -73,7 +74,113 @@ afterEach(() => {
   logger.clear();
 });
 
-describe('POST /v1/embeddings', () => {
+describe('media capability routing', () => {
+  it('loads LLM API models before cold-start audio capability routing', async () => {
+    const llm = new LlmApiProvider('llm-key', 'gateway-chat', 'https://llm.test/v1');
+    const getModels = jest.spyOn(llm, 'getModels').mockResolvedValue([
+      { id: 'gateway-chat', capabilities: ['chat'] },
+      { id: 'gateway-audio', capabilities: ['chat', 'audio'] },
+    ]);
+    const complete = jest.spyOn(llm, 'complete').mockResolvedValue({
+      id: 'completion',
+      object: 'chat.completion',
+      created: 1,
+      model: 'gateway-audio',
+      choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+    });
+    const { app } = hostedApp([llm]);
+    const key = await issue(app);
+
+    const response = await request(app)
+      .post('/v1/chat/completions')
+      .set({ Authorization: `Bearer ${key}` })
+      .send({
+        model: 'auto',
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: 'transcribe this' },
+            { type: 'input_audio', input_audio: { data: 'UklGRg==', format: 'wav' } },
+          ],
+        }],
+      });
+
+    expect(response.status).toBe(200);
+    expect(getModels).toHaveBeenCalledTimes(1);
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({ model: 'gateway-audio' }));
+  });
+
+  it('returns a clear 400 when no configured model can take audio', async () => {
+    const llm = new LlmApiProvider('llm-key', 'gateway-chat', 'https://llm.test/v1');
+    jest.spyOn(llm, 'getModels').mockResolvedValue([{ id: 'gateway-chat', capabilities: ['chat'] }]);
+    const { app } = hostedApp([llm]);
+    const key = await issue(app);
+
+    const response = await request(app)
+      .post('/v1/chat/completions')
+      .set({ Authorization: `Bearer ${key}` })
+      .send({
+        model: 'auto',
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: 'hello' },
+            { type: 'input_audio', input_audio: { data: 'UklGRg==', format: 'wav' } },
+          ],
+        }],
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'no_audio_capable_model',
+      message: 'no audio-capable model is available',
+    });
+  });
+
+  it('routes Azure gpt-5.6-luna image requests and keeps media out of DeepSeek requests', async () => {
+    const azure = new AzureOpenAIProvider('azure-key', 'https://llm.test/v1', 'gpt-5.6-luna');
+    const deepseek = new OpenAIProvider('deepseek-key', 'deepseek-chat', 'https://api.deepseek.com/v1');
+    const azureComplete = jest.spyOn(azure, 'complete').mockResolvedValue({
+      id: 'azure-completion', object: 'chat.completion', created: 1, model: 'gpt-5.6-luna',
+      choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+    });
+    const deepseekComplete = jest.spyOn(deepseek, 'complete').mockResolvedValue({
+      id: 'deepseek-completion', object: 'chat.completion', created: 1, model: 'deepseek-chat',
+      choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+    });
+    const { app } = hostedApp([azure, deepseek]);
+    const key = await issue(app);
+    const response = await request(app)
+      .post('/v1/chat/completions')
+      .set({ Authorization: `Bearer ${key}` })
+      .send({ model: 'auto', messages: [{ role: 'user', content: [{ type: 'text', text: 'describe this' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }] }] });
+
+    expect(response.status).toBe(200);
+    expect(azureComplete).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-5.6-luna', messages: expect.arrayContaining([expect.objectContaining({ content: expect.arrayContaining([expect.objectContaining({ type: 'image_url' })]) })]) }));
+    expect(deepseekComplete).not.toHaveBeenCalled();
+  });
+
+  it('sends audio only to a model explicitly advertising audio capability', async () => {
+    const llm = new LlmApiProvider('llm-key', 'gateway-chat', 'https://llm.test/v1');
+    jest.spyOn(llm, 'getModels').mockResolvedValue([
+      { id: 'gateway-chat', capabilities: ['chat'] },
+      { id: 'gateway-audio', capabilities: ['chat', 'audio'] },
+    ]);
+    const complete = jest.spyOn(llm, 'complete').mockResolvedValue({
+      id: 'audio-completion', object: 'chat.completion', created: 1, model: 'gateway-audio',
+      choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+    });
+    const { app } = hostedApp([llm]);
+    const key = await issue(app);
+    const response = await request(app)
+      .post('/v1/chat/completions')
+      .set({ Authorization: `Bearer ${key}` })
+      .send({ model: 'auto', messages: [{ role: 'user', content: [{ type: 'text', text: 'transcribe' }, { type: 'input_audio', input_audio: { data: 'UklGRg==', format: 'wav' } }] }] });
+
+    expect(response.status).toBe(200);
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({ model: 'gateway-audio' }));
+  });
+
   it('routes an OpenAI model with an issued key, answers OpenAI-shaped, counts tokens at the list price', async () => {
     const { calls } = mockFetch({
       'api.openai.com/v1/embeddings': () => json({ object: 'list', model: 'text-embedding-3-small', data: [{ index: 1, embedding: [0.3, 0.4] }, { index: 0, embedding: [0.1, 0.2] }], usage: { prompt_tokens: 8, total_tokens: 8 } }),

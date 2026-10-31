@@ -41,7 +41,22 @@ function fail(res: Response, status: number, code: string, message: string) {
 function sendError(res: Response, route: string, error: unknown) {
   console.error(`${route} error:`, formatProviderError(error));
   if (res.headersSent) return void res.end();
-  if (error instanceof CapabilityError) return void fail(res, error.status, error.code, error.message);
+  // Media auto-routing must distinguish an unavailable audio capability from an
+  // upstream failure. Returning 400 makes the client's request actionable and
+  // avoids masking the capability mismatch as a transient 503.
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  if (error instanceof CapabilityError || (error && typeof error === 'object' && (error as { code?: unknown }).code === 'no_audio_capable_model')) {
+    const capability = error as { status?: number; code?: string; message?: string };
+    if (capability.code === 'no_audio_capable_model') {
+      return void fail(res, 400, 'no_audio_capable_model', 'no audio-capable model is available');
+    }
+    return void fail(res, capability.status ?? 400, capability.code ?? 'invalid_request', capability.message ?? 'Invalid request');
+  }
+
+  if (/audio.?capable|does not support.*audio|support.*audio/i.test(message)) {
+    return void fail(res, 400, 'no_audio_capable_model', 'no audio-capable model is available');
+  }
+
   const { status, body } = chatCompletionErrorResponse(error);
   res.status(status).json(body);
 }
