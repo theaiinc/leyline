@@ -19,13 +19,6 @@ export class LlmApiProvider extends OpenAIProvider {
     return false;
   }
 
-  acceptsNonTextContent(): boolean {
-    // Legacy gateway model listings do not include per-model capabilities. In
-    // that case the gateway remains eligible for media requests; explicit
-    // model capability metadata is still enforced by the router.
-    return true;
-  }
-
   servesListedModels(capability: Capability): boolean {
     // Gateway chat models may advertise vision/audio per model in /models.
     // Embeddings remain a listed-model capability as well.
