@@ -210,7 +210,7 @@ describe('providers that cannot read images are not used for them', () => {
         .send({ ...imageRequest('@cf/meta/llama-3.3-70b-instruct-fp8-fast'), stream });
       expect(r.status).toBe(400);
       expect(r.body.error.type).toBe('invalid_request_error');
-      expect(r.body.error.message).toMatch(/WorkersAI can't read it/);
+      expect(r.body.error.message).toMatch(/WorkersAI can't read them/);
     }
     expect(run).not.toHaveBeenCalled();
   });
