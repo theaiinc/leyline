@@ -19,7 +19,7 @@ class MockProvider implements Provider {
     }
 
     servesModel(capability: Capability, model: string): boolean {
-        return this.capabilities.includes(capability) && (model.startsWith('model-') || model.startsWith('gpt-') || model.startsWith('gemini-'));
+        return this.capabilities.includes(capability) && (model.startsWith('model-') || model.startsWith('gpt-') || model.startsWith('gemini-') || model.startsWith('audio-'));
     }
 
     acceptsNonTextContent(): boolean {
@@ -36,9 +36,9 @@ class MockProvider implements Provider {
 
     async getModels(): Promise<ModelDetail[]> {
         return [
-            { id: 'model-a', name: 'Model A' },
-            { id: 'model-b', name: 'Model B' },
-            { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash-Lite' }
+            { id: 'model-a', name: 'Model A', capabilities: this.capabilities },
+            { id: 'model-b', name: 'Model B', capabilities: this.capabilities },
+            { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash-Lite', capabilities: this.capabilities }
         ];
     }
 

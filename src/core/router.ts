@@ -10,6 +10,7 @@ import {
   RouteOptions,
   TierConfig,
   Capability,
+  ModelDetail,
   servesChat,
 } from './types';
 import { CapabilityError, errorStatus } from './media';
@@ -21,6 +22,12 @@ import { maybeCompress } from './compress';
 import { formatProviderError, hydrateAxiosError } from './api-errors';
 import { ensureMessageArray } from './normalize-request';
 import { requestHasNonTextContent } from './content';
+
+function hasAudioContent(request: CompletionRequest): boolean {
+  return request.messages?.some(message => Array.isArray(message.content)
+    && message.content.some(part => Boolean(part && typeof part === 'object' && (part as { type?: unknown }).type === 'input_audio'))
+  ) ?? false;
+}
 
 type UsageSnapshot = {
   prompt_tokens?: number;
@@ -301,27 +308,55 @@ export class Router {
     const needsAudio = parts.some(part => part.type === 'input_audio');
 
     if (needsVision || needsAudio) {
-      // Gateways may advertise only chat/embeddings provider capabilities while
-      // publishing media-capable models from /models. Model metadata is authoritative.
+      // Gateway metadata is authoritative for media routing. In particular, do
+      // not use a chat default for audio just because the provider can serve it.
+      // Load gateway metadata before any model/capability decision on cold start.
+      const gateway = provider as Provider & {
+        ensureModelsLoaded?: () => Promise<void>;
+        getCachedModels?: () => ModelDetail[];
+      };
+      if (gateway.ensureModelsLoaded) await gateway.ensureModelsLoaded.call(provider);
+      const listedModels = gateway.getCachedModels
+        ? gateway.getCachedModels()
+        : provider.getModels ? await provider.getModels() : [];
+      const requiredCapability = needsAudio ? 'audio' : 'vision';
       const preferredMediaModel = config.autoVisionModel ?? 'gemini-2.5-flash-lite';
-      if (preferredMediaModel && (!enabled || enabled.includes(preferredMediaModel))
+      const preferred = listedModels.find(detail =>
+        detail.id === preferredMediaModel
+        && detail.capabilities?.includes(requiredCapability)
+        && (!enabled || enabled.includes(detail.id)),
+      );
+      if (preferred) return preferred.id;
+
+      const capable = listedModels.find(detail =>
+        detail.capabilities?.includes(requiredCapability)
+        && (!enabled || enabled.includes(detail.id)),
+      );
+      if (capable) return capable.id;
+
+      if (!needsAudio && preferredMediaModel && (!enabled || enabled.includes(preferredMediaModel))
           && await this.providerListsModel(provider, preferredMediaModel)) {
         return preferredMediaModel;
       }
-      const mediaModel = provider.defaultModelFor?.(
-        needsAudio ? 'audio' : 'vision',
-      );
-      if (mediaModel && (!enabled || enabled.includes(mediaModel))
-          && await this.providerListsModel(provider, mediaModel)) {
-        return mediaModel;
-      }
     }
 
+    // Audio must never fall back to a provider default that has not advertised
+    // audio support.
+    if (needsAudio) return null;
     if (!enabled) return provider.defaultModel;
     return enabled.includes(provider.defaultModel) ? provider.defaultModel : enabled[0];
   }
 
   private async providerListsModel(provider: Provider, model: string): Promise<boolean> {
+    const gateway = provider as Provider & {
+      ensureModelsLoaded?: () => Promise<void>;
+      getCachedModels?: () => ModelDetail[];
+    };
+    if (gateway.ensureModelsLoaded && gateway.getCachedModels) {
+      await gateway.ensureModelsLoaded.call(provider);
+      return gateway.getCachedModels().some(detail => detail.id === model);
+    }
+
     const cached = this.providerModelIds.get(provider.name);
     if (cached && Date.now() - cached.timestamp < MODEL_ID_CACHE_TTL_MS) {
       return cached.ids.has(model);
@@ -335,7 +370,19 @@ export class Router {
     let ids = new Set<string>();
     const prices = new Map<string, { input: number; output: number }>();
     try {
-      const details = await provider.getModels();
+      const gateway = provider as Provider & {
+        ensureModelsLoaded?: () => Promise<void>;
+        getCachedModels?: () => ModelDetail[];
+      };
+      let details: ModelDetail[];
+      if (gateway.ensureModelsLoaded && gateway.getCachedModels) {
+        // Gateway providers share their in-flight / completed model-list load with
+        // capability routing; never start a second getModels() request here.
+        await gateway.ensureModelsLoaded.call(provider);
+        details = gateway.getCachedModels.call(provider);
+      } else {
+        details = await provider.getModels();
+      }
       ids = new Set(details.map(detail => detail.id));
       for (const detail of details) if (detail.pricing) prices.set(detail.id, detail.pricing);
     } catch {
@@ -463,6 +510,8 @@ export class Router {
 
     const matches: Provider[] = [];
     for (const provider of chat) {
+      const ensureModelsLoaded = (provider as Provider & { ensureModelsLoaded?: () => Promise<void> }).ensureModelsLoaded;
+      if (ensureModelsLoaded) await ensureModelsLoaded.call(provider);
       const enabled = this.enabledModelsFor(provider);
       if (enabled?.includes(model) || await this.providerListsModel(provider, model)) {
         matches.push(provider);
@@ -486,6 +535,9 @@ export class Router {
   private async capabilityServers(capability: Capability, model: string): Promise<Provider[]> {
     const out: Provider[] = [];
     for (const provider of this.providers) {
+      const ensureModelsLoaded = (provider as Provider & { ensureModelsLoaded?: () => Promise<void> }).ensureModelsLoaded;
+      if (ensureModelsLoaded) await ensureModelsLoaded.call(provider);
+
       const providerCapability = provider.capabilities?.includes(capability) ?? false;
       const listedModel = provider.servesListedModels?.(capability)
         && await this.providerListsModel(provider, model);
@@ -515,7 +567,18 @@ export class Router {
   ): Promise<{ result: T; provider: string; model: string }> {
     const start = Date.now();
     const requestId = Math.random().toString(36).substring(7);
-    const capable = this.providers.filter(p => p.capabilities?.includes(capability));
+    const capable: Provider[] = [];
+    for (const provider of this.providers) {
+      const ensureModelsLoaded = (provider as Provider & { ensureModelsLoaded?: () => Promise<void> }).ensureModelsLoaded;
+      if (ensureModelsLoaded) await ensureModelsLoaded.call(provider);
+      if (provider.capabilities?.includes(capability)) {
+        capable.push(provider);
+        continue;
+      }
+      if ((capability === 'vision' || capability === 'audio') && provider.servesListedModels?.(capability)) {
+        capable.push(provider);
+      }
+    }
     let model = (requested || '').trim();
     let candidates: Provider[];
 
@@ -538,8 +601,18 @@ export class Router {
           break;
         }
       }
-      if (!first) throw new CapabilityError(503, 'no_provider', `No provider is configured for ${capability}.`);
-      model = first.defaultModelFor!(capability)!;
+      if (!first) {
+        if (capability === 'audio') {
+          throw new CapabilityError(400, 'no_audio_capable_model', 'no audio-capable model is available');
+        }
+        throw new CapabilityError(503, 'no_provider', `No provider is configured for ${capability}.`);
+      }
+      const listedModels = (first as Provider & { getModels?: () => Promise<Array<{ id: string; capabilities?: string[] }>> }).getModels;
+      const listed = listedModels ? await listedModels.call(first) : [];
+      const listedCapable = capability === 'vision' || capability === 'audio'
+        ? listed.find(candidate => candidate.capabilities?.includes(capability))
+        : undefined;
+      model = listedCapable?.id ?? first.defaultModelFor!(capability)!;
       candidates = [first, ...(await this.capabilityServers(capability, model)).filter(p => p !== first)];
     } else {
       candidates = await this.capabilityServers(capability, model);
@@ -742,6 +815,9 @@ export class Router {
     }
     if (!attempted && cannotRead.length) throw unsupportedContent(cannotRead, request.model);
     if (!attempted && overBudget.length) throw this.budgetRefusal(overBudget);
+    if (hasAudioContent(routedRequest) && !attempted) {
+      throw new CapabilityError(400, 'no_audio_capable_model', 'no audio-capable model is available');
+    }
     throw new Error('All providers failed or are rate-limited.');
   }
 
@@ -932,6 +1008,12 @@ export class Router {
       }
       if (!attempted && cannotRead.length) throw unsupportedContent(cannotRead, request.model);
       if (!attempted && overBudget.length) throw this.budgetRefusal(overBudget);
+      if (hasAudioContent(routedRequest) && !attempted) {
+        const error = new Error('no audio-capable model is available');
+        (error as Error & { statusCode?: number; code?: string }).statusCode = 400;
+        (error as Error & { statusCode?: number; code?: string }).code = 'no_audio_capable_model';
+        throw error;
+      }
       throw new Error('All providers failed or are rate-limited.');
   }
 

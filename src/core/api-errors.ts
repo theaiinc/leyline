@@ -1,3 +1,5 @@
+import { CapabilityError } from './media';
+
 export function isRateLimitError(error: unknown): boolean {
   const candidate = error as { message?: string; response?: { status?: number } };
   const message = candidate?.message?.toLowerCase() || '';
@@ -135,6 +137,19 @@ export function chatCompletionErrorResponse(error: unknown): { status: number; b
   const coded = error as { status?: number; code?: string };
   if (coded?.code === 'provider_budget_exhausted') {
     return { status: 429, body: { error: { message, type: 'rate_limit_error', code: 'provider_budget_exhausted' } } };
+  }
+
+  if (error instanceof CapabilityError) {
+    return {
+      status: error.status,
+      body: {
+        error: {
+          message: error.message,
+          type: error.status >= 400 && error.status < 500 ? 'invalid_request_error' : 'service_unavailable',
+          code: error.code,
+        },
+      },
+    };
   }
 
   if (isRateLimitError(error)) {
