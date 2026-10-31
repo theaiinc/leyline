@@ -11,6 +11,7 @@ class MockProvider implements Provider {
     defaultModel: string;
     capabilities: Capability[] = ['chat'];
     servedModel = '';
+    requests: CompletionRequest[] = [];
     
     constructor(name: string, capabilities: Capability[] = ['chat']) {
         this.name = name;
@@ -43,6 +44,7 @@ class MockProvider implements Provider {
     }
 
     async complete(request: CompletionRequest): Promise<CompletionResponse> {
+        this.requests.push(request);
         this.servedModel = request.model;
         if (this.shouldThrow) throw new Error('Simulated failure');
         return {
@@ -59,6 +61,7 @@ class MockProvider implements Provider {
     }
 
     async *completeStream(request: CompletionRequest): AsyncGenerator<StreamChunk, void, unknown> {
+         this.requests.push(request);
          if (this.shouldThrow) throw new Error('Simulated failure');
          yield {
              id: 'mock',
@@ -245,10 +248,54 @@ describe('Router', () => {
         expect(audio.servedModel).toBe('gemini-2.5-flash-lite');
     });
 
-    it('keeps text-only auto routing on the normal chat model', async () => {
-        await router.route({ model: 'auto', messages: [{ role: 'user', content: 'hello' }] });
+    it('routes production gateway media models without provider-level capabilities', async () => {
+        const llmApi = new MockProvider('LLM API', ['chat']);
+        llmApi.defaultModel = 'deepseek-v4-flash';
+        const azure = new MockProvider('AzureOpenAI', ['chat', 'vision']);
 
-        expect(p1.servedModel).toBe('default-p1');
+        jest.spyOn(llmApi, 'servesModel').mockImplementation((capability, model) =>
+            capability === 'chat' && ['deepseek-v4-flash', 'gemini-2.5-flash-lite'].includes(model),
+        );
+        jest.spyOn(llmApi, 'getModels').mockReturnValue([
+            { id: 'deepseek-v4-flash', capabilities: ['chat'] },
+            { id: 'gemini-2.5-flash-lite', capabilities: ['chat', 'vision', 'audio'] },
+        ] as any);
+        jest.spyOn(azure, 'servesModel').mockImplementation((capability, model) =>
+            capability === 'chat' && model === 'gpt-5.6-luna',
+        );
+
+        router = new Router(quotaManager);
+        router.addProvider(llmApi);
+        router.addProvider(azure);
+        const azureSpy = jest.spyOn(azure, 'complete');
+
+        await router.route({
+            model: 'auto',
+            messages: [{
+                role: 'user',
+                content: [{ type: 'input_audio', input_audio: { data: 'UklGRg==', format: 'wav' } }],
+            }],
+        });
+        expect(llmApi.requests).toHaveLength(1);
+        expect(llmApi.requests[0]).toMatchObject({ model: 'gemini-2.5-flash-lite' });
+        expect(azureSpy).not.toHaveBeenCalled();
+
+        await router.route({
+            model: 'auto',
+            messages: [{
+                role: 'user',
+                content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }],
+            }],
+        });
+        expect(llmApi.requests).toHaveLength(2);
+        expect(llmApi.requests[1]).toMatchObject({ model: 'gemini-2.5-flash-lite' });
+
+        await router.route({
+            model: 'auto',
+            messages: [{ role: 'user', content: 'hello' }],
+        });
+        expect(llmApi.requests).toHaveLength(3);
+        expect(llmApi.requests[2]).toMatchObject({ model: 'deepseek-v4-flash' });
     });
 
     it('routes hosted auto-vision requests through the same media selection', async () => {
@@ -256,7 +303,13 @@ describe('Router', () => {
         router = new Router(quotaManager);
         router.addProvider(vision);
 
-        await router.route({ model: 'auto-vision', messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'https://example.com/image.png' } }] }] });
+        await router.route({
+            model: 'auto-vision',
+            messages: [{
+                role: 'user',
+                content: [{ type: 'image_url', image_url: { url: 'https://example.com/image.png' } }],
+            }],
+        });
 
         expect(vision.servedModel).toBe('gemini-2.5-flash-lite');
     });
