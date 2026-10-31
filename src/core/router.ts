@@ -91,16 +91,49 @@ export class UnsupportedContentError extends Error {
   }
 }
 
-/** Whether a provider can take the request's non-text content (always, for a text-only request). */
-function providerAcceptsContent(provider: Provider, request: CompletionRequest, effectiveModel: string): boolean {
+/** Whether a provider can take the provider-specific non-text content (always, for text-only requests). */
+async function providerAcceptsContent(provider: Provider, request: CompletionRequest, effectiveModel: string): Promise<boolean> {
   if (!requestHasNonTextContent(request.messages)) return true;
-  return provider.acceptsNonTextContent?.({ ...request, model: effectiveModel }) ?? true;
+
+  const mediaCapabilities: Capability[] = [...new Set(
+    request.messages.flatMap(message => Array.isArray(message.content)
+      ? message.content.flatMap(part => {
+        if (part.type === 'image_url') return ['vision' as const];
+        if (part.type === 'input_audio') return ['audio' as const];
+        return [];
+      })
+      : []),
+  )];
+  if (mediaCapabilities.length === 0) return provider.acceptsNonTextContent?.({ ...request, model: effectiveModel }) ?? true;
+
+  const listedModel = (await provider.getModels?.())?.find(model => model.id === effectiveModel);
+  const providerContentAccepted = provider.acceptsNonTextContent?.({ ...request, model: effectiveModel }) ?? false;
+  const listedModelAccepts = listedModel?.capabilities?.length
+    ? mediaCapabilities.every(capability => listedModel.capabilities?.includes(capability) === true)
+    : providerContentAccepted;
+  const providerAccepts = mediaCapabilities.every(capability =>
+    provider.servesModel?.(capability, effectiveModel) === true,
+  );
+  if (listedModelAccepts || providerAccepts) return true;
+
+  return provider.servesModel === undefined && providerContentAccepted;
 }
 
-function unsupportedContent(providers: string[], model: string): UnsupportedContentError {
+function requestHasAudio(messages: CompletionRequest['messages']): boolean {
+  return messages.some(message => Array.isArray(message.content)
+    && message.content.some(part => part.type === 'input_audio'));
+}
+
+function requestHasImages(messages: CompletionRequest['messages']): boolean {
+  return messages.some(message => Array.isArray(message.content)
+    && message.content.some(part => part.type === 'image_url'));
+}
+
+function unsupportedContent(providers: string[], model: string, mediaKind = 'images or other non-text content'): UnsupportedContentError {
   const who = providers.join(', ');
+  const capability = mediaKind === 'audio' ? 'audio-capable' : mediaKind === 'images' ? 'vision-capable' : 'provider capable of reading it';
   return new UnsupportedContentError(
-    `The request has images (or other non-text content) but ${who} can't read them for model "${model}", and no provider that can is available. Ask for a vision-capable model.`,
+    `The request has ${mediaKind}, but ${who} can't read it for model "${model}", and no ${capability} provider is available.`,
   );
 }
 
@@ -301,8 +334,9 @@ export class Router {
     const needsAudio = parts.some(part => part.type === 'input_audio');
 
     if (needsVision || needsAudio) {
-      // Gateways may advertise only chat/embeddings provider capabilities while
-      // publishing media-capable models from /models. Model metadata is authoritative.
+      // Provider-level capabilities are incomplete for gateways. Prefer a configured
+      // media model only when the provider actually lists it; otherwise continue to
+      // the provider's normal model selection so a gateway can serve its real model.
       const preferredMediaModel = config.autoVisionModel ?? 'gemini-2.5-flash-lite';
       if (preferredMediaModel && (!enabled || enabled.includes(preferredMediaModel))
           && await this.providerListsModel(provider, preferredMediaModel)) {
@@ -621,7 +655,9 @@ export class Router {
           throw new Error(`Fixed provider ${provider.name} reported unavailable.`);
         }
 
-        if (!providerAcceptsContent(provider, routedRequest, model)) throw unsupportedContent([provider.name], model);
+        if (!(await providerAcceptsContent(provider, routedRequest, model))) {
+          throw unsupportedContent([provider.name], model);
+        }
 
         console.log(`[Router] Single-model mode: routing to ${provider.name} with model: ${model}`);
         await this.keyReady(provider);
@@ -698,10 +734,11 @@ export class Router {
           continue;
         }
 
-        if (!providerAcceptsContent(provider, routedRequest, effectiveModel)) {
+        if (!(await providerAcceptsContent(provider, routedRequest, effectiveModel))) {
           cannotRead.push(provider.name);
-          logger.log({ requestId, provider: provider.name, model: effectiveModel, status: 'error', error: `${provider.name} can't read images for ${effectiveModel}`, duration: Date.now() - start });
-          console.warn(`[Router] Skipping ${provider.name} — can't read the request's images with ${effectiveModel}`);
+          const mediaKind = requestHasAudio(routedRequest.messages) ? 'audio' : 'images';
+          logger.log({ requestId, provider: provider.name, model: effectiveModel, status: 'error', error: `${provider.name} can't read ${mediaKind} for ${effectiveModel}`, duration: Date.now() - start });
+          console.warn(`[Router] Skipping ${provider.name} — can't read the request's ${mediaKind} with ${effectiveModel}`);
           continue;
         }
 
@@ -782,7 +819,7 @@ export class Router {
           throw new Error(`Fixed provider ${provider.name} reported unavailable.`);
         }
 
-        if (!providerAcceptsContent(provider, routedRequest, model)) throw unsupportedContent([provider.name], model);
+        if (!(await providerAcceptsContent(provider, routedRequest, model))) throw unsupportedContent([provider.name], model);
 
         console.log(`[Router] Single-model mode: routing stream to ${provider.name} with model: ${model}`);
         await this.keyReady(provider);
@@ -885,10 +922,13 @@ export class Router {
               continue;
             }
 
-            if (!providerAcceptsContent(provider, { ...routedRequest, messages: currentMessages }, effectiveModel)) {
+            if (!(await providerAcceptsContent(provider, { ...routedRequest, messages: currentMessages }, effectiveModel))) {
               cannotRead.push(provider.name);
-              logger.log({ requestId, provider: provider.name, model: effectiveModel, status: 'error', error: `${provider.name} can't read images for ${effectiveModel}`, duration: Date.now() - start });
-              console.warn(`[Router] Skipping ${provider.name} — can't read the request's images with ${effectiveModel}`);
+              const mediaKind = request.messages.some(message => Array.isArray(message.content) && message.content.some(part => part.type === 'input_audio'))
+                ? 'audio'
+                : 'images';
+              logger.log({ requestId, provider: provider.name, model: effectiveModel, status: 'error', error: `${provider.name} can't read ${mediaKind} for ${effectiveModel}`, duration: Date.now() - start });
+              console.warn(`[Router] Skipping ${provider.name} — can't read the request's ${mediaKind} with ${effectiveModel}`);
               continue;
             }
 
@@ -958,7 +998,7 @@ export class Router {
       if (!canHandle) {
         throw new Error(`${provider.name} does not support model ${model}`);
       }
-      if (!providerAcceptsContent(provider, routedRequest, model)) throw unsupportedContent([provider.name], model);
+      if (!(await providerAcceptsContent(provider, routedRequest, model))) throw unsupportedContent([provider.name], model);
 
       console.log(`[Router] Forced routing to ${provider.name} with model: ${model}`);
       await this.keyReady(provider);
@@ -1000,7 +1040,7 @@ export class Router {
       if (!canHandle) {
         throw new Error(`${provider.name} does not support model ${model}`);
       }
-      if (!providerAcceptsContent(provider, routedRequest, model)) throw unsupportedContent([provider.name], model);
+      if (!(await providerAcceptsContent(provider, routedRequest, model))) throw unsupportedContent([provider.name], model);
 
       console.log(`[Router] Forced routing stream to ${provider.name} with model: ${model}`);
       await this.keyReady(provider);
