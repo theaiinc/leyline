@@ -315,10 +315,14 @@ export class Router {
         ensureModelsLoaded?: () => Promise<void>;
         getCachedModels?: () => ModelDetail[];
       };
-      if (gateway.ensureModelsLoaded) await gateway.ensureModelsLoaded.call(provider);
+      try {
+        if (gateway.ensureModelsLoaded) await gateway.ensureModelsLoaded.call(provider);
+      } catch {
+        return null;
+      }
       const listedModels = gateway.getCachedModels
         ? gateway.getCachedModels()
-        : provider.getModels ? await provider.getModels() : [];
+        : provider.getModels ? await provider.getModels().catch(() => []) : [];
       const requiredCapability = needsAudio ? 'audio' : 'vision';
       const preferredMediaModel = config.autoVisionModel ?? 'gemini-2.5-flash-lite';
       const preferred = listedModels.find(detail =>
@@ -351,10 +355,17 @@ export class Router {
     const gateway = provider as Provider & {
       ensureModelsLoaded?: () => Promise<void>;
       getCachedModels?: () => ModelDetail[];
+      servesListedModel?: (capability: Capability, model: string) => boolean;
     };
     if (gateway.ensureModelsLoaded && gateway.getCachedModels) {
-      await gateway.ensureModelsLoaded.call(provider);
-      return gateway.getCachedModels().some(detail => detail.id === model);
+      try {
+        await gateway.ensureModelsLoaded.call(provider);
+      } catch {
+        return false;
+      }
+      return gateway.servesListedModel
+        ? gateway.servesListedModel.call(provider, 'chat', model)
+        : gateway.getCachedModels().some(detail => detail.id === model);
     }
 
     const cached = this.providerModelIds.get(provider.name);

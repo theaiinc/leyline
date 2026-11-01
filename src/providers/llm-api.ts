@@ -24,25 +24,30 @@ export class LlmApiProvider extends OpenAIProvider {
 
   private cachedModels: ModelDetail[] = [];
   private modelsLoaded?: Promise<ModelDetail[]>;
+  private modelsLoadedAt = 0;
   private ensureModelsPromise?: Promise<void>;
-  private modelsLoadSucceeded = false;
+  private static readonly MODELS_CACHE_TTL_MS = 5 * 60_000;
 
   servesListedModels(capability: Capability): boolean {
-    return capability === 'chat' || capability === 'embeddings' || capability === 'vision' || capability === 'audio';
+    return this.cachedModels.some(model => {
+      if (capability === 'chat' || capability === 'embeddings') return true;
+      return model.capabilities?.includes(capability) ?? false;
+    });
   }
 
   async ensureModelsLoaded(): Promise<void> {
-    if (this.modelsLoadSucceeded) return;
+    const fresh = this.modelsLoadedAt > 0 && Date.now() - this.modelsLoadedAt < LlmApiProvider.MODELS_CACHE_TTL_MS;
+    if (fresh) return;
     if (!this.ensureModelsPromise) {
       this.ensureModelsPromise = this.getModels()
         .then(models => {
+          // Keep the shared loader authoritative even when getModels is mocked
+          // or supplied by a subclass: callers must observe the same snapshot.
           this.cachedModels = models;
-          this.modelsLoadSucceeded = true;
+          this.modelsLoadedAt = Date.now();
         })
         .catch(error => {
           this.ensureModelsPromise = undefined;
-          this.modelsLoaded = undefined;
-          this.modelsLoadSucceeded = false;
           throw error;
         });
     }
@@ -53,8 +58,15 @@ export class LlmApiProvider extends OpenAIProvider {
     return this.cachedModels;
   }
 
+  servesListedModel(capability: Capability, model: string): boolean {
+    if (capability === 'chat' || capability === 'embeddings') {
+      return this.cachedModels.some(entry => entry.id === model);
+    }
+    return this.cachedModels.some(entry => entry.id === model && entry.capabilities?.includes(capability));
+  }
+
   async getModels(): Promise<ModelDetail[]> {
-    if (this.modelsLoadSucceeded) return this.cachedModels;
+    if (this.modelsLoadedAt > 0 && Date.now() - this.modelsLoadedAt < LlmApiProvider.MODELS_CACHE_TTL_MS) return this.cachedModels;
     if (this.modelsLoaded) return this.modelsLoaded;
 
     this.modelsLoaded = (async () => {
@@ -67,13 +79,12 @@ export class LlmApiProvider extends OpenAIProvider {
           ...(Array.isArray(model.capabilities) ? { capabilities: model.capabilities } : {}),
         }));
         this.cachedModels = models;
-        this.modelsLoadSucceeded = true;
+        this.modelsLoadedAt = Date.now();
         return models;
       } catch (error) {
         console.error('[LLM API] Failed to list models:', error);
         this.modelsLoaded = undefined;
         this.ensureModelsPromise = undefined;
-        this.modelsLoadSucceeded = false;
         throw error;
       }
     })();
