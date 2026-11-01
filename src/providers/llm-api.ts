@@ -9,6 +9,22 @@ import type { Capability, ModelDetail } from '../core/types';
  * This is separate from the direct OpenAI provider because its endpoint and
  * credential belong to the user's LLM API account (for example, Arion).
  */
+const AUDIO_MODEL_OVERRIDES = new Set([
+  'gpt-audio',
+  'gpt-audio-mini',
+  'openai/gpt-audio',
+  'openai/gpt-audio-mini',
+]);
+
+function modelCapabilities(model: any): Capability[] | undefined {
+  const capabilities = Array.isArray(model.capabilities) ? [...model.capabilities] as Capability[] : [];
+  const modalities = Array.isArray(model.input_modalities) ? model.input_modalities : [];
+  if (modalities.includes('audio') || AUDIO_MODEL_OVERRIDES.has(String(model.id))) {
+    if (!capabilities.includes('audio')) capabilities.push('audio');
+  }
+  return capabilities.length ? capabilities : undefined;
+}
+
 export class LlmApiProvider extends OpenAIProvider {
   name = 'LLM API';
   // A gateway: model support comes from its published model list; it never claims `auto`.
@@ -76,7 +92,7 @@ export class LlmApiProvider extends OpenAIProvider {
           id: model.id,
           name: model.name,
           description: model.description,
-          ...(Array.isArray(model.capabilities) ? { capabilities: model.capabilities } : {}),
+          ...(modelCapabilities(model) ? { capabilities: modelCapabilities(model) } : {}),
         }));
         this.cachedModels = models;
         this.modelsLoadedAt = Date.now();
