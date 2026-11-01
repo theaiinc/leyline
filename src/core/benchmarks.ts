@@ -427,7 +427,12 @@ export async function fetchBenchmarkSnapshot(env: {
       const key = normalizeModelId(score.model);
       if (!best.has(key) || best.get(key)!.score < score.score) best.set(key, score);
     }
-    return { id, name, scores: [...best.values()] };
+    if (id === 'intelligence-index' && !env.artificialAnalysisApiKey) {
+      return unavailableBenchmark(id, 'An Artificial Analysis API key is needed to load Intelligence Index scores.');
+    }
+    return scores.length > 0
+      ? { id, name, scores: [...best.values()] }
+      : unavailableBenchmark(id, 'No rows were returned by the configured benchmark sources.');
   });
   return { fetchedAt: Date.now(), benchmarks };
 }
