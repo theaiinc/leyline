@@ -199,7 +199,7 @@ describe('media capability routing', () => {
     expect(complete).toHaveBeenCalledWith(expect.objectContaining({ model: 'openai/gpt-audio-mini' }));
   });
 
-  it('routes an OpenAI model with an issued key, answers OpenAI-shaped, counts tokens at the list price', async () => 
+  it('routes an OpenAI model with an issued key, answers OpenAI-shaped, counts tokens at the list price', async () => {
     const { calls } = mockFetch({
       'api.openai.com/v1/embeddings': () => json({ object: 'list', model: 'text-embedding-3-small', data: [{ index: 1, embedding: [0.3, 0.4] }, { index: 0, embedding: [0.1, 0.2] }], usage: { prompt_tokens: 8, total_tokens: 8 } }),
       'api.openai.com/v1/models': () => json({ data: [] }),
