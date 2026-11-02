@@ -31,6 +31,20 @@ describe('request-scoped PII redaction', () => {
     expect((events[0] as { counts: Record<string, number> }).counts.phone).toBeGreaterThan(0);
   });
 
+  it('does not rewrite non-PII technical text while masking and rehydrating PII', async () => {
+    const redactor = new RequestPiiRedactor({ mode: 'regex' });
+    const content = 'packages/storage/src/database.ts, databaseStorage, database, database, event streaming platform, distributed messaging system. Contact person@example.com at +1 (415) 555-0132.';
+    const redacted = await redactor.redact({ messages: [{ role: 'user', content }] });
+    const masked = (redacted as { messages: Array<{ content: string }> }).messages[0].content;
+
+    expect(masked).toContain('packages/storage/src/database.ts, databaseStorage, database, database, event streaming platform, distributed messaging system.');
+    expect(masked).not.toContain('person@example.com');
+    expect(masked).not.toContain('+1 (415) 555-0132');
+    expect(redactor.rehydrate(masked)).toBe(content);
+    expect(redactor.rehydrate('Reply to ada@example.com or +1 212-555-0199.')).toContain('ada@example.com');
+    expect(redactor.rehydrate('Reply to ada@example.com or +1 212-555-0199.')).toContain('+1 212-555-0199');
+  });
+
   it('rehydrates tokens split across streamed chunks', async () => {
     const redactor = new RequestPiiRedactor({ mode: 'regex' });
     await redactor.redact('Email ada@example.com');
