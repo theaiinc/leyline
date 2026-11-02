@@ -74,7 +74,9 @@ import { PresidioDetector } from '@theaiinc/veil-presidio';
       this.mode = options.mode ?? 'off';
       this.allowlist = compileAllowlist(options.allowlist ?? []);
       this.fallback = this.mode === 'presidio' && !options.presidioAnalyzerUrl;
-      const registry = Veil.defaultRegistry();
+      const registry = new VeilRegistry();
+      registry.registerTransformer(new MaskPiiTransformer());
+      registry.registerRehydrator(new TokenRehydrator());
       if (this.mode === 'regex' || this.fallback) registry.registerDetector(new RegexDetector());
       if (this.mode === 'presidio' && options.presidioAnalyzerUrl) {
         registry.registerDetector(new PresidioDetector({ analyzerUrl: options.presidioAnalyzerUrl }));
