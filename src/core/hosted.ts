@@ -582,11 +582,11 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
 /** Signed in, but not one of the owners: say so, and offer another account. */
 function refusedPage(email: string): string {
   const esc = (t: string) => t.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Leyline</title><link rel="icon" href="/icon.svg" type="image/svg+xml">
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Valefront</title><link rel="icon" href="/icon.svg" type="image/svg+xml">
 <style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;font:15px/1.5 system-ui,sans-serif;background:#0b0d12;color:#eef1f7}
 @media (prefers-color-scheme: light){body{background:#f6f7fb;color:#141824}}main{max-width:420px;padding:24px;text-align:center}
 a{display:inline-block;margin-top:16px;padding:9px 16px;border-radius:9px;background:#3557e8;color:#fff;text-decoration:none}</style></head>
-<body><main><h1 style="font-size:20px">Not an owner of this Leyline</h1><p>You signed in as <strong>${esc(email)}</strong>, which can't manage it.</p>
+<body><main><h1 style="font-size:20px">Not an owner of this Valefront</h1><p>You signed in as <strong>${esc(email)}</strong>, which can't manage this Valefront instance.</p>
 <a href="/auth/login?next=/dashboard/&amp;switch=1">Use a different account</a></main></body></html>`;
 }
 

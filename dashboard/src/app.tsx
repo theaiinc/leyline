@@ -59,9 +59,9 @@ export function App() {
     <div className="min-h-svh md:grid md:grid-cols-[15rem_1fr]">
       <aside className="border-b bg-sidebar md:sticky md:top-0 md:flex md:h-svh md:flex-col md:border-r md:border-b-0">
         <div className="flex items-center gap-2 px-4 py-3 md:py-5">
-          <img src={`${import.meta.env.BASE_URL}icon.svg`} alt="" className="size-8" />
+          <img src={`${import.meta.env.BASE_URL}valefront-logo.png`} alt="Valefront" className="size-8 object-contain" />
           <div className="leading-tight">
-            <div className="font-semibold">Leyline</div>
+            <a className="font-semibold hover:underline" href="https://github.com/theaiinc/valefront" target="_blank" rel="noreferrer">Valefront</a>
             <div className="text-xs text-muted-foreground">{hosted ? 'Cloud' : 'Local router'}</div>
           </div>
           <div className="ml-auto flex md:hidden">
@@ -99,7 +99,7 @@ export function App() {
 
       <main className="min-w-0 px-4 py-6 md:px-8 md:py-8">
         <div className="mx-auto max-w-6xl">
-          {d.waiting ? <div className="mb-4"><ToneBadge tone="warning">Waiting for the Leyline API…</ToneBadge></div> : null}
+          {d.waiting ? <div className="mb-4"><ToneBadge tone="warning">Waiting for the Valefront API…</ToneBadge></div> : null}
           {current === 'benchmarks' ? <BenchmarksPage base={d.session?.hosted ? (d.session.publicUrl || window.location.origin) : d.stats.tunnel?.publicBaseUrl?.replace(/\/v1$/, '') || apiUrl('')} /> : null}
           {!d.status ? (
             <div className="grid gap-4"><Skeleton className="h-8 w-48" /><Skeleton className="h-28" /><Skeleton className="h-64" /></div>
