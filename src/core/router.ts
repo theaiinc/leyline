@@ -79,8 +79,9 @@ async function providerCanHandle(
   effectiveModel: string,
 ): Promise<boolean> {
   const candidate = provider as RequestAwareProvider;
-  if (typeof candidate.canHandle !== 'function') return true;
-  return candidate.canHandle({ ...request, model: effectiveModel });
+  if (typeof candidate.canHandle !== 'function') return providerAcceptsContent(provider, request, effectiveModel);
+  return providerAcceptsContent(provider, request, effectiveModel)
+    && candidate.canHandle({ ...request, model: effectiveModel });
 }
 
 /**
@@ -101,7 +102,31 @@ export class UnsupportedContentError extends Error {
 /** Whether a provider can take the request's non-text content (always, for a text-only request). */
 function providerAcceptsContent(provider: Provider, request: CompletionRequest, effectiveModel: string): boolean {
   if (!requestHasNonTextContent(request.messages)) return true;
-  return provider.acceptsNonTextContent?.({ ...request, model: effectiveModel }) ?? true;
+
+  // Provider listings can under-report media modalities for known model families.
+  // Keep admission consistent with auto selection and /v1/models rather than
+  // rejecting a configured Gemini model because its listing says "chat" only.
+  const id = effectiveModel.toLowerCase();
+  const familyCapabilities = id.startsWith('gemini-')
+    ? ['vision', 'audio']
+    : (/^(gpt-4o|gpt-5)/.test(id) || id.startsWith('claude-') ? ['vision'] : []);
+  const parts = (request.messages ?? []).flatMap(message => Array.isArray(message.content) ? message.content : []);
+  const needsAudio = parts.some(part => part.type === 'input_audio');
+  const needsVision = parts.some(part => part.type === 'image_url');
+  const familyHandlesAudio = !needsAudio || familyCapabilities.includes('audio');
+  const familyHandlesVision = !needsVision || familyCapabilities.includes('vision');
+  if ((needsAudio || needsVision) && familyHandlesAudio && familyHandlesVision
+    && provider.acceptsNonTextContent?.({ ...request, model: effectiveModel }) !== false
+    && (!provider.servesModel || provider.servesModel?.('chat', effectiveModel))) return true;
+
+  // A provider must explicitly advertise every requested media capability unless
+  // its model family is covered by the maintained family table above. Text-only
+  // providers must not receive image/audio requests merely because they can serve chat.
+  const advertised = provider.acceptsNonTextContent?.({ ...request, model: effectiveModel }) ?? false;
+  if (!advertised) return false;
+  const capabilities = provider.capabilities ?? [];
+  return (!needsAudio || capabilities.includes('audio'))
+    && (!needsVision || capabilities.includes('vision'));
 }
 
 function unsupportedContent(providers: string[], model: string): UnsupportedContentError {
@@ -323,20 +348,68 @@ export class Router {
       const listedModels = gateway.getCachedModels
         ? gateway.getCachedModels()
         : provider.getModels ? await provider.getModels().catch(() => []) : [];
+      // A configured model pool may include IDs that the provider's listing omits.
+      // Include those IDs in the same family-capability evaluation so configured
+      // Gemini models can satisfy automatic audio/vision requests.
+      const listedIds = new Set(listedModels.map(detail => detail.id));
+      const candidates = enabled
+        ? [...listedModels, ...enabled.filter(id => !listedIds.has(id)).map(id => ({ id }))]
+        : listedModels;
       const requiredCapability = needsAudio ? 'audio' : 'vision';
+      const capabilitiesForModel = (modelId: string): Capability[] => {
+        const id = modelId.toLowerCase();
+        if (id.startsWith('gemini-')) return ['chat', 'vision', 'audio'];
+        if (/^(gpt-4o|gpt-5)/.test(id) || id.startsWith('claude-')) return ['chat', 'vision'];
+        return ['chat'];
+      };
+      const modelCapabilities = (detail: ModelDetail): Capability[] => {
+        // Explicit gateway metadata is authoritative for listed models. The
+        // maintained family fallback is needed only for IDs in the configured
+        // pool whose listing is absent or incomplete.
+        if (enabled?.includes(detail.id)) {
+          return [...new Set([...(detail.capabilities ?? []), ...capabilitiesForModel(detail.id)])];
+        }
+        return detail.capabilities ?? capabilitiesForModel(detail.id);
+      };
       const preferredMediaModel = config.autoVisionModel ?? 'gemini-2.5-flash-lite';
-      const preferred = listedModels.find(detail =>
+      const preferred = candidates.find(detail =>
         detail.id === preferredMediaModel
-        && detail.capabilities?.includes(requiredCapability)
+        && modelCapabilities(detail).includes(requiredCapability)
         && (!enabled || enabled.includes(detail.id)),
       );
       if (preferred) return preferred.id;
 
-      const capable = listedModels.find(detail =>
-        detail.capabilities?.includes(requiredCapability)
+      // The configured pool is the operator's allowlist and must take priority
+      // over unrelated models returned by a provider listing. This also keeps
+      // automatic media routing aligned with the pool shown by hosted /v1/models.
+      const configuredCapable = (enabled ?? [])
+        .filter(modelId => modelCapabilities({ id: modelId } as ModelDetail).includes(requiredCapability))
+        .sort((a, b) => {
+          // Prefer the configured Gemini Flash model for media: it is the
+          // low-latency production default, while Pro is a valid fallback.
+          const flashRank = (id: string) => /(^|-)flash(?:-|$)/i.test(id) ? 0 : 1;
+          return flashRank(a) - flashRank(b);
+        })[0];
+      if (configuredCapable) return configuredCapable;
+
+      const capable = candidates.find(detail =>
+        modelCapabilities(detail).includes(requiredCapability)
         && (!enabled || enabled.includes(detail.id)),
       );
       if (capable) return capable.id;
+
+      // A configured model pool can contain a model that the provider's cached
+      // listing does not return. Apply the same family capabilities used above,
+      // then verify that the provider can actually serve the configured model.
+      const configuredCandidates = (enabled ?? []).filter(modelId =>
+        !listedModels.some(detail => detail.id === modelId)
+        && modelCapabilities({ id: modelId } as ModelDetail).includes(requiredCapability),
+      );
+      for (const modelId of configuredCandidates) {
+        // The configured pool is the operator's allowlist and may contain a
+        // provider model omitted by a stale or text-only gateway listing.
+        return modelId;
+      }
 
       if (!needsAudio && preferredMediaModel && (!enabled || enabled.includes(preferredMediaModel))
           && await this.providerListsModel(provider, preferredMediaModel)) {
@@ -344,9 +417,9 @@ export class Router {
       }
     }
 
-    // Audio must never fall back to a provider default that has not advertised
-    // audio support.
-    if (needsAudio) return null;
+    // Media requests must never fall back to a provider default that has not
+    // advertised the requested capability.
+    if (needsAudio || needsVision) return null;
     if (!enabled) return provider.defaultModel;
     return enabled.includes(provider.defaultModel) ? provider.defaultModel : enabled[0];
   }

@@ -333,6 +333,25 @@ describe('spend by provider and model', () => {
   });
 });
 
+describe('configured model capabilities', () => {
+  it('uses the shared Gemini capabilities for configured models and routes automatic audio to it', async () => {
+    const { app, upstream } = setup({ models: ['gemini-2.5-flash'], aliases: {} });
+    const { key } = (await request(app).post('/admin/api/keys').set(ADMIN).send({ name: 'audio' })).body;
+    const models = (await request(app).get('/v1/models').set({ Authorization: `Bearer ${key}` })).body.data;
+    expect(models).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'gemini-2.5-flash', capabilities: expect.arrayContaining(['chat', 'vision', 'audio']) }),
+    ]));
+
+    const audio = await request(app).post('/v1/chat/completions').set({ Authorization: `Bearer ${key}` }).send({
+      model: 'auto',
+      messages: [{ role: 'user', content: [{ type: 'input_audio', input_audio: { data: 'AAAA', format: 'wav' } }] }],
+    });
+    expect(audio.status).toBe(200);
+    expect(audio.body.model).toBe('gemini-2.5-flash');
+    expect(upstream.seen[upstream.seen.length - 1]?.model).toBe('gemini-2.5-flash');
+  });
+});
+
 describe('empty offered model pool', () => {
   it('lists provider models while excluding blocked and key-capped models', async () => {
     const { app } = setup({ models: [], aliases: {}, blockedModels: ['claude-*'] });

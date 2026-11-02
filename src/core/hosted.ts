@@ -11,11 +11,14 @@ import { DEFAULT_PRICE, IssuedKeys, costUsd, modelAllowed, priceOf, type HostedS
 import type { BenchmarkSnapshot } from './benchmarks';
 import { RequestPiiRedactor } from './pii-redaction';
 
-function capabilitiesForModel(modelId: string): string[] {
+export function capabilitiesForModel(modelId: string): string[] {
   const id = modelId.toLowerCase();
   if (/embed|bge|text-embedding/.test(id)) return ['embeddings'];
   if (/whisper|transcri/.test(id)) return ['transcription'];
   if (/tts|speech|aura|melotts|voice/.test(id)) return ['speech'];
+  if (id.startsWith('gemini-')) return ['chat', 'vision', 'audio'];
+  if (/^(gpt-4o|gpt-5)/.test(id)) return ['chat', 'vision'];
+  if (id.startsWith('claude-')) return ['chat', 'vision'];
   if (/image|dall-e|flux|stable-diffusion/.test(id)) return ['image'];
   if (/video|seedance|veo|sora|kling/.test(id)) return ['video'];
   return ['chat'];
@@ -322,6 +325,11 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
   opts.publishedPrice ??= (provider, model) => router.publishedPrice(provider, model);
   opts.publishedPriceCounts ??= () => router.publishedPriceCounts();
   opts.anyPublishedPrice ??= (model) => router.anyPublishedPrice(model);
+  // Keep hosted model settings authoritative for automatic routing as well as /v1/models.
+  // A configured pool must not silently fall back to the provider's default model.
+  if (opts.models.length > 0) {
+    router.setEnabledModels(Object.fromEntries(router.getProviders().map((provider) => [provider.name, opts.models])));
+  }
   // ── models ──────────────────────────────────────────────────────────────────────────────────────────
   app.get('/v1/models', requireIssuedKeyNoModel(opts), async (req, res) => {
     const key = (req as WithKey).issuedKey!;
@@ -329,11 +337,11 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
     // Refresh stale provider listings here as a safety net for Node and cold Worker instances.
     if (opts.models.length === 0) await router.reindexStale();
     const configured = [...opts.models, ...Object.keys(opts.aliases).filter((a) => !a.includes('*'))];
-    const providerModels = opts.models.length === 0 ? Object.keys(router.getModelIndex()) : [];
+    const providerModels = Object.keys(router.getModelIndex());
     // Preserve provider-resolved capabilities (including gateway metadata and family fallbacks)
     // in the public model list so clients and auto-routing use the same source of truth.
     const providerDetails = new Map<string, { capabilities?: string[]; capabilitySource?: string }>();
-    if (opts.models.length === 0) {
+    {
       await Promise.all(router.getProviders().map(async (provider) => {
         try {
           for (const model of await provider.getModels()) {
@@ -347,7 +355,7 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
         }
       }));
     }
-    const ids = [...configured, ...providerModels].filter((m, i, all) => all.indexOf(m) === i && modelAllowed(key.caps, m) && !isBlocked(opts, m));
+    const ids = (opts.models.length > 0 ? configured : [...configured, ...providerModels]).filter((m, i, all) => all.indexOf(m) === i && modelAllowed(key.caps, m) && !isBlocked(opts, m));
     const capability = typeof req.query.capability === 'string' ? req.query.capability : undefined;
     const snapshot = await opts.benchmarks?.();
     const data = ids.map((id) => {
@@ -363,7 +371,9 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
         owned_by: 'leyline',
         type: 'model',
         display_name: id,
-        capabilities: resolved?.capabilities ?? capabilitiesForModel(id),
+        capabilities: resolved?.capabilities?.length
+          ? [...new Set([...capabilitiesForModel(id), ...resolved.capabilities])]
+          : capabilitiesForModel(id),
         ...(resolved?.capabilitySource ? { capabilitySource: resolved.capabilitySource } : {}),
         benchmarks,
       };
