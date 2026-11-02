@@ -1,11 +1,13 @@
 import { OpenAIProvider } from './openai';
 import { config } from '../config';
 
-/**
- * BytePlus ModelArk's OpenAI-compatible chat provider.
- * Model and pricing references: BytePlus ModelArk pricing and model documentation
- * (https://ai.byteplus.com/ark/region:ap-southeast-1/docs/model-pricing), checked 2026-10-21.
- */
+/** ModelArk model IDs served by this provider. Extend via BYTEPLUS_ARK_MODEL_IDS. */
+export const BYTEPLUS_MODEL_IDS = (process.env.BYTEPLUS_ARK_MODEL_IDS || 'deepseek-v4-1-flash-261017')
+  .split(',')
+  .map((id) => id.trim())
+  .filter(Boolean);
+
+/** BytePlus ModelArk's OpenAI-compatible chat provider. */
 export class BytePlusProvider extends OpenAIProvider {
   name = 'BytePlus';
   family = 'BytePlus';
@@ -20,7 +22,7 @@ export class BytePlusProvider extends OpenAIProvider {
   }
 
   servesModel(capability: 'chat' | 'embeddings' | 'transcription' | 'speech', model: string): boolean {
-    return capability === 'chat' && /^(doubao|seed|deepseek|kimi)-/i.test(model);
+    return capability === 'chat' && BYTEPLUS_MODEL_IDS.includes(model);
   }
 
   defaultModelFor(capability: 'chat' | 'embeddings' | 'transcription' | 'speech'): string | undefined {

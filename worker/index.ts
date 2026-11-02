@@ -1,6 +1,6 @@
 import { handleAsNodeRequest } from 'cloudflare:node';
 import type { Server } from 'node:http';
-import { buildRouter, hostedOptions } from '../src/index';
+import { buildRouter, hostedOptions, BytePlusProvider } from '../src/index';
 import { createServer } from '../src/server';
 import { adminOf, applySettings, type HostedOptions } from '../src/core/hosted';
 import { D1ArcanaCloudStore, D1DocStore, D1LogStore, D1SecretStore, type D1Database } from '../src/core/d1-stores';

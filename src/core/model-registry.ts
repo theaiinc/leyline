@@ -227,7 +227,7 @@ function getDefaultVariants(): ModelVariant[] {
     },
     // BytePlus ModelArk — pricing is not published yet; see https://ai.byteplus.com/ark/region:ap-southeast-1/docs/model-pricing.
     {
-      id: 'deepseek-v4-1-flash-260910',
+      id: 'deepseek-v4-1-flash-261017',
       name: 'DeepSeek V4.1 Flash (BytePlus ModelArk)',
       family: 'deepseek-v4',
       provider: 'byteplus',
