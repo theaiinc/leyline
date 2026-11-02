@@ -228,7 +228,10 @@ export default {
     liveCtx = ctx;
     if (pending.size) ctx.waitUntil(Promise.allSettled([...pending]));
     const url = new URL(request.url);
-    if (url.pathname === '/') return Response.redirect(new URL('/dashboard/', url).toString(), 302);
+    const isDashboardHost = url.hostname === 'dash.valefront.com';
+    const isApiHost = url.hostname === 'llm.valefront.com' || url.hostname === 'llm.theaiinc.com';
+    if (url.pathname === '/' && isApiHost) return Response.redirect('https://dash.valefront.com/', 302);
+    if (url.pathname === '/' && isDashboardHost) url.pathname = '/dashboard/';
 
     const asset = assetPath(url.pathname);
     if (asset) {
@@ -241,7 +244,8 @@ export default {
             ? Response.redirect(new URL('/auth/login?next=/dashboard/', url).toString(), 302)
             : new Response('Sign-in is not configured.', { status: 503 });
         }
-        if (url.pathname === '/dashboard') return Response.redirect(new URL('/dashboard/', url).toString(), 302);
+        if (url.pathname === '/dashboard' && isDashboardHost) return Response.redirect(new URL('/', url).toString(), 302);
+        if (url.pathname === '/dashboard') return Response.redirect('https://dash.valefront.com/', 302);
       }
       const res = await env.ASSETS.fetch(new Request(new URL(asset, url), request));
       if (asset !== '/') return res;
