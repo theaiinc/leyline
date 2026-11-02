@@ -330,6 +330,23 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
     if (opts.models.length === 0) await router.reindexStale();
     const configured = [...opts.models, ...Object.keys(opts.aliases).filter((a) => !a.includes('*'))];
     const providerModels = opts.models.length === 0 ? Object.keys(router.getModelIndex()) : [];
+    // Preserve provider-resolved capabilities (including gateway metadata and family fallbacks)
+    // in the public model list so clients and auto-routing use the same source of truth.
+    const providerDetails = new Map<string, { capabilities?: string[]; capabilitySource?: string }>();
+    if (opts.models.length === 0) {
+      await Promise.all(router.getProviders().map(async (provider) => {
+        try {
+          for (const model of await provider.getModels()) {
+            providerDetails.set(model.id, {
+              capabilities: model.capabilities,
+              capabilitySource: model.capabilitySource,
+            });
+          }
+        } catch {
+          // The model index already contains the last successful listing; retain ID fallback.
+        }
+      }));
+    }
     const ids = [...configured, ...providerModels].filter((m, i, all) => all.indexOf(m) === i && modelAllowed(key.caps, m) && !isBlocked(opts, m));
     const capability = typeof req.query.capability === 'string' ? req.query.capability : undefined;
     const snapshot = await opts.benchmarks?.();
@@ -338,6 +355,7 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
         benchmark.id,
         benchmark.scores.find((score) => score.leylineModel === id || score.model === id) ?? null,
       ]));
+      const resolved = providerDetails.get(id);
       return {
         id,
         object: 'model',
@@ -345,7 +363,8 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
         owned_by: 'leyline',
         type: 'model',
         display_name: id,
-        capabilities: capabilitiesForModel(id),
+        capabilities: resolved?.capabilities ?? capabilitiesForModel(id),
+        ...(resolved?.capabilitySource ? { capabilitySource: resolved.capabilitySource } : {}),
         benchmarks,
       };
     }).filter((model) => !capability || model.capabilities.includes(capability));

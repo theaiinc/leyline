@@ -9,20 +9,49 @@ import type { Capability, ModelDetail } from '../core/types';
  * This is separate from the direct OpenAI provider because its endpoint and
  * credential belong to the user's LLM API account (for example, Arion).
  */
-const AUDIO_MODEL_OVERRIDES = new Set([
-  'gpt-audio',
-  'gpt-audio-mini',
-  'openai/gpt-audio',
-  'openai/gpt-audio-mini',
-]);
+type CapabilityResolution = { capabilities?: Capability[]; capabilitySource?: 'metadata' | 'family-fallback' };
 
-function modelCapabilities(model: any): Capability[] | undefined {
-  const capabilities = Array.isArray(model.capabilities) ? [...model.capabilities] as Capability[] : [];
-  const modalities = Array.isArray(model.input_modalities) ? model.input_modalities : [];
-  if (modalities.includes('audio') || AUDIO_MODEL_OVERRIDES.has(String(model.id))) {
-    if (!capabilities.includes('audio')) capabilities.push('audio');
-  }
-  return capabilities.length ? capabilities : undefined;
+/**
+ * LLM API normally returns OpenAI-compatible model records, but gateways differ
+ * in where they put modality metadata. Keep this resolver in one place so the
+ * public model list and auto-router cannot disagree.
+ *
+ * `capabilitySource` is intentionally exposed on each model: it tells clients
+ * whether the gateway supplied modality metadata or Leyline used this documented
+ * compatibility table because the gateway omitted it.
+ */
+function modelCapabilities(model: any): CapabilityResolution {
+  const id = String(model.id ?? '').toLowerCase();
+  const declared = Array.isArray(model.capabilities) ? model.capabilities : [];
+  const metadata = [
+    model.input_modalities,
+    model.architecture?.input_modalities,
+    model.modalities,
+    model.architecture?.modalities,
+    model.input?.modalities,
+    model.architecture?.input?.modalities,
+  ].find(value => Array.isArray(value));
+
+  const modalities = Array.isArray(metadata)
+    ? metadata.map(value => typeof value === 'string' ? value : value?.type ?? value?.modality)
+      .filter((value): value is string => Boolean(value))
+      .map(value => value.toLowerCase())
+    : [];
+  const capabilities = new Set<Capability>(declared.filter((value: unknown): value is Capability =>
+    ['chat', 'vision', 'audio', 'embeddings', 'transcription', 'speech'].includes(String(value)),
+  ));
+  if (modalities.some(value => ['image', 'vision', 'image_url'].includes(value))) capabilities.add('vision');
+  if (modalities.some(value => ['audio', 'input_audio', 'audio_url'].includes(value))) capabilities.add('audio');
+  if (modalities.length > 0) return { capabilities: capabilities.size ? [...capabilities] : undefined, capabilitySource: 'metadata' };
+
+  // Fallback for gateways that strip modality fields. Keep this table small and
+  // documented: Gemini generation models accept image+audio, GPT-4o/GPT-5 and
+  // Claude accept images, and Whisper/STT models accept audio for transcription.
+  if (/gemini-/.test(id)) { capabilities.add('vision'); capabilities.add('audio'); }
+  else if (/^(openai\/)?(gpt-4o|gpt-5)/.test(id)) capabilities.add('vision');
+  else if (/^(anthropic\/)?claude-/.test(id)) capabilities.add('vision');
+  else if (/(whisper|stt|transcri)/.test(id)) capabilities.add('audio');
+  return { capabilities: capabilities.size ? [...capabilities] : undefined, capabilitySource: 'family-fallback' };
 }
 
 export class LlmApiProvider extends OpenAIProvider {
@@ -92,7 +121,7 @@ export class LlmApiProvider extends OpenAIProvider {
           id: model.id,
           name: model.name,
           description: model.description,
-          ...(modelCapabilities(model) ? { capabilities: modelCapabilities(model) } : {}),
+          ...modelCapabilities(model),
         }));
         this.cachedModels = models;
         this.modelsLoadedAt = Date.now();

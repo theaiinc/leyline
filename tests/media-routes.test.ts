@@ -1,4 +1,5 @@
 import request from 'supertest';
+import axios from 'axios';
 import { createServer } from '../src/server';
 import { Router } from '../src/core/router';
 import { QuotaManager } from '../src/core/quota-manager';
@@ -75,7 +76,48 @@ afterEach(() => {
 });
 
 describe('media capability routing', () => {
-  it('loads LLM API models before cold-start audio capability routing', async () => {
+  it('resolves gateway modalities and documented family fallbacks with provenance', async () => {
+    const llm = new LlmApiProvider('llm-key', 'gateway-chat', 'https://llm.test/v1');
+    const getModels = jest.spyOn(axios, 'get').mockResolvedValue({
+      data: { data: [
+        { id: 'gemini-2.5-flash' },
+        { id: 'gpt-5.6-luna' },
+        { id: 'claude-sonnet-4' },
+        { id: 'whisper-1' },
+        { id: 'vendor/audio-model', input_modalities: ['text', 'audio'] },
+      ] },
+    } as never);
+
+    const models = await llm.getModels();
+    expect(models).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'gemini-2.5-flash', capabilities: ['vision', 'audio'], capabilitySource: 'family-fallback' }),
+      expect.objectContaining({ id: 'gpt-5.6-luna', capabilities: ['vision'], capabilitySource: 'family-fallback' }),
+      expect.objectContaining({ id: 'claude-sonnet-4', capabilities: ['vision'], capabilitySource: 'family-fallback' }),
+      expect.objectContaining({ id: 'whisper-1', capabilities: ['audio'], capabilitySource: 'family-fallback' }),
+      expect.objectContaining({ id: 'vendor/audio-model', capabilities: ['audio'], capabilitySource: 'metadata' }),
+    ]));
+    expect(getModels).toHaveBeenCalledWith('https://llm.test/v1/models', expect.any(Object));
+  });
+
+  it('exposes resolved gateway capabilities through /v1/models', async () => {
+    const llm = new LlmApiProvider('llm-key', 'gemini-2.5-flash', 'https://llm.test/v1');
+    jest.spyOn(llm, 'getModels').mockResolvedValue([
+      { id: 'gemini-2.5-flash', capabilities: ['chat', 'vision', 'audio'], capabilitySource: 'family-fallback' },
+      { id: 'deepseek-v4-flash', capabilities: ['chat'], capabilitySource: 'family-fallback' },
+    ]);
+    const { app } = hostedApp([llm]);
+    const key = await issue(app);
+
+    const response = await request(app).get('/v1/models').set({ Authorization: `Bearer ${key}` });
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'gemini-2.5-flash', capabilities: ['chat', 'vision', 'audio'], capabilitySource: 'family-fallback' }),
+      expect.objectContaining({ id: 'deepseek-v4-flash', capabilitySource: 'family-fallback' }),
+    ]));
+  });
+
+
+   it('loads LLM API models before cold-start audio capability routing', async () => {
     const llm = new LlmApiProvider('llm-key', 'gateway-chat', 'https://llm.test/v1');
     const getModels = jest.spyOn(llm, 'getModels').mockResolvedValue([
       { id: 'gateway-chat', capabilities: ['chat'] },

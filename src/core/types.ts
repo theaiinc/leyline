@@ -79,6 +79,8 @@ export interface ModelDetail {
   score?: number;
   /** Modalities accepted by this model. */
   capabilities?: Capability[];
+  /** How capabilities were determined: upstream metadata or the maintained family fallback. */
+  capabilitySource?: 'metadata' | 'family-fallback';
   /** The price the provider publishes for this model, in US dollars per million tokens. */
   pricing?: { input: number; output: number };
 }
