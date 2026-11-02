@@ -119,7 +119,7 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
       key = await opts.keys.lookup(presented);
     } catch (err) {
       console.error('[hosted] key lookup failed', err);
-      return fail(503, 'key_store_unavailable', 'Leyline could not check the API key just now; try again.');
+      return fail(503, 'key_store_unavailable', 'Valefront could not check the API key just now; try again.');
     }
     if (!key) return fail(401, 'invalid_api_key', 'Incorrect API key provided.');
     const requested = typeof req.body?.model === 'string' ? req.body.model : '';
