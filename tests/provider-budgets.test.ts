@@ -165,7 +165,7 @@ describe('per-provider monthly limits', () => {
   it('re-arms budget alerts when the monthly limit changes', async () => {
     const { keys } = await setup();
     const { CostAlerts } = await import('../src/core/alerts');
-    const alerts = new CostAlerts(new MemoryDocStore(), keys, () => Date.parse('2026-10-20T12:00:00Z'));
+    const alerts = new CostAlerts(new MemoryDocStore(), keys, Date.now);
     const channels = {} as never;
     const settings = { thresholds: [80, 100], keyThresholds: [], emails: [], webhookUrl: null, email: false };
     await keys.record(null, 'm', { prompt_tokens: 1, completion_tokens: 0 }, 50, { provider: 'Anthropic', model: 'm' });
