@@ -246,7 +246,8 @@ export const config: LeylineConfig = {
   bodyLimit: process.env.LEYLINE_BODY_LIMIT || '100mb',
   hosted: {
     enabled: process.env.LEYLINE_HOSTED_KEYS === 'on',
-    publicUrl: (process.env.LEYLINE_PUBLIC_URL || '').replace(/\/+$/, ''),
+    // The public API host is the canonical URL; the dashboard has its own host.
+    publicUrl: (process.env.LEYLINE_PUBLIC_URL || 'https://llm.valefront.com').replace(/\/+$/, ''),
     keysBucket: process.env.LEYLINE_KEYS_BUCKET || '',
     keysDir: process.env.LEYLINE_KEYS_DIR || '',
     models: (process.env.LEYLINE_OFFERED_MODELS || '').split(',').map((m) => m.trim()).filter(Boolean),
