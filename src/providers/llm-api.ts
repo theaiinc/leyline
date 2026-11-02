@@ -9,7 +9,7 @@ import type { Capability, ModelDetail } from '../core/types';
  * This is separate from the direct OpenAI provider because its endpoint and
  * credential belong to the user's LLM API account (for example, Arion).
  */
-type CapabilityResolution = { capabilities?: Capability[]; capabilitySource?: 'metadata' | 'family-fallback' };
+type CapabilityResolution = { capabilities?: Capability[]; capabilitySource?: 'metadata' | 'family-fallback' | 'metadata+family-fallback' };
 
 /**
  * LLM API normally returns OpenAI-compatible model records, but gateways differ
@@ -42,16 +42,21 @@ function modelCapabilities(model: any): CapabilityResolution {
   ));
   if (modalities.some(value => ['image', 'vision', 'image_url'].includes(value))) capabilities.add('vision');
   if (modalities.some(value => ['audio', 'input_audio', 'audio_url'].includes(value))) capabilities.add('audio');
-  if (modalities.length > 0) return { capabilities: capabilities.size ? [...capabilities] : undefined, capabilitySource: 'metadata' };
 
-  // Fallback for gateways that strip modality fields. Keep this table small and
-  // documented: Gemini generation models accept image+audio, GPT-4o/GPT-5 and
-  // Claude accept images, and Whisper/STT models accept audio for transcription.
+  // Keep the family defaults even when a gateway supplies incomplete modality
+  // metadata. The two sources are additive so a text-only listing cannot hide
+  // known image/audio support.
+  const metadataContributed = modalities.length > 0;
+  const beforeFamily = new Set(capabilities);
   if (/gemini-/.test(id)) { capabilities.add('vision'); capabilities.add('audio'); }
   else if (/^(openai\/)?(gpt-4o|gpt-5)/.test(id)) capabilities.add('vision');
   else if (/^(anthropic\/)?claude-/.test(id)) capabilities.add('vision');
   else if (/(whisper|stt|transcri)/.test(id)) capabilities.add('audio');
-  return { capabilities: capabilities.size ? [...capabilities] : undefined, capabilitySource: 'family-fallback' };
+  const familyContributed = [...capabilities].some(capability => !beforeFamily.has(capability));
+  const capabilitySource = metadataContributed && familyContributed
+    ? 'metadata+family-fallback'
+    : familyContributed ? 'family-fallback' : metadataContributed ? 'metadata' : undefined;
+  return { capabilities: capabilities.size ? [...capabilities] : undefined, capabilitySource };
 }
 
 export class LlmApiProvider extends OpenAIProvider {
