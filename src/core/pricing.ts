@@ -52,87 +52,13 @@ export type PublicPricingModel = {
 export const DEFAULT_FREE_TIER_TOKENS = 1_000_000;
 export const DEFAULT_FREE_TIER_EXPIRES_AFTER_DAYS = 30;
 
-export type ProviderCredit = {
-  provider: string;
-  amountUsd: number;
-  expiresAt: string;
-};
-
-export type FreeGrant = {
-  remainingTokens: number;
-  expiresAt: string;
-};
-
-export type FreeTierCandidate = {
-  id: string;
-  provider: string;
-  input: number;
-  output: number;
-  healthy?: boolean;
-};
-
-/** A grant is usable only while it has balance and has not reached its expiry instant. */
-export function canUseFreeGrant(grant: FreeGrant, now = Date.now()): boolean {
-  const expiry = Date.parse(grant.expiresAt);
-  return grant.remainingTokens > 0 && Number.isFinite(expiry) && now < expiry;
-}
-
-/**
- * Select a free-tier model after capability filtering. A pinned model outside the eligible
- * set returns undefined so the caller can bill it normally instead of silently switching models.
- */
-export function selectFreeTierCandidate(
-  candidates: readonly FreeTierCandidate[],
-  eligibleModelIds: readonly string[],
-  options: {
-    pinnedModel?: string;
-    credits?: readonly ProviderCredit[];
-    volumeDiscountProviders?: readonly string[];
-    providerBudgetsUsd?: Record<string, number>;
-    providerSpendUsd?: Record<string, number>;
-    now?: number;
-  } = {},
-): FreeTierCandidate | undefined {
-  if (options.pinnedModel && !eligibleModelIds.includes(options.pinnedModel)) return undefined;
-  const eligible = candidates.filter((candidate) =>
-    eligibleModelIds.includes(candidate.id)
-    && candidate.healthy !== false
-    && (options.pinnedModel === undefined || candidate.id === options.pinnedModel)
-    && (options.providerBudgetsUsd?.[candidate.provider] === undefined
-      || (options.providerSpendUsd?.[candidate.provider] ?? 0) < options.providerBudgetsUsd[candidate.provider]),
-  );
-  return rankFreeTierProviders(eligible, options.credits, options.volumeDiscountProviders, options.now)[0];
-}
-
-/** Deterministic provider ordering for a free request. Credits expiring soon win, then discounts, then price. */
-export function rankFreeTierProviders<T extends { provider: string; input: number; output: number }>(
-  models: readonly T[],
-  credits: readonly ProviderCredit[] = [],
-  volumeDiscountProviders: readonly string[] = [],
-  now = Date.now(),
-): T[] {
-  const creditRank = new Map<string, number>();
-  for (const credit of credits) {
-    const expiry = Date.parse(credit.expiresAt);
-    if (!Number.isFinite(expiry) || credit.amountUsd <= 0 || expiry <= now) continue;
-    const current = creditRank.get(credit.provider);
-    if (current === undefined || expiry < current) creditRank.set(credit.provider, expiry);
-  }
-  const discountRank = new Set(volumeDiscountProviders);
-  return [...models].sort((a, b) => {
-    const ac = creditRank.get(a.provider);
-    const bc = creditRank.get(b.provider);
-    if (ac !== undefined || bc !== undefined) {
-      if (ac === undefined) return 1;
-      if (bc === undefined) return -1;
-      if (ac !== bc) return ac - bc;
-    }
-    const ad = discountRank.has(a.provider);
-    const bd = discountRank.has(b.provider);
-    if (ad !== bd) return ad ? -1 : 1;
-    return (a.input + a.output) - (b.input + b.output);
-  });
-}
+/** BytePlus ModelArk chat models covered by the public free-tier offer. */
+export const FREE_TIER_MODEL_IDS = [
+  'doubao-seed-1-6-251015',
+  'doubao-seed-1-6-flash-250828',
+  'doubao-1-5-pro-32k-250115',
+  'doubao-1-5-lite-32k-250115',
+] as const;
 
 const OFFICIAL_PRICING_PAGES: Record<string, string> = {
   Anthropic: 'https://www.anthropic.com/pricing',
@@ -170,6 +96,6 @@ export function toPublicPricingModel(
     provider,
     ...prices,
     free_tier: freeModels.includes(id),
-    source: OFFICIAL_PRICING_PAGES[provider] ?? 'https://github.com/theaiinc/leyline',
+    source: OFFICIAL_PRICING_PAGES[provider] ?? 'https://www.theaiinc.com/',
   };
 }

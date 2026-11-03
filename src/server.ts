@@ -17,7 +17,13 @@ import { normalizeCompletionRequest } from './core/normalize-request';
 import { createMcpHttpHandler } from './mcp/http';
 import type { TunnelInfo } from './core/cloudflared-tunnel';
 import { INSTANCE_FAMILIES } from './core/provider-instances';
-import { parsePublishedPricing } from './core/pricing';
+import {
+  DEFAULT_FREE_TIER_EXPIRES_AFTER_DAYS,
+  DEFAULT_FREE_TIER_TOKENS,
+  FREE_TIER_MODEL_IDS,
+  parsePublishedPricing,
+  toPublicPricingModel,
+} from './core/pricing';
 import { generateInstanceId } from './core/instance-naming';
 import {
   ApiKeyPersistenceMode,
@@ -408,27 +414,23 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       try {
         const offered = await provider.getModels();
         return offered
-          .map(model => {
-            const pricing = (model as { pricing?: unknown }).pricing;
-            if (!pricing) return undefined;
-            const parsed = parsePublishedPricing(pricing);
-            if (!parsed) return undefined;
-            return {
-              id: model.id,
-              name: model.name || model.id,
-              provider: provider.name,
-              ...parsed,
-              free_tier: false,
-              source: 'https://github.com/theaiinc/leyline',
-            };
-          })
+          .map(model => toPublicPricingModel(provider.name, model, FREE_TIER_MODEL_IDS))
           .filter((model): model is NonNullable<typeof model> => Boolean(model));
       } catch {
         return [];
       }
     }))).flat();
 
-    const value = { currency: 'USD', unit: 'per 1M tokens', free_tier: { tokens: 1000000, models: [] }, models };
+    const value = {
+      currency: 'USD',
+      unit: 'per 1M tokens',
+      free_tier: {
+        tokens: DEFAULT_FREE_TIER_TOKENS,
+        expires_after_days: DEFAULT_FREE_TIER_EXPIRES_AFTER_DAYS,
+        models: FREE_TIER_MODEL_IDS,
+      },
+      models,
+    };
     publicPricingCache = { expiresAt: Date.now() + 5 * 60 * 1000, value };
     res.set('Cache-Control', 'public, max-age=300');
     res.json(value);
