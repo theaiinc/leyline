@@ -19,6 +19,13 @@ import type { TunnelInfo } from './core/cloudflared-tunnel';
 import { INSTANCE_FAMILIES } from './core/provider-instances';
 import { generateInstanceId } from './core/instance-naming';
 import {
+  assertRouteMountsDoNotConflict,
+  withDefaultExtensionHooks,
+  type ExtensionHooks,
+  type HookRequest,
+  type UsageEvent,
+} from './core/extension-hooks';
+import {
   ApiKeyPersistenceMode,
   ApiKeySource,
   PersistedRoutingConfig,
@@ -59,6 +66,8 @@ export interface CreateServerOptions {
   aegisQuotaManager?: QuotaManager;
   /** Hosted keys mode (hosted.ts): issued API keys with caps, /v1/messages, /v1/models, the admin page. */
   hosted?: HostedOptions;
+  /** Optional product integrations. Defaults preserve the existing Leyline behavior. */
+  extensions?: ExtensionHooks;
 }
 
 type ProviderKeyMetadata = {
@@ -180,6 +189,31 @@ const PUBLIC_DIR = typeof __dirname !== 'undefined' ? path.join(__dirname, '../p
 
 export const createServer = (router: Router, quotaManager: QuotaManager, options: CreateServerOptions = {}) => {
   const app = express();
+  const extensions = withDefaultExtensionHooks(options.extensions);
+  assertRouteMountsDoNotConflict(extensions.routeMounts);
+  const requestIds = new WeakMap<Request, string>();
+  let requestSequence = 0;
+  const requestId = (req: Request): string => {
+    const existing = requestIds.get(req);
+    if (existing) return existing;
+    const id = typeof req.headers['x-request-id'] === 'string' && req.headers['x-request-id']
+      ? req.headers['x-request-id']
+      : `leyline-${Date.now()}-${++requestSequence}`;
+    requestIds.set(req, id);
+    return id;
+  };
+  const hookRequest = (req: Request): HookRequest => ({
+    requestId: requestId(req),
+    request: req.body as HookRequest['request'],
+    key: typeof req.headers.authorization === 'string' ? req.headers.authorization.replace(/^Bearer\\s+/i, '') : undefined,
+  });
+  const recordUsageOnce = (req: Request, res: Response, event: Omit<UsageEvent, 'requestId'>): void => {
+    const key = requestId(req);
+    const locals = res.locals as { leylineUsageRecorded?: boolean };
+    if (locals.leylineUsageRecorded) return;
+    locals.leylineUsageRecorded = true;
+    void extensions.usageRecorder.record({ ...event, requestId: key });
+  };
   const apiKeyStore = options.apiKeyStore || createDefaultSecretStore();
   const getTunnelInfo = options.getTunnelInfo;
   const keyMetadata = new Map<string, ProviderKeyMetadata>();
@@ -219,8 +253,27 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
 
   app.use(cors({ exposedHeaders: ['Mcp-Session-Id'] }));
   app.use(express.json({ limit: config.bodyLimit }));
+  app.use(async (req, res, next) => {
+    const context = await extensions.workspaceResolver.resolve(hookRequest(req));
+    const decision = await extensions.admissionPolicy.admit({ ...hookRequest(req), workspace: context });
+    if (!decision.allowed) {
+      res.status(decision.status || 403).json({ error: { message: decision.message || 'Request denied', code: decision.code || 'request_denied' } });
+      return;
+    }
+    const workspace = decision.workspace || context;
+    res.once('finish', () => recordUsageOnce(req, res, {
+      workspace,
+      request: req.body as UsageEvent['request'],
+      error: res.statusCode >= 400 ? { status: res.statusCode } : undefined,
+    }));
+    next();
+  });
   // An admin whose session ran out keeps going on Aegis's refresh token (hosted.ts).
   if (hosted?.login) app.use(resumeAdminSession(hosted));
+
+  for (const mount of extensions.routeMounts) {
+    void mount.mount(app as unknown as import('./core/extension-hooks').RouteMountTarget);
+  }
 
   if (options.enforceExternalSurface !== false) {
     app.use(requireExternalSurfaceAllowlist);
