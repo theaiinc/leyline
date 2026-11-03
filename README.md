@@ -572,7 +572,7 @@ When fixed model mode is enabled, `/v1/chat/completions` ignores the request `mo
 
 ### Prompt Compression (optional)
 
-Leyline can optionally compress prompts and context before sending to LLM providers using [`@theaiinc/headroom-ai`](https://github.com/theaiinc/headroom-ai) — a library-only fork of [chopratejas/headroom](https://github.com/chopratejas/headroom) (Apache-2.0, original author credited).
+Leyline can optionally compress prompts and context before sending to LLM providers using [`@valefront/headroom-ai`](https://github.com/valefront/headroom-ai) — a library-only fork of [chopratejas/headroom](https://github.com/chopratejas/headroom) (Apache-2.0, original author credited).
 
 Compression is **off by default** and requires the Python package:
 
@@ -626,7 +626,7 @@ curl -N https://llm.valefront.com/v1/messages \
   -H "anthropic-version: 2023-06-01" \
   -H "content-type: application/json" \
   -d '{
-    "model": "deepseek-v4-1-flash-261017",
+    "model": "seed-2-0-lite-260428",
     "max_tokens": 128,
     "stream": true,
     "messages": [{"role": "user", "content": "Reply with exactly: hello"}]
@@ -672,9 +672,9 @@ This setup is only expected to work after the administrator has created and enab
 This run log records checks against the live Valefront service. The service base URL is `https://llm.valefront.com`. The former `llm.theaiinc.com` hostname is a deprecated alias.
 
 - ✅ `curl -sS -i https://llm.valefront.com/healthz` — HTTP 200; response: `{"status":"ok","service":"leyline","commit":"e46ee2b01576be6908fe5344723ad0dfd0401adb"}`.
-- ✅ `curl https://llm.valefront.com/v1/messages -H "x-api-key: $VALEFRONT_API_KEY" -H "anthropic-version: 2023-06-01" -H "content-type: application/json" -d '{"model":"seed-2-0-lite-260428","max_tokens":128,"messages":[{"role":"user","content":"Reply with exactly: hello"}]}'` — HTTP 200; Anthropic Messages JSON response returned.
-- ✅ `curl -N https://llm.valefront.com/v1/messages -H "x-api-key: $VALEFRONT_API_KEY" -H "anthropic-version: 2023-06-01" -H "content-type: application/json" -d '{"model":"seed-2-0-lite-260428","max_tokens":128,"stream":true,"messages":[{"role":"user","content":"Reply with exactly: hello"}]}'` — HTTP 200; SSE emitted `message_start`, `content_block_start`, `content_block_delta`/`text_delta`, `content_block_stop`, `message_delta`, and `message_stop`.
-- ⚠️ Anthropic Python SDK configured with `base_url="https://llm.valefront.com"` — not run in this verification; use the command above only after providing a temporary dashboard key.
+- ✅ `curl https://llm.valefront.com/v1/messages -H "x-api-key: $VALEFRONT_API_KEY" -H "anthropic-version: 2023-06-01" -H "content-type: application/json" -d '{"model":"seed-2-0-lite-260428","max_tokens":128,"messages":[{"role":"user","content":"Reply with exactly: hello"}]}'` — output: HTTP 200 and an Anthropic Messages JSON response.
+- ✅ `curl -N https://llm.valefront.com/v1/messages -H "x-api-key: $VALEFRONT_API_KEY" -H "anthropic-version: 2023-06-01" -H "content-type: application/json" -d '{"model":"seed-2-0-lite-260428","max_tokens":128,"stream":true,"messages":[{"role":"user","content":"Reply with exactly: hello"}]}'` — output: HTTP 200 and SSE events `message_start`, `content_block_start`, `content_block_delta`/`text_delta`, `content_block_stop`, `message_delta`, and `message_stop`.
+- ⚠️ Anthropic Python SDK configured with `base_url="https://llm.valefront.com"` — not run in this verification; this snippet is not marked as verified.
 - ❌ Claude Code with an unaliased `claude-*` model — HTTP 403 (`turned off here`); this is a product/configuration limitation, not a documentation workaround.
 - ⚠️ Claude Code with a configured dashboard/admin alias — setup is documented, but requires an administrator alias and a temporary key to verify against the hosted dashboard. No key is stored in this repository or run log.
 
