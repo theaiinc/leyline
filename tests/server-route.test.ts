@@ -43,6 +43,34 @@ function createFixedModelApp(options: {
   return createServer(router, quotaManager);
 }
 
+describe('no-extension public compatibility', () => {
+  it('keeps the existing routes and responses without extension mounts', async () => {
+    const app = createFixedModelApp({ provider: 'AzureOpenAI', model: 'gpt-5.5' });
+
+    const routeResponse = await request(app)
+      .post('/v1/route')
+      .set(LEYLINE_CLIENT_AUTH_HEADER)
+      .send({ user_message: 'hello' });
+    expect(routeResponse.status).toBe(200);
+    expect(routeResponse.body).toEqual({
+      classification: null,
+      selectedTier: 'fixed',
+      selectedModel: 'gpt-5.5',
+      selectedProvider: 'AzureOpenAI',
+    });
+
+    const modelsResponse = await request(app)
+      .get('/v1/models')
+      .set(LEYLINE_CLIENT_AUTH_HEADER);
+    expect(modelsResponse.status).toBe(404);
+
+    const mountedResponse = await request(app)
+      .get('/hosted-extension-test')
+      .set(LEYLINE_CLIENT_AUTH_HEADER);
+    expect(mountedResponse.status).toBe(404);
+  });
+});
+
 describe('POST /v1/route', () => {
   it('returns 400 when user_message is missing', async () => {
     const app = createFixedModelApp({ provider: 'OpenAI', model: 'gpt-5.5' });
