@@ -62,6 +62,7 @@ import { PresidioDetector } from '@theaiinc/veil-presidio';
     private readonly allowlist: RegExp[];
     private readonly opts: PiiRedactionOptions;
     private readonly mappings = new Map<string, string>();
+    private readonly legacyTypes = new Map<string, string>();
     private readonly requestTokens = new Map<string, string>();
     private readonly counts: Record<string, number> = {};
     private nextToken = 1;
@@ -123,9 +124,11 @@ import { PresidioDetector } from '@theaiinc/veil-presidio';
             : /@[^\s@]+\.[^\s@]+/.test(original) ? 'email'
             : /(?:\+?\d[\d\s().-]{6,}\d)/.test(original) ? 'phone'
             : rawType.toLowerCase();
-          token = `VF_${type.toUpperCase()}_${this.nextToken++}X`;
+          const tokenType = type.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+          token = `VF_${tokenType}_${this.nextToken++}X`;
           this.requestTokens.set(original, token);
           this.mappings.set(token, original);
+          this.legacyTypes.set(token, rawType.toLowerCase());
           this.counts[type] = (this.counts[type] ?? 0) + 1;
         }
         replacements.set(veilToken, token);
@@ -175,9 +178,10 @@ import { PresidioDetector } from '@theaiinc/veil-presidio';
         replacements.set(token, original);
         const match = token.match(/^VF_([A-Z][A-Z0-9_]*)_(\d+)X$/);
         if (!match) continue;
-        const legacy = `<${match[1].toLowerCase()}:${match[2]}>`;
+        const legacyType = this.legacyTypes.get(token) ?? match[1].toLowerCase();
+        const legacy = `<${legacyType}:${match[2]}>`;
         replacements.set(legacy, original);
-        replacements.set(`&lt;${match[1].toLowerCase()}:${match[2]}&gt;`, original);
+        replacements.set(`&lt;${legacyType}:${match[2]}&gt;`, original);
         replacements.set(`\\${legacy}`, original);
       }
       const allTokens = new RegExp(
@@ -214,11 +218,12 @@ import { PresidioDetector } from '@theaiinc/veil-presidio';
       const issuedTokens = [...this.mappings.keys()];
       const legacyTokens = issuedTokens.flatMap((token) => {
         const match = token.match(/^VF_([A-Z][A-Z0-9_]*)_(\d+)X$/);
-        return match
+        const legacyType = this.legacyTypes.get(token) ?? match?.[1].toLowerCase();
+        return match && legacyType
           ? [
-              `<${match[1].toLowerCase()}:${match[2]}>`,
-              `&lt;${match[1].toLowerCase()}:${match[2]}&gt;`,
-              `\\<${match[1].toLowerCase()}:${match[2]}\\>`,
+              `<${legacyType}:${match[2]}>`,
+              `&lt;${legacyType}:${match[2]}&gt;`,
+              `\\<${legacyType}:${match[2]}\\>`,
             ]
           : [];
       });

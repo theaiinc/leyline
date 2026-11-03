@@ -229,6 +229,22 @@ it('never leaves a generated token across random stream splits', async () => {
   }
 });
 
+it('round-trips hyphenated entity types in plain and split-stream replies', async () => {
+  const redactor = new RequestPiiRedactor({ mode: 'regex' });
+  await redactor.redact('Contact ada@example.com');
+
+  const token = 'VF_CREDIT_CARD_3X';
+  redactor['mappings'].set(token, '4111-1111-1111-1111');
+  redactor['legacyTypes'].set(token, 'credit-card');
+
+  expect(redactor.rehydrate(`Payment ${token}`)).toBe('Payment 4111-1111-1111-1111');
+
+  const first = redactor.rehydrateStream('Payment VF_CREDIT_', 'hyphenated');
+  const second = redactor.rehydrateStream('CARD_3X', 'hyphenated');
+  const tail = redactor.finishStream('hyphenated');
+  expect(first + second + tail).toBe('Payment 4111-1111-1111-1111');
+});
+
 it('falls back from presidio when no analyzer URL is configured', async () => {
   const redactor = new RequestPiiRedactor({ mode: 'presidio' });
   const output = await redactor.redact('ada@example.com');
