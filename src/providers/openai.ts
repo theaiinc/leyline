@@ -9,7 +9,7 @@ import { SPEECH_CONTENT_TYPES, openAIEmbeddings, upstreamError } from '../core/m
 import { config } from '../config';
 
 /** OpenAI's own non-chat models, by name. */
-const OPENAI_MODELS: Record<Exclude<Capability, 'chat'>, { pattern: RegExp; default: string }> = {
+const OPENAI_MODELS: Partial<Record<Exclude<Capability, 'chat'>, { pattern: RegExp; default: string }>> = {
   embeddings: { pattern: /^text-embedding-/, default: 'text-embedding-3-small' },
   transcription: { pattern: /^(whisper-1|gpt-4o(-mini)?-transcribe.*)$/, default: 'whisper-1' },
   speech: { pattern: /^(tts-1(-hd)?|gpt-4o(-mini)?-tts.*)$/, default: 'tts-1' },
@@ -20,7 +20,7 @@ export class OpenAIProvider implements Provider {
   capabilities: Capability[] = ['chat', 'embeddings', 'transcription', 'speech'];
   defaultModel: string;
   private apiKey: string;
-  private baseUrl: string;
+  protected baseUrl: string;
   private model: string;
 
   constructor(
@@ -139,11 +139,12 @@ export class OpenAIProvider implements Provider {
   }
 
   servesModel(capability: Capability, model: string): boolean {
-    return capability !== 'chat' && OPENAI_MODELS[capability].pattern.test(model);
+    const definition = capability === 'chat' ? undefined : OPENAI_MODELS[capability];
+    return Boolean(definition?.pattern.test(model));
   }
 
   defaultModelFor(capability: Capability): string | undefined {
-    return capability === 'chat' ? this.defaultModel : OPENAI_MODELS[capability].default;
+    return capability === 'chat' ? this.defaultModel : OPENAI_MODELS[capability]?.default;
   }
 
   async embed(request: EmbeddingRequest): Promise<EmbeddingResult> {
@@ -211,7 +212,7 @@ export class OpenAIProvider implements Provider {
     };
   }
 
-  private headers(): Record<string, string> {
+  protected headers(): Record<string, string> {
     return {
       'Authorization': `Bearer ${this.apiKey}`,
       'Content-Type': 'application/json',

@@ -307,8 +307,93 @@ Run Leyline in the cloud and hand out API keys that use your provider keys, each
 
 | Variable | Meaning |
 | --- | --- |
-| `LEYLINE_PUBLIC_URL` | e.g. `https://llm.valefront.com` (sign-in callback, snippets) |
+| `LEYLINE_PUBLIC_URL` | `https://llm.valefront.com` (sign-in callback, snippets) |
+| `LEYLINE_PUBLIC_ALIASES` | Deprecated alternate origins only; `https://llm.theaiinc.com` is being retired. |
 | `LEYLINE_KEYS_BUCKET` / `LEYLINE_KEYS_DIR` | Where keys, usage and the offered models live: a GCS bucket (Cloud Run), else a directory, else memory |
+
+### Anthropic Messages API
+
+Valefront provides an Anthropic-compatible Messages endpoint at `https://llm.valefront.com/v1/messages`. Use a Valefront key in `x-api-key` and send `anthropic-version: 2023-06-01`. The currently served models verified against the live service are `seed-2-0-lite-260428` and `deepseek-v4-1-flash-261017`.
+
+Non-streaming request:
+
+```bash
+curl https://llm.valefront.com/v1/messages \
+  -H "content-type: application/json" \
+  -H "x-api-key: $VALEFRONT_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{
+    "model": "seed-2-0-lite-260428",
+    "max_tokens": 64,
+    "messages": [{"role": "user", "content": "Reply with exactly: hello"}]
+  }'
+```
+
+Streaming request:
+
+```bash
+curl -N https://llm.valefront.com/v1/messages \
+  -H "content-type: application/json" \
+  -H "x-api-key: $VALEFRONT_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{
+    "model": "deepseek-v4-1-flash-261017",
+    "max_tokens": 64,
+    "stream": true,
+    "messages": [{"role": "user", "content": "Reply with exactly: hello"}]
+  }'
+```
+
+A successful stream emits standard Anthropic SSE events, including `message_start`, `content_block_start`, `content_block_delta` (with `delta.type: "text_delta"`), `content_block_stop`, `message_delta`, and `message_stop`.
+
+Live verification: ✅ The non-streaming and streaming requests above were run against `https://llm.valefront.com/v1/messages` with a temporary dashboard key. Both succeeded using the served models shown above; the streaming response emitted the events listed here. The key was not recorded.
+
+### Claude Code compatibility
+
+Claude Code sends model names beginning with `claude-`. Those names currently receive `403 "turned off here"` from Valefront unless an administrator maps them to a served model alias. Therefore, the direct Claude Code setup is **not available yet** without an admin-managed alias; do not use a guide that claims the unmodified setup works.
+
+To use Claude Code with Valefront:
+
+1. Ask an administrator to create a dashboard/provider alias mapping the requested `claude-*` model name to a served model, such as `seed-2-0-lite-260428` or `deepseek-v4-1-flash-261017`.
+2. Confirm the alias is enabled for your account and that the mapped target is a served model.
+3. Configure Claude Code with the Valefront endpoint and your Valefront API key, using the aliased `claude-*` model name.
+4. Verify with a small request. Without the administrator alias, the request fails with HTTP 403 and `"turned off here"`; that is current product behavior, not a client configuration error.
+
+Use `https://llm.valefront.com` for the endpoint. The deprecated `llm.theaiinc.com` alias is being retired.
+
+Python SDK:
+
+```python
+import os
+from anthropic import Anthropic
+
+client = Anthropic(
+    api_key=os.environ["VALEFRONT_API_KEY"],
+    base_url="https://llm.valefront.com",
+)
+message = client.messages.create(
+    model="seed-2-0-lite-260428",
+    max_tokens=64,
+    messages=[{"role": "user", "content": "Reply with exactly: hello"}],
+)
+print(message.content)
+```
+
+### Claude Code compatibility
+
+Claude Code sends model names beginning with `claude-`. Those names currently return HTTP 403 (`turned off here`) unless an administrator configures an alias. A plain Claude Code setup against Valefront therefore does **not** work.
+
+To make it work, an administrator must first open the dashboard's model settings and map the Claude Code names or pattern `claude-*` to a served model, such as `seed-2-0-lite-260428` or `deepseek-v4-1-flash-261017`. The equivalent admin API is `PUT /admin/api/settings` with an `aliases` mapping; use the exact alias syntax shown by the dashboard. Do not publish or rely on a Claude Code setup until that alias is saved and confirmed.
+
+After the alias exists, configure Claude Code to use Valefront's Anthropic-compatible endpoint and your Valefront key:
+
+```bash
+export ANTHROPIC_BASE_URL=https://llm.valefront.com
+export ANTHROPIC_API_KEY="$VALEFRONT_API_KEY"
+claude
+```
+
+This setup depends on the administrator alias. Without it, Claude Code remains unavailable and returns 403; use the Messages API directly with one of the served model names instead.
 | `LEYLINE_SECRET_STORE=gcp`, `LEYLINE_GCP_PROJECT` | Keep provider keys and dashboard settings in Secret Manager (project defaults to the one Cloud Run runs in) |
 | `LEYLINE_OFFERED_MODELS`, `LEYLINE_MODEL_ALIASES` | Defaults for Offered models until it's first saved on the dashboard |
 | `LEYLINE_ADMIN_EMAILS`, `LEYLINE_ADMIN_TOKEN` | Who may manage this Leyline |

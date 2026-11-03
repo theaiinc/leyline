@@ -62,6 +62,20 @@ describe('Anthropic provider', () => {
     expect(res.usage).toEqual({ prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
   });
 
+  it('includes cache reads and writes in normalized Anthropic usage', () => {
+    const res = fromAnthropicResponse({
+      id: 'msg_cache', model: 'claude-x', stop_reason: 'end_turn', content: [{ type: 'text', text: 'ok' }],
+      usage: { input_tokens: 100, output_tokens: 5, cache_read_input_tokens: 20, cache_creation_input_tokens: 30 },
+    });
+    expect(res.usage).toEqual({
+      prompt_tokens: 150,
+      completion_tokens: 5,
+      total_tokens: 155,
+      cached_tokens: 20,
+      cache_creation_input_tokens: 30,
+    });
+  });
+
   it('streams text and tool calls as chat completion chunks', async () => {
     const events = [
       { type: 'message_start', message: { id: 'msg_2', usage: { input_tokens: 3 } } },

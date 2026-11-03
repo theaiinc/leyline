@@ -41,13 +41,16 @@ export interface CompletionResponse {
   model: string;
   choices: Array<{
     index: number;
-    message: { role: string; content: string };
+    message: { role: string; content: string; tool_calls?: Array<{ id?: string; type?: string; function?: { name?: string; arguments?: string } }> };
     finish_reason: string;
   }>;
   usage?: {
     prompt_tokens: number;
     completion_tokens: number;
     total_tokens: number;
+    cached_tokens?: number;
+    prompt_tokens_details?: { cached_tokens?: number };
+    cache_creation_input_tokens?: number;
   };
 }
 
@@ -65,6 +68,7 @@ export interface StreamChunk {
     prompt_tokens?: number;
     completion_tokens?: number;
     total_tokens?: number;
+    cached_tokens?: number;
   };
 }
 
@@ -73,6 +77,8 @@ export interface ModelDetail {
   name?: string;
   description?: string;
   score?: number;
+  /** Modalities accepted by this model. */
+  capabilities?: Capability[];
   /** The price the provider publishes for this model, in US dollars per million tokens. */
   pricing?: { input: number; output: number };
 }
@@ -80,7 +86,7 @@ export interface ModelDetail {
 // ── Capabilities beyond chat (embeddings, speech-to-text, text-to-speech) ──
 
 /** What a provider serves. Providers that don't say serve chat only. */
-export type Capability = 'chat' | 'embeddings' | 'transcription' | 'speech';
+export type Capability = 'chat' | 'vision' | 'audio' | 'embeddings' | 'transcription' | 'speech';
 
 export interface EmbeddingRequest {
   model: string;

@@ -6,6 +6,7 @@ import { adminOf, applySettings, type HostedOptions } from '../src/core/hosted';
 import { D1ArcanaCloudStore, D1DocStore, D1LogStore, D1SecretStore, type D1Database } from '../src/core/d1-stores';
 import { arcanaCloudConfigFromEnv, parseArcanaCloudReferences, type SecretStore } from '../src/core/secret-store';
 import { logger } from '../src/core/logger';
+import { fetchBenchmarkSnapshot, mapBenchmarkSnapshot, refreshBenchmarks, type BenchmarkCache, type BenchmarkSnapshot } from '../src/core/benchmarks';
 import type { ModelListSnapshot } from '../src/core/router';
 import type { WorkersAiBinding } from '../src/providers/workers-ai';
 
@@ -29,6 +30,12 @@ interface Env {
   LEYLINE_STORE_KEY: string;
   /** Git commit injected by the CI deployment workflow. */
   GIT_SHA?: string;
+  ARTIFICIAL_ANALYSIS_API_KEY?: string;
+  ARTIFICIAL_ANALYSIS_URL?: string;
+  EPOCH_BENCHMARKS_URL?: string;
+  LM_ARENA_URL?: string;
+  /** Optional Veil Presidio analyzer endpoint; regex is used when unset. */
+  PRESIDIO_ANALYZER_URL?: string;
 }
 interface Ctx { waitUntil(p: Promise<unknown>): void }
 
@@ -36,6 +43,31 @@ interface Ctx { waitUntil(p: Promise<unknown>): void }
 type SharedModelLists = { version: string; savedAt: number; lists: ModelListSnapshot };
 const MODEL_LISTS_DOC = 'model-lists';
 const MODEL_LISTS_REFRESH_MS = 30 * 60_000;
+const BENCHMARKS_DOC = 'benchmarks';
+
+function benchmarkCache(docs: D1DocStore, env: Env): BenchmarkCache {
+  return {
+    get: async () => {
+      const record = await docs.get<BenchmarkSnapshot>(BENCHMARKS_DOC);
+      return record?.value ?? null;
+    },
+    put: async (snapshot: BenchmarkSnapshot) => { await docs.put(BENCHMARKS_DOC, snapshot); },
+  };
+}
+
+function refreshStoredBenchmarks(docs: D1DocStore, env: Env, force = false): Promise<unknown> {
+  const cache = benchmarkCache(docs, env);
+  return refreshBenchmarks(
+    () => fetchBenchmarkSnapshot({
+      artificialAnalysisApiKey: env.ARTIFICIAL_ANALYSIS_API_KEY,
+      artificialAnalysisUrl: env.ARTIFICIAL_ANALYSIS_URL,
+      epochUrl: env.EPOCH_BENCHMARKS_URL ?? 'https://epoch.ai/data/benchmark_data.zip',
+      lmarenaUrl: env.LM_ARENA_URL ?? 'https://datasets-server.huggingface.co/rows?dataset=lmarena-ai/leaderboard-dataset&config=text&split=latest',
+    }),
+    cache,
+    force,
+  );
+}
 
 type Built = { port: number; server: Server; hosted: HostedOptions; version: string; stages: Record<string, number> };
 
@@ -104,8 +136,26 @@ async function build(env: Env): Promise<Built> {
   // reuse lists made without it until the half-hourly refresh.
   const listsVersion = `${version}|${router.getProviders().map((p) => p.name).sort().join(',')}`;
   if (shared?.value.version === listsVersion) router.importModelLists(shared.value.lists);
+  // The hosted model route falls back to the provider index when no fixed pool is configured.
+  // Refresh missing/stale lists during Worker startup so a cold instance can advertise served models.
+  await router.reindexStale();
   mark('router');
-  const hosted = hostedOptions(docs, { sharedMinute: true, watch: false });
+  const hosted = hostedOptions(docs, { sharedMinute: true, watch: false, benchmarks: async () => {
+    const cache = benchmarkCache(docs, env);
+    const cached = await cache.get();
+    const stale = !cached || Date.now() - cached.fetchedAt >= 24 * 60 * 60 * 1000;
+    const mapSnapshot = (snapshot: BenchmarkSnapshot | null) => snapshot ? mapBenchmarkSnapshot(snapshot, router.exportModelLists().flatMap((list) => list.models.map((model) => ({ id: model.id, aliases: model.aliases ?? [] })))) : null;
+    if (!stale) return mapSnapshot(cached);
+    try {
+      // Await the refresh here: a Worker may terminate ordinary background work
+      // after the response unless it is reliably attached to waitUntil. Returning
+      // the newly written snapshot also makes the first stale request useful.
+      return mapSnapshot(await refreshStoredBenchmarks(docs, env, true)) ?? mapSnapshot(cached);
+    } catch (error) {
+      console.error('[benchmarks] request refresh failed', error instanceof Error ? error.message : error);
+      return cached;
+    }
+  } });
   hosted.background = keepAlive;
   const email = env.EMAIL;
   if (email) {
@@ -206,6 +256,23 @@ export default {
 
     const t0 = Date.now();
     const b = await current(env);
+    if (url.pathname === '/v1/benchmarks/refresh' && request.method === 'POST') {
+      const req = { headers: { cookie: request.headers.get('cookie') ?? undefined, authorization: request.headers.get('authorization') ?? undefined } };
+      if (!adminOf(b.hosted, req as never)) return new Response('Unauthorized', { status: 401 });
+      try {
+        const snapshot = await refreshStoredBenchmarks(new D1DocStore(reads(env), env.DB), env, true);
+        const benchmarks = snapshot && 'benchmarks' in snapshot ? snapshot.benchmarks.map((benchmark) => ({ id: benchmark.id, rows: benchmark.scores.length })) : [];
+        return Response.json({
+          ok: true,
+          fetchedAt: snapshot && 'fetchedAt' in snapshot ? snapshot.fetchedAt : null,
+          rows: benchmarks.reduce((total, benchmark) => total + benchmark.rows, 0),
+          benchmarks,
+        });
+      } catch (error) {
+        console.error('[benchmarks] admin refresh failed', error instanceof Error ? error.message : error);
+        return Response.json({ ok: false, error: error instanceof Error ? error.message : 'refresh failed' }, { status: 502 });
+      }
+    }
     const appMs = Date.now() - t0;
     const res = await handleAsNodeRequest(b.port, request, env, ctx as never);
     // Where a request's time to its first byte goes: getting the app (a cold build), then the app itself.
@@ -218,8 +285,12 @@ export default {
     return out;
   },
 
-  /** Daily: drop old per-minute counters. */
+  /** Daily: refresh benchmark rankings and drop old per-minute counters. */
   async scheduled(_event: unknown, env: Env): Promise<void> {
-    await new D1DocStore(env.DB).prune();
+    const docs = new D1DocStore(env.DB);
+    await Promise.all([
+      docs.prune(),
+      refreshStoredBenchmarks(docs, env, true),
+    ]);
   },
 };

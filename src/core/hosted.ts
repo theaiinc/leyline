@@ -8,6 +8,18 @@ import { builtinPrice } from './pricing';
 import { errorStatus } from './media';
 import { estimateBodyTokens } from './content';
 import { DEFAULT_PRICE, IssuedKeys, costUsd, modelAllowed, priceOf, type HostedSettings, type IssuedKey, type KeyCaps, type Price } from './issued-keys';
+import type { BenchmarkSnapshot } from './benchmarks';
+import { RequestPiiRedactor } from './pii-redaction';
+
+function capabilitiesForModel(modelId: string): string[] {
+  const id = modelId.toLowerCase();
+  if (/embed|bge|text-embedding/.test(id)) return ['embeddings'];
+  if (/whisper|transcri/.test(id)) return ['transcription'];
+  if (/tts|speech|aura|melotts|voice/.test(id)) return ['speech'];
+  if (/image|dall-e|flux|stable-diffusion/.test(id)) return ['image'];
+  if (/video|seedance|veo|sora|kling/.test(id)) return ['video'];
+  return ['chat'];
+}
 
 /**
  * Hosted Leyline: an LLM API the owner hands out keys for, so people can plug it into their coding agents.
@@ -31,6 +43,10 @@ export type HostedOptions = {
   adminEmails: string[];
   adminToken?: string;
   publicUrl: string;
+  /** Additional approved public origins for dashboard requests and sign-in callbacks. */
+  publicAliases?: string[];
+  /** Builds the OAuth callback URI for the approved host used by this request. */
+  redirectUriForRequest?: (req: Request) => string;
   /** Models turned off for every key (ids or patterns with *). */
   blockedModels?: string[];
   /** The most all keys together may spend a month (US dollars); null: no limit. */
@@ -53,6 +69,8 @@ export type HostedOptions = {
   sendEmail?: AlertChannels['sendEmail'];
   /** When the settings were last saved on the dashboard (null: env defaults). */
   settingsSaved?: { at: number; by: string } | null;
+  /** Cached benchmark snapshot used by the public benchmark API and dashboard. */
+  benchmarks?: () => Promise<BenchmarkSnapshot | null>;
   /**
    * Keeps work that finishes after the response alive (usage, spend). The Worker passes its waitUntil: Workers
    * cancels anything a finished request left running.
@@ -60,7 +78,7 @@ export type HostedOptions = {
   background?: (work: Promise<unknown>) => void;
 };
 
-type WithKey = Request & { issuedKey?: IssuedKey; requestedModel?: string; ownerRequest?: boolean; served?: { provider: string; model: string }; timings?: { lookupMs: number; admitMs: number } };
+type WithKey = Request & { issuedKey?: IssuedKey; requestedModel?: string; ownerRequest?: boolean; served?: { provider: string; model: string }; timings?: { lookupMs: number; admitMs: number }; pii?: RequestPiiRedactor };
 
 /** Route option that remembers which provider and model served this request (for spend by provider and model). */
 export function servedBy(req: Request): (provider: string, model: string) => void {
@@ -109,7 +127,7 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
     }
     if (!key) return fail(401, 'invalid_api_key', 'Incorrect API key provided.');
     const requested = typeof req.body?.model === 'string' ? req.body.model : '';
-    const offered = !requested || requested === 'auto' || opts.models.length === 0 || opts.models.some((m) => modelAllowed({ models: [m] }, requested)) || !!resolveAlias(opts, requested);
+    const offered = !requested || requested === 'auto' || requested === 'auto-vision' || opts.models.length === 0 || opts.models.some((m) => modelAllowed({ models: [m] }, requested)) || !!resolveAlias(opts, requested);
     if (!offered) return fail(404, 'model_not_found', `The model "${requested}" is not offered here; see /v1/models.`);
     if (requested && isBlocked(opts, requested)) {
       return fail(403, 'model_disabled', `The model "${requested}" is turned off here; see /v1/models for what you can use.`);
@@ -120,6 +138,12 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
     if (refusal) return fail(refusal.status, refusal.code, refusal.message);
     (req as WithKey).issuedKey = key;
     (req as WithKey).requestedModel = requested;
+    (req as WithKey).pii = new RequestPiiRedactor({
+      mode: key.caps.piiRedaction ?? 'off',
+      allowlist: key.caps.piiAllowlist ?? [],
+      presidioAnalyzerUrl: process.env.PRESIDIO_ANALYZER_URL,
+      log: (event) => console.log(JSON.stringify(event)),
+    });
     next();
   };
 }
@@ -245,8 +269,19 @@ export function adminOf(opts: HostedOptions, req: Request): string | null {
 }
 
 export function sameOrigin(opts: HostedOptions, req: Request): boolean {
-  const o = req.headers.origin;
-  return !o || o === opts.publicUrl;
+  const origin = req.headers.origin;
+  if (!origin) return true;
+
+  const normalizeOrigin = (value: string): string => {
+    try {
+      return new URL(value).origin;
+    } catch {
+      return value.replace(/\/+$/, '');
+    }
+  };
+
+  const accepted = [opts.publicUrl, ...(opts.publicAliases ?? [])].map(normalizeOrigin);
+  return accepted.includes(normalizeOrigin(origin));
 }
 
 /** What a key looks like to the admin page (never the hash). */
@@ -303,10 +338,38 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
   opts.publishedPriceCounts ??= () => router.publishedPriceCounts();
   opts.anyPublishedPrice ??= (model) => router.anyPublishedPrice(model);
   // ── models ──────────────────────────────────────────────────────────────────────────────────────────
-  app.get('/v1/models', requireIssuedKeyNoModel(opts), (req, res) => {
+  app.get('/v1/models', requireIssuedKeyNoModel(opts), async (req, res) => {
     const key = (req as WithKey).issuedKey!;
-    const ids = [...opts.models, ...Object.keys(opts.aliases).filter((a) => !a.includes('*'))].filter((m, i, all) => all.indexOf(m) === i && modelAllowed(key.caps, m) && !isBlocked(opts, m));
-    res.json({ object: 'list', data: ids.map((id) => ({ id, object: 'model', created: 0, owned_by: 'leyline', type: 'model', display_name: id })) });
+    // An empty configured pool means "everything the providers currently serve", not "nothing".
+    // Refresh stale provider listings here as a safety net for Node and cold Worker instances.
+    if (opts.models.length === 0) await router.reindexStale();
+    const configured = [...opts.models, ...Object.keys(opts.aliases).filter((a) => !a.includes('*'))];
+    const providerModels = opts.models.length === 0 ? Object.keys(router.getModelIndex()) : [];
+    const ids = [...configured, ...providerModels].filter((m, i, all) => all.indexOf(m) === i && modelAllowed(key.caps, m) && !isBlocked(opts, m));
+    const capability = typeof req.query.capability === 'string' ? req.query.capability : undefined;
+    const snapshot = await opts.benchmarks?.();
+    const data = ids.map((id) => {
+      const benchmarks = Object.fromEntries((snapshot?.benchmarks ?? []).map((benchmark) => [
+        benchmark.id,
+        benchmark.scores.find((score) => score.leylineModel === id || score.model === id) ?? null,
+      ]));
+      return {
+        id,
+        object: 'model',
+        created: 0,
+        owned_by: 'leyline',
+        type: 'model',
+        display_name: id,
+        capabilities: capabilitiesForModel(id),
+        benchmarks,
+      };
+    }).filter((model) => !capability || model.capabilities.includes(capability));
+    res.json({ object: 'list', data });
+  });
+
+  app.get('/v1/benchmarks', requireIssuedKeyNoModel(opts), async (_req, res) => {
+    const snapshot = await opts.benchmarks?.();
+    res.json(snapshot ?? { fetchedAt: null, benchmarks: [] });
   });
 
   // ── Anthropic Messages (Claude Code: ANTHROPIC_BASE_URL) ───────────────────────────────────────────
@@ -323,6 +386,8 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
     }
     const asked = request.model;
     request.model = resolveModel(opts.aliases, asked);
+    const pii = (req as WithKey).pii;
+    if (pii) request = await pii.redact(request);
     try {
       if (request.stream) {
         res.setHeader('Content-Type', 'text/event-stream');
@@ -334,7 +399,45 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
         };
         try {
           const excludeProviders = await providersOverBudget(opts);
-          for await (const chunk of await router.routeStream(request, { onServed: servedBy(req), excludeProviders })) send(out.push(chunk));
+          for await (const chunk of await router.routeStream(request, { onServed: servedBy(req), excludeProviders })) {
+            if (pii) {
+              for (const [choiceIndex, choice] of (chunk.choices ?? []).entries() as Iterable<[number, { delta?: { content?: string | null; tool_calls?: Array<{ function?: { arguments?: string } }> } }]>) {
+                if (choice.delta?.content) choice.delta.content = pii.rehydrateStream(choice.delta.content, `choice:${choiceIndex}:content`);
+                for (const [toolIndex, call] of (choice.delta?.tool_calls ?? []).entries()) {
+                  if (call.function?.arguments) call.function.arguments = pii.rehydrateStream(call.function.arguments, `choice:${choiceIndex}:tool:${toolIndex}`);
+                }
+              }
+            }
+            send(out.push(chunk));
+          }
+          if (pii) {
+            for (const key of pii.streamKeys) {
+              const tail = pii.finishStream(key);
+              if (!tail) continue;
+              const match = /^choice:(\d+):(content|tool:(\d+))$/.exec(key);
+              if (!match) continue;
+              const choiceIndex = Number(match[1]);
+              if (match[2] === 'content') {
+                send([{
+                  event: 'content_block_delta',
+                  data: {
+                    type: 'content_block_delta',
+                    index: choiceIndex,
+                    delta: { type: 'text_delta', text: tail },
+                  },
+                }]);
+              } else {
+                send([{
+                  event: 'content_block_delta',
+                  data: {
+                    type: 'content_block_delta',
+                    index: Number(match[3]),
+                    delta: { type: 'input_json_delta', partial_json: tail },
+                  },
+                }]);
+            }
+          }
+        }
           send(out.end());
         } catch (err) {
           console.error('[hosted] /v1/messages stream failed', err);
@@ -347,7 +450,19 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
         return;
       }
       const response = await router.route(request, { onServed: servedBy(req), excludeProviders: await providersOverBudget(opts) });
-      res.json(openAIToAnthropic(response, asked));
+      const hydrated = pii ? { ...response, choices: response.choices?.map((choice) => ({
+        ...choice,
+        message: choice.message ? {
+          ...choice.message,
+          content: typeof choice.message.content === 'string' ? pii.rehydrate(choice.message.content) : choice.message.content,
+          tool_calls: choice.message.tool_calls?.map((call) => ({
+            ...call,
+            function: call.function ? { ...call.function, arguments: pii.rehydrate(call.function.arguments ?? '') } : call.function,
+          })),
+        } : choice.message,
+      })) } : response;
+      if (pii) { await pii.finish(); }
+      res.json(openAIToAnthropic(hydrated, asked));
       recordUsage(opts, req, response.usage);
     } catch (err) {
       console.error('[hosted] /v1/messages failed', err);
@@ -361,7 +476,8 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
   if (login) {
     app.get('/auth/login', async (req, res) => {
       try {
-        const { url, cookie: c } = await login.start(typeof req.query.next === 'string' ? req.query.next : '/dashboard/', { switchAccount: req.query.switch === '1' });
+        const redirectUri = opts.redirectUriForRequest?.(req);
+        const { url, cookie: c } = await login.start(typeof req.query.next === 'string' ? req.query.next : '/dashboard/', { switchAccount: req.query.switch === '1', ...(redirectUri ? { redirectUri } : {}) });
         res.setHeader('Set-Cookie', c);
         res.redirect(302, url);
       } catch (err) {

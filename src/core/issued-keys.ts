@@ -23,6 +23,10 @@ export type KeyCaps = {
   usdPerMonth?: number | null;
   /** Model ids (or glob patterns like "gemini-*") this key may use; unset: every model offered. */
   models?: string[] | null;
+  /** Request-scoped PII handling; omitted means disabled for existing keys. */
+  piiRedaction?: 'off' | 'regex' | 'presidio';
+  /** Regexes whose matches must remain usable by operational tools. */
+  piiAllowlist?: string[] | null;
 };
 
 export type IssuedKey = {
@@ -52,7 +56,7 @@ export type KeyUsage = {
 };
 
 /** Spend, requests and tokens for one provider or model. */
-export type SpendLine = { usd: number; requests: number; tokens: number };
+export type SpendLine = { usd: number; requests: number; tokens: number; cachedTokens?: number };
 
 /** Everything spent this month, across keys (and the owner's playground), by provider and by model. */
 export type MonthSpend = {
@@ -230,7 +234,7 @@ export type HostedSettings = {
   updatedBy?: string;
 };
 
-export type Price = { input: number; output: number };
+export type Price = { input: number; output: number; cachedInput?: number; cacheCreationInput?: number };
 export const DEFAULT_PRICE: Price = { input: 10, output: 40 };
 
 function cleanPrice(p: unknown): Price | null {
@@ -289,8 +293,13 @@ export function priceOf(settings: Pick<HostedSettings, 'prices' | 'defaultPrice'
   return manualPriceOf(settings.prices, model) ?? published ?? settings.defaultPrice;
 }
 
-export function costUsd(price: Price, usage: { prompt_tokens?: number; completion_tokens?: number } | undefined): number {
-  return ((usage?.prompt_tokens ?? 0) * price.input + (usage?.completion_tokens ?? 0) * price.output) / 1_000_000;
+export function costUsd(price: Price, usage: { prompt_tokens?: number; completion_tokens?: number; cached_tokens?: number; cache_creation_input_tokens?: number } | undefined): number {
+  const prompt = Math.max(0, usage?.prompt_tokens ?? 0);
+  const cached = Math.min(prompt, Math.max(0, usage?.cached_tokens ?? 0));
+  const cacheCreation = Math.max(0, usage?.cache_creation_input_tokens ?? 0);
+  const cachedInput = price.cachedInput ?? price.input * 0.1;
+  const cacheCreationInput = price.cacheCreationInput ?? price.input * 1.25;
+  return (((prompt - cached) * price.input) + (cached * cachedInput) + (cacheCreation * cacheCreationInput) + ((usage?.completion_tokens ?? 0) * price.output)) / 1_000_000;
 }
 
 export const hashKey = (key: string) => createHash('sha256').update(key).digest('hex');
@@ -420,7 +429,7 @@ export class IssuedKeys {
 
   async admit(key: IssuedKey, model: string, budgetUsd: number | null = null): Promise<Refusal | null> {
     if (key.revokedAt) return { status: 401, code: 'key_revoked', message: 'This API key has been revoked.' };
-    if (model && model !== 'auto' && !modelAllowed(key.caps, model)) {
+    if (model && model !== 'auto' && model !== 'auto-vision' && !modelAllowed(key.caps, model)) {
       return { status: 403, code: 'model_not_allowed', message: `This key may not use the model "${model}".` };
     }
     const now = this.now();
@@ -468,7 +477,7 @@ export class IssuedKeys {
   async record(
     key: IssuedKey | null,
     model: string,
-    usage?: { prompt_tokens?: number; completion_tokens?: number },
+    usage?: { prompt_tokens?: number; completion_tokens?: number; cached_tokens?: number },
     usd = 0,
     served: { provider: string; model: string } = { provider: 'unknown', model },
   ): Promise<void> {
@@ -476,11 +485,13 @@ export class IssuedKeys {
     const month = monthOf(now);
     const prompt = Math.max(0, Math.round(usage?.prompt_tokens ?? 0));
     const completion = Math.max(0, Math.round(usage?.completion_tokens ?? 0));
+    const cached = Math.min(prompt, Math.max(0, Math.round(usage?.cached_tokens ?? 0)));
     const tokens = prompt + completion;
     const add = (line: SpendLine | undefined): SpendLine => ({
       usd: (line?.usd ?? 0) + usd,
       requests: (line?.requests ?? 0) + 1,
       tokens: (line?.tokens ?? 0) + tokens,
+      ...(cached || line?.cachedTokens ? { cachedTokens: (line?.cachedTokens ?? 0) + cached } : {}),
     });
     await update<MonthSpend>(this.store, `spend/${month}`, (cur) => {
       const s = cur ?? { month, usd: 0, requests: 0 };
@@ -537,11 +548,19 @@ function dollars(v: unknown): number | null {
 
 export function cleanCaps(c: KeyCaps): KeyCaps {
   const models = Array.isArray(c.models) ? c.models.map((m) => String(m).trim()).filter(Boolean).slice(0, 50) : null;
+  const piiRedaction = c.piiRedaction === 'regex' || c.piiRedaction === 'presidio' || c.piiRedaction === 'off'
+    ? c.piiRedaction
+    : undefined;
+  const piiAllowlist = Array.isArray(c.piiAllowlist)
+    ? c.piiAllowlist.map((p) => String(p).trim()).filter(Boolean).slice(0, 50)
+    : null;
   return {
     tokensPerMonth: positive(c.tokensPerMonth),
     requestsPerDay: positive(c.requestsPerDay),
     requestsPerMinute: positive(c.requestsPerMinute),
     usdPerMonth: dollars(c.usdPerMonth),
     models: models && models.length ? models : null,
+    ...(piiRedaction ? { piiRedaction } : {}),
+    piiAllowlist,
   };
 }

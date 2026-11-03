@@ -1,6 +1,7 @@
+import axios from 'axios';
 import { OpenAIProvider } from './openai';
 import { config } from '../config';
-import type { Capability } from '../core/types';
+import type { Capability, ModelDetail } from '../core/types';
 
 /**
  * OpenAI-compatible LLM API provider.
@@ -10,15 +11,33 @@ import type { Capability } from '../core/types';
  */
 export class LlmApiProvider extends OpenAIProvider {
   name = 'LLM API';
-  // A gateway: it serves the embedding models it lists (GET /models), if any; never audio, never `auto`.
-  capabilities: Capability[] = ['chat', 'embeddings'];
+  // A gateway: model support comes from its published model list; it never claims `auto`.
+  // The gateway may expose multimodal models; Router filters these against the listed model metadata.
+  capabilities: Capability[] = ['chat', 'embeddings', 'vision', 'audio'];
 
   servesModel(): boolean {
     return false;
   }
 
   servesListedModels(capability: Capability): boolean {
-    return capability === 'embeddings';
+    // Gateway chat models may advertise vision/audio per model in /models.
+    // Embeddings remain a listed-model capability as well.
+    return capability === 'chat' || capability === 'embeddings' || capability === 'vision' || capability === 'audio';
+  }
+
+  async getModels(): Promise<ModelDetail[]> {
+    try {
+      const response = await axios.get(`${this.baseUrl}/models`, { headers: this.headers() });
+      return (response.data?.data ?? []).map((model: any) => ({
+        id: model.id,
+        name: model.name,
+        description: model.description,
+        ...(Array.isArray(model.capabilities) ? { capabilities: model.capabilities } : {}),
+      }));
+    } catch (error) {
+      console.error('[LLM API] Failed to list models:', error);
+      return [];
+    }
   }
 
   defaultModelFor(capability: Capability): string | undefined {

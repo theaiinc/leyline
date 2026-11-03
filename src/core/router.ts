@@ -1,3 +1,4 @@
+import { config } from '../config';
 import {
   Provider,
   CompletionRequest,
@@ -25,15 +26,36 @@ type UsageSnapshot = {
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
+  cached_tokens?: number;
+  cache_creation_input_tokens?: number;
 };
 
+function normalizeUsage(usage: unknown): UsageSnapshot | undefined {
+  if (!usage || typeof usage !== 'object') return undefined;
+  const normalized = usage as {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    cached_tokens?: number;
+    prompt_tokens_details?: { cached_tokens?: number };
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  };
+  const cached_tokens = normalized.cached_tokens ?? normalized.prompt_tokens_details?.cached_tokens ?? normalized.cache_read_input_tokens;
+  const cache_creation_input_tokens = normalized.cache_creation_input_tokens;
+  const hasUsage = normalized.prompt_tokens !== undefined || normalized.completion_tokens !== undefined || normalized.total_tokens !== undefined || cached_tokens !== undefined || cache_creation_input_tokens !== undefined;
+  if (!hasUsage) return undefined;
+  return {
+    prompt_tokens: normalized.prompt_tokens,
+    completion_tokens: normalized.completion_tokens,
+    total_tokens: normalized.total_tokens,
+    ...(cached_tokens === undefined ? {} : { cached_tokens }),
+    ...(cache_creation_input_tokens === undefined ? {} : { cache_creation_input_tokens }),
+  };
+}
+
 function usageFromStreamChunk(chunk: StreamChunk): UsageSnapshot | undefined {
-  if (!chunk.usage) return undefined;
-  const { prompt_tokens, completion_tokens, total_tokens } = chunk.usage;
-  if (prompt_tokens === undefined && completion_tokens === undefined && total_tokens === undefined) {
-    return undefined;
-  }
-  return { prompt_tokens, completion_tokens, total_tokens };
+  return normalizeUsage(chunk.usage);
 }
 
 function streamLogUsage(providerUsage: UsageSnapshot | undefined, chars: number): UsageSnapshot | { chars: number } {
@@ -268,10 +290,34 @@ export class Router {
    * Pick the model a provider should serve for an 'auto' request, or null
    * when the provider has no enabled models and must be skipped.
    */
-  private autoModelFor(provider: Provider): string | null {
+  private async autoModelFor(provider: Provider, request?: CompletionRequest): Promise<string | null> {
     const enabled = this.enabledModelsFor(provider);
+    if (enabled && enabled.length === 0) return null;
+
+    const parts = (request?.messages ?? []).flatMap(message =>
+      Array.isArray(message.content) ? message.content : [],
+    );
+    const needsVision = parts.some(part => part.type === 'image_url');
+    const needsAudio = parts.some(part => part.type === 'input_audio');
+
+    if (needsVision || needsAudio) {
+      // Gateways may advertise only chat/embeddings provider capabilities while
+      // publishing media-capable models from /models. Model metadata is authoritative.
+      const preferredMediaModel = config.autoVisionModel ?? 'gemini-2.5-flash-lite';
+      if (preferredMediaModel && (!enabled || enabled.includes(preferredMediaModel))
+          && await this.providerListsModel(provider, preferredMediaModel)) {
+        return preferredMediaModel;
+      }
+      const mediaModel = provider.defaultModelFor?.(
+        needsAudio ? 'audio' : 'vision',
+      );
+      if (mediaModel && (!enabled || enabled.includes(mediaModel))
+          && await this.providerListsModel(provider, mediaModel)) {
+        return mediaModel;
+      }
+    }
+
     if (!enabled) return provider.defaultModel;
-    if (enabled.length === 0) return null;
     return enabled.includes(provider.defaultModel) ? provider.defaultModel : enabled[0];
   }
 
@@ -440,9 +486,12 @@ export class Router {
   private async capabilityServers(capability: Capability, model: string): Promise<Provider[]> {
     const out: Provider[] = [];
     for (const provider of this.providers) {
-      if (!provider.capabilities?.includes(capability)) continue;
-      if (provider.servesModel?.(capability, model)
-        || (provider.servesListedModels?.(capability) && await this.providerListsModel(provider, model))) {
+      const providerCapability = provider.capabilities?.includes(capability) ?? false;
+      const listedModel = provider.servesListedModels?.(capability)
+        && await this.providerListsModel(provider, model);
+      const servesListedModel = providerCapability && listedModel;
+      const listedMediaModel = (capability === 'vision' || capability === 'audio') && listedModel;
+      if ((providerCapability && (provider.servesModel?.(capability, model) || servesListedModel)) || listedMediaModel) {
         out.push(provider);
       }
     }
@@ -605,8 +654,8 @@ export class Router {
         overBudget.push(provider.name);
         continue;
       }
-      const autoModel = request.model === 'auto' ? this.autoModelFor(provider) : null;
-      if (request.model === 'auto' && autoModel === null) {
+      const autoModel = (request.model === 'auto' || request.model === 'auto-vision') ? await this.autoModelFor(provider, routedRequest) : null;
+      if ((request.model === 'auto' || request.model === 'auto-vision') && autoModel === null) {
         console.log(`[Router] Skipping ${provider.name} — no models enabled for routing.`);
         continue;
       }
@@ -620,7 +669,7 @@ export class Router {
       console.log(`[Router] Attempting to route to ${provider.name}...`);
       let effectiveModel = request.model;
       try {
-        effectiveModel = request.model === 'auto' ? autoModel! : request.model;
+        effectiveModel = (request.model === 'auto' || request.model === 'auto-vision') ? autoModel! : request.model;
         const isAvailable = await provider.isAvailable();
         if (!isAvailable) {
             logger.log({
@@ -661,6 +710,19 @@ export class Router {
 
         await this.keyReady(provider);
         const response = await provider.complete({ ...routedRequest, model: effectiveModel });
+        const normalizedUsage = normalizeUsage(response.usage);
+        const normalizedResponse: CompletionResponse = normalizedUsage
+          ? {
+              ...response,
+              usage: {
+                prompt_tokens: normalizedUsage.prompt_tokens ?? response.usage?.prompt_tokens ?? 0,
+                completion_tokens: normalizedUsage.completion_tokens ?? response.usage?.completion_tokens ?? 0,
+                total_tokens: normalizedUsage.total_tokens ?? response.usage?.total_tokens ?? 0,
+                ...(normalizedUsage.cached_tokens === undefined ? {} : { cached_tokens: normalizedUsage.cached_tokens }),
+                ...(normalizedUsage.cache_creation_input_tokens === undefined ? {} : { cache_creation_input_tokens: normalizedUsage.cache_creation_input_tokens }),
+              },
+            }
+          : response;
         opts?.onServed?.(provider.name, effectiveModel);
         this.quotaManager.incrementUsage(provider.name);
         logger.log({
@@ -669,10 +731,10 @@ export class Router {
             model: effectiveModel,
             status: 'success',
             duration: Date.now() - start,
-            usage: response.usage,
+            usage: normalizedUsage,
         });
         console.log(`[Router] Successfully routed to ${provider.name}.`);
-        return response;
+        return normalizedResponse;
       } catch (error: any) {
         logger.log({ requestId, provider: provider.name, model: effectiveModel, status: 'error', error: error.message, duration: Date.now() - start });
         console.error(`[Router] Error with ${provider.name}:`, error.message);
@@ -768,8 +830,8 @@ export class Router {
         overBudget.push(provider.name);
         continue;
       }
-        const autoModel = request.model === 'auto' ? this.autoModelFor(provider) : null;
-        if (request.model === 'auto' && autoModel === null) {
+        const autoModel = (request.model === 'auto' || request.model === 'auto-vision') ? await this.autoModelFor(provider, routedRequest) : null;
+        if ((request.model === 'auto' || request.model === 'auto-vision') && autoModel === null) {
           console.log(`[Router] Skipping ${provider.name} — no models enabled for routing.`);
           continue;
         }
@@ -792,7 +854,7 @@ export class Router {
         let providerUsage: UsageSnapshot | undefined;
         let effectiveModel = request.model;
         try {
-            effectiveModel = request.model === 'auto' ? autoModel! : request.model;
+            effectiveModel = (request.model === 'auto' || request.model === 'auto-vision') ? autoModel! : request.model;
             const isAvailable = await provider.isAvailable();
             if (!isAvailable) {
                 logger.log({
@@ -823,7 +885,7 @@ export class Router {
               continue;
             }
 
-            if (!providerAcceptsContent(provider, routedRequest, effectiveModel)) {
+            if (!providerAcceptsContent(provider, { ...routedRequest, messages: currentMessages }, effectiveModel)) {
               cannotRead.push(provider.name);
               logger.log({ requestId, provider: provider.name, model: effectiveModel, status: 'error', error: `${provider.name} can't read images for ${effectiveModel}`, duration: Date.now() - start });
               console.warn(`[Router] Skipping ${provider.name} — can't read the request's images with ${effectiveModel}`);
@@ -1138,6 +1200,8 @@ export class Router {
  * alternatives. Providers not named here come after, in registration order.
  */
 export const CAPABILITY_PREFERENCE: Record<Exclude<Capability, 'chat'>, string[]> = {
+  vision: ['Gemini', 'OpenRouter', 'OpenAI', 'AzureOpenAI', 'WorkersAI'],
+  audio: ['Gemini', 'OpenAI', 'AzureOpenAI', 'WorkersAI', 'OpenRouter'],
   embeddings: ['OpenAI', 'AzureOpenAI', 'WorkersAI', 'Gemini', 'OpenRouter'],
   transcription: ['OpenAI', 'Deepgram', 'WorkersAI'],
   speech: ['OpenAI', 'WorkersAI'],

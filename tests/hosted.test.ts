@@ -42,7 +42,7 @@ function setup(over: Partial<HostedOptions> = {}) {
   const keys = new IssuedKeys(new MemoryDocStore());
   const hosted: HostedOptions = {
     keys, models: ['gemini-2.5-pro', 'gpt-5.5'], aliases: { 'claude-*': 'gemini-2.5-pro' },
-    login: null, adminEmails: [], adminToken: 'admin-secret-token', publicUrl: 'https://leyline.test', ...over,
+    login: null, adminEmails: [], adminToken: 'admin-secret-token', publicUrl: 'https://leyline.test', publicAliases: ['https://llm.theaiinc.com'], ...over,
   };
   const app = createServer(router, quotaManager, { hosted, enforceExternalSurface: false, apiKeyStore: new MemorySecretStore() });
   return { app, keys, upstream };
@@ -199,11 +199,13 @@ describe('hosted dashboard', () => {
     expect(Object.keys(cookies(set.map((c) => c.split(';')[0]).join('; ')))).toEqual(['leyline_session', 'leyline_refresh']);
   });
 
-  it('refuses changes from another site', async () => {
+  it('accepts the primary host and configured alias but refuses a foreign Origin', async () => {
     const { app } = withLogin();
     const cookie = cookieFor('owner@example.com');
-    expect((await request(app).post('/dashboard/routing').set('Cookie', cookie).set('Origin', 'https://evil.example').send({ mode: 'auto' })).status).toBe(403);
+    const alias = 'https://llm.theaiinc.com';
     expect((await request(app).post('/dashboard/routing').set('Cookie', cookie).set('Origin', 'https://leyline.test').send({ mode: 'auto' })).status).toBe(200);
+    expect((await request(app).post('/dashboard/routing').set('Cookie', cookie).set('Origin', alias).send({ mode: 'auto-vision' })).status).toBe(200);
+    expect((await request(app).post('/dashboard/routing').set('Cookie', cookie).set('Origin', 'https://evil.example').send({ mode: 'auto' })).status).toBe(403);
   });
 
   it('the playground works with the owner session and no key, and is not counted', async () => {
@@ -329,6 +331,20 @@ describe('spend by provider and model', () => {
     expect(spend.byModel['Fake/gemini-2.5-pro']).toMatchObject({ provider: 'Fake', model: 'gemini-2.5-pro', requests: 1 });
     expect(spend.byModel['Fake/gemini-2.5-pro'].usd).toBeCloseTo(1); // 100 prompt tokens at $10,000 per million
     expect(spend.byModel['Fake/gpt-5.5']).toMatchObject({ requests: 1, usd: 0 });
+  });
+});
+
+describe('empty offered model pool', () => {
+  it('lists provider models while excluding blocked and key-capped models', async () => {
+    const { app } = setup({ models: [], aliases: {}, blockedModels: ['claude-*'] });
+    const { key } = (await request(app).post('/admin/api/keys').set(ADMIN).send({
+      name: 'narrow',
+      caps: { models: ['gemini-*'] },
+    })).body;
+    const models = (await request(app).get('/v1/models').set({ Authorization: `Bearer ${key}` })).body.data.map((m: { id: string }) => m.id);
+    expect(models).toContain('gemini-2.5-pro');
+    expect(models).not.toContain('gpt-5.5');
+    expect(models.every((model: string) => !model.startsWith('claude-'))).toBe(true);
   });
 });
 

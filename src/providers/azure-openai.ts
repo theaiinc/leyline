@@ -191,7 +191,22 @@ export class AzureOpenAIProvider implements Provider {
       ), this.deploymentFor(request));
 
       for await (const chunk of stream) {
-        yield chunk as unknown as StreamChunk;
+        const normalized = chunk as unknown as StreamChunk & {
+          usage?: StreamChunk['usage'] & {
+            prompt_tokens_details?: { cached_tokens?: number };
+            cached_tokens?: number;
+          };
+        };
+        const cachedTokens = normalized.usage?.cached_tokens
+          ?? normalized.usage?.prompt_tokens_details?.cached_tokens;
+        if (normalized.usage && cachedTokens !== undefined) {
+          const { prompt_tokens_details: _promptTokensDetails, ...usage } = normalized.usage;
+          normalized.usage = {
+            ...usage,
+            cached_tokens: cachedTokens,
+          };
+        }
+        yield normalized;
       }
     } catch (error) {
       throw toProviderError(error);

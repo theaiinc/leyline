@@ -1,0 +1,4 @@
+Model version,mean_score,Best score (across scorers),Release date,Organization,Country,Training compute (FLOP),Training compute notes,stderr,Log viewer,Logs,Started at,id
+gpt-6.1-terra_max,0.943,0.951,2026-10-26,OpenAI,United States,,,,,,,
+gpt-6.1-terra_max,0.938,0.947,2026-10-26,OpenAI,United States,,,,,,,
+claude-opus-5.5,0.812,0.821,2026-10-25,Anthropic,United States,,,,,,,
