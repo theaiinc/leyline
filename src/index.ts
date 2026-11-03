@@ -226,9 +226,9 @@ export async function buildRouter(secretStore: SecretStore, opts: { workersAi?: 
     router.addProvider(new LiteLLMProvider());
   }
   router.addProvider(new AzureOpenAIProvider());
-  if (process.env.BYTEPLUS_ARK_API_KEY) {
-    router.addProvider(new BytePlusProvider());
-  }
+  // Register BytePlus even before its runtime key is configured: its verified
+  // ModelArk catalog powers the public offered-model and pricing surfaces.
+  router.addProvider(new BytePlusProvider());
   if (process.env.OLLAMA_ENABLED === 'true') {
     router.addProvider(new OllamaProvider());
   }

@@ -20,6 +20,7 @@ import { INSTANCE_FAMILIES } from './core/provider-instances';
 import {
   DEFAULT_FREE_TIER_EXPIRES_AFTER_DAYS,
   DEFAULT_FREE_TIER_TOKENS,
+  isPublicSaleModel,
   parsePublishedPricing,
   toPublicPricingModel,
 } from './core/pricing';
@@ -410,6 +411,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       try {
         const offered = await provider.getModels();
         return offered
+          .filter(model => typeof model.id === 'string' && isPublicSaleModel(model.id))
           .map(model => toPublicPricingModel(provider.name, model, config.freeTierModels))
           .filter((model): model is NonNullable<typeof model> => Boolean(model));
       } catch {
