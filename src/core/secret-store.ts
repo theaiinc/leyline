@@ -29,7 +29,7 @@ export interface SecretStore {
   onArcanaResolved?(listener: (account: string, secret: string) => void): () => void;
 }
 
-export const DEFAULT_KEYCHAIN_SERVICE = '@theaiinc/leyline';
+export const DEFAULT_KEYCHAIN_SERVICE = '@valefront/valefront';
 
 type SecurityCommandError = ExecFileException & {
   stderr?: string;

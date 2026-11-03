@@ -51,7 +51,7 @@ graph TB
 ## 📦 Installation
 
 ```bash
-npm install @theaiinc/leyline
+npm install @valefront/valefront
 ```
 
 ## 🚀 Quick Start
@@ -76,7 +76,7 @@ BYTEPLUS_ARK_DEFAULT_MODEL=doubao-seed-1-6-250615
 
 # Optional dashboard persistence for runtime API keys
 LEYLINE_KEYCHAIN_ENABLED=true
-LEYLINE_KEYCHAIN_SERVICE=@theaiinc/leyline
+LEYLINE_KEYCHAIN_SERVICE=@valefront/valefront
 
 # Optional Arcana Secret Bridge references (read before Keychain)
 # LEYLINE_ARCANA_OPENAI_REF=arcana://openai/api-key
@@ -116,7 +116,7 @@ npm run litellm:azure
 Run the router in another terminal:
 
 ```bash
-npx @theaiinc/leyline
+npx @valefront/valefront
 ```
 
 The API will be available at `http://localhost:3000`. On startup Leyline can start or connect to **Janus**, which supervises the configured external tunnel and publishes the registered public service URL — use that URL when cloud clients block private networks.
@@ -187,7 +187,7 @@ Arcana references are resolved through `arcana run` and are read-only from Leyli
 import {
   Router, ModelRegistry, Classifier,
   GeminiProvider, OpenAIProvider, AzureOpenAIProvider, LMStudioProvider, QuotaManager,
-} from '@theaiinc/leyline';
+} from '@valefront/valefront';
 
 // ── Tiered routing with classifier ────────────────────────
 
@@ -506,7 +506,7 @@ Dashboard key behavior:
 | `LEYLINE_JANUS_AUTOSTART` | `true` | Start Janus if its local API is unavailable |
 | `LEYLINE_TUNNEL_TIMEOUT_MS` | `45000` | Max wait for the public tunnel URL on startup |
 | `LEYLINE_KEYCHAIN_ENABLED` | `true` | Enable Apple Keychain persistence for dashboard-saved API keys on macOS |
-| `LEYLINE_KEYCHAIN_SERVICE` | `@theaiinc/leyline` | Apple Keychain service name used for saved provider API keys |
+| `LEYLINE_KEYCHAIN_SERVICE` | `@valefront/valefront` | Apple Keychain service name used for saved provider API keys |
 | `GEMINI_QUOTA_RPM` | `10` | Gemini requests per minute limit |
 | `GEMINI_QUOTA_RPD` | `1000` | Gemini requests per day limit |
 | `HF_QUOTA_RPM` | `100` | HuggingFace RPM limit |
@@ -604,7 +604,7 @@ import type {
   LeylineConfig, RouterModelConfig, QuotaConfig, SingleModelConfig,
   RouterOptions, SingleModelRouterConfig, ClassifyFn,
   Provider, CompletionRequest, CompletionResponse, StreamChunk,
-} from '@theaiinc/leyline';
+} from '@valefront/valefront';
 ```
 
 ## 🤝 Contributing

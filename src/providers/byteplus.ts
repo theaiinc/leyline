@@ -2,14 +2,13 @@ import { OpenAIProvider } from './openai';
 import { config } from '../config';
 
 /**
- * BytePlus ModelArk's OpenAI-compatible chat provider.
- * Model and pricing references: BytePlus ModelArk pricing and model documentation
- * (https://ai.byteplus.com/ark/region:ap-southeast-1/docs/model-pricing), checked 2026-10-21.
+ * BytePlus ModelArk's OpenAI-compatible provider for chat and embeddings.
+ * Reasoning-only responses are promoted to content when the upstream omits content.
  */
 export class BytePlusProvider extends OpenAIProvider {
   name = 'BytePlus';
   family = 'BytePlus';
-  capabilities: import('../core/types').Capability[] = ['chat'];
+  capabilities: import('../core/types').Capability[] = ['chat', 'embeddings'];
 
   constructor(
     apiKey: string = process.env.BYTEPLUS_ARK_API_KEY || '',
@@ -20,7 +19,31 @@ export class BytePlusProvider extends OpenAIProvider {
   }
 
   servesModel(capability: 'chat' | 'embeddings' | 'transcription' | 'speech', model: string): boolean {
+    if (capability === 'embeddings') return model === 'skylark-embedding-vision-251215';
     return capability === 'chat' && /^(doubao|seed|deepseek|kimi)-/i.test(model);
+  }
+
+  async complete(request: Parameters<OpenAIProvider['complete']>[0]) {
+    const response = await super.complete(request);
+    const choices = (response as {
+      choices?: Array<{
+        message?: {
+          content?: unknown;
+          reasoning_content?: unknown;
+          reasoning?: unknown;
+        };
+      }>;
+    }).choices;
+
+    for (const choice of choices ?? []) {
+      const message = choice.message;
+      if (!message || (typeof message.content === 'string' && message.content.trim() !== '')) continue;
+      const reasoning = message.reasoning_content ?? message.reasoning;
+      if (typeof reasoning === 'string' && reasoning.trim() !== '') {
+        message.content = reasoning;
+      }
+    }
+    return response;
   }
 
   defaultModelFor(capability: 'chat' | 'embeddings' | 'transcription' | 'speech'): string | undefined {
