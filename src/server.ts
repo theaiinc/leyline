@@ -401,8 +401,11 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     res.json({ status: 'ready', service: 'leyline' });
   });
 
-  app.get('/v1/pricing', async (_req, res) => {
+  const pricingCacheTtlMs = 5 * 60 * 1000;
+  let pricingCache: { value: unknown; expiresAt: number } | undefined;
+  let pricingInFlight: Promise<unknown> | undefined;
 
+  const computePricing = async () => {
     const models = (await Promise.all(router.getProviders().map(async provider => {
       try {
         const offered = await provider.getModels();
@@ -414,7 +417,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       }
     }))).flat();
 
-    const value = {
+    return {
       currency: 'USD',
       unit: 'per 1M tokens',
       free_tier: {
@@ -424,6 +427,28 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       },
       models,
     };
+  };
+
+  app.get('/v1/pricing', async (_req, res) => {
+    const now = Date.now();
+    const cached = pricingCache;
+    if (cached && cached.expiresAt > now) {
+      res.set('Cache-Control', 'public, max-age=300');
+      res.json(cached.value);
+      return;
+    }
+
+    if (!pricingInFlight) {
+      pricingInFlight = computePricing()
+        .then(result => {
+          pricingCache = { value: result, expiresAt: Date.now() + pricingCacheTtlMs };
+          return result;
+        })
+        .finally(() => {
+          pricingInFlight = undefined;
+        });
+    }
+    const value = await pricingInFlight;
     res.set('Cache-Control', 'public, max-age=300');
     res.json(value);
   });

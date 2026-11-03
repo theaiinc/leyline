@@ -139,14 +139,18 @@ describe('POST /v1/route', () => {
       'deepseek-v4-flash-ga-260731',
       'glm-5-3-flash-260828',
     ];
+    let getModelsCalls = 0;
     router.addProvider({
       name: 'BytePlus',
       defaultModel: verifiedModels[0],
-      getModels: async () => verifiedModels.map((id) => ({
+      getModels: async () => {
+        getModelsCalls += 1;
+        return verifiedModels.map((id) => ({
         id,
         name: id,
         pricing: { input: 0.2, output: 1.2 },
-      })),
+        }));
+      },
       isAvailable: async () => true,
       complete: async () => { throw new Error('not used'); },
       completeStream: async function* () { throw new Error('not used'); },
@@ -158,6 +162,9 @@ describe('POST /v1/route', () => {
     config.freeTierModels = verifiedModels;
     try {
       const app = createServer(router, quotaManager);
+      await app.locals.ready;
+      // Reindexing probes the provider once; count only pricing endpoint calls.
+      getModelsCalls = 0;
       const response = await request(app).get('/v1/pricing');
 
     expect(response.status).toBe(200);
@@ -174,6 +181,11 @@ describe('POST /v1/route', () => {
       expect(Number.isFinite(model.output)).toBe(true);
     }
       expect(response.body.models).toHaveLength(verifiedModels.length);
+
+      const secondResponse = await request(app).get('/v1/pricing');
+      expect(secondResponse.status).toBe(200);
+      expect(secondResponse.body).toEqual(response.body);
+      expect(getModelsCalls).toBe(1);
     } finally {
       config.freeTierModels = previousFreeTierModels;
     }

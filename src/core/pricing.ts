@@ -102,6 +102,6 @@ export function toPublicPricingModel(
     provider,
     ...prices,
     free_tier: freeModels.includes(id),
-    source: OFFICIAL_PRICING_PAGES[provider] ?? 'https://www.theaiinc.com/',
+    source: OFFICIAL_PRICING_PAGES[provider] ?? 'https://valefront.com/pricing',
   };
 }
