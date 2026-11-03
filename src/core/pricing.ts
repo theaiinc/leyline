@@ -36,3 +36,54 @@ export const BUILTIN_PRICES: Record<string, { input: number; output: number }> =
 export function builtinPrice(model: string): { input: number; output: number } | undefined {
   return BUILTIN_PRICES[model] ?? BUILTIN_PRICES[model.split('/').pop() ?? model];
 }
+
+export type PublicPricingModel = {
+  id: string;
+  name: string;
+  provider: string;
+  input: number;
+  output: number;
+  cached_input?: number;
+  free_tier: boolean;
+  source: string;
+};
+
+const OFFICIAL_PRICING_PAGES: Record<string, string> = {
+  Anthropic: 'https://www.anthropic.com/pricing',
+  AzureOpenAI: 'https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/',
+  BytePlus: 'https://www.byteplus.com/en/product/modelark/pricing',
+  Gemini: 'https://ai.google.dev/pricing',
+  HuggingFace: 'https://huggingface.co/pricing',
+  OpenAI: 'https://openai.com/api/pricing/',
+  OpenRouter: 'https://openrouter.ai/pricing',
+};
+
+function modelPricing(model: unknown): { input: number; output: number; cachedInput?: number } | undefined {
+  if (!model || typeof model !== 'object') return undefined;
+  const detail = model as { pricing?: unknown; input_price?: unknown; output_price?: unknown };
+  const parsed = parsePublishedPricing(detail.pricing);
+  if (parsed) return parsed;
+  const input = Number(detail.input_price);
+  const output = Number(detail.output_price);
+  return Number.isFinite(input) && Number.isFinite(output) && input >= 0 && output >= 0
+    ? { input, output }
+    : undefined;
+}
+
+export function toPublicPricingModel(
+  provider: string,
+  model: { id?: unknown; name?: unknown; pricing?: unknown; input_price?: unknown; output_price?: unknown },
+  freeModels: readonly string[] = [],
+): PublicPricingModel | undefined {
+  const id = typeof model.id === 'string' ? model.id : '';
+  const prices = modelPricing(model);
+  if (!id || !prices) return undefined;
+  return {
+    id,
+    name: typeof model.name === 'string' && model.name ? model.name : id,
+    provider,
+    ...prices,
+    free_tier: freeModels.includes(id),
+    source: OFFICIAL_PRICING_PAGES[provider] ?? 'https://github.com/theaiinc/leyline',
+  };
+}

@@ -17,6 +17,7 @@ import { normalizeCompletionRequest } from './core/normalize-request';
 import { createMcpHttpHandler } from './mcp/http';
 import type { TunnelInfo } from './core/cloudflared-tunnel';
 import { INSTANCE_FAMILIES } from './core/provider-instances';
+import { parsePublishedPricing } from './core/pricing';
 import { generateInstanceId } from './core/instance-naming';
 import {
   ApiKeyPersistenceMode,
@@ -393,6 +394,44 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   app.get('/readyz', async (_req, res) => {
     await apiKeyInitialization;
     res.json({ status: 'ready', service: 'leyline' });
+  });
+
+  let publicPricingCache: { expiresAt: number; value: unknown } | undefined;
+  app.get('/v1/pricing', async (_req, res) => {
+    if (publicPricingCache && publicPricingCache.expiresAt > Date.now()) {
+      res.set('Cache-Control', 'public, max-age=300');
+      res.json(publicPricingCache.value);
+      return;
+    }
+
+    const models = (await Promise.all(router.getProviders().map(async provider => {
+      try {
+        const offered = await provider.getModels();
+        return offered
+          .map(model => {
+            const pricing = (model as { pricing?: unknown }).pricing;
+            if (!pricing) return undefined;
+            const parsed = parsePublishedPricing(pricing);
+            if (!parsed) return undefined;
+            return {
+              id: model.id,
+              name: model.name || model.id,
+              provider: provider.name,
+              ...parsed,
+              free_tier: false,
+              source: 'https://github.com/theaiinc/leyline',
+            };
+          })
+          .filter((model): model is NonNullable<typeof model> => Boolean(model));
+      } catch {
+        return [];
+      }
+    }))).flat();
+
+    const value = { currency: 'USD', unit: 'per 1M tokens', free_tier: { tokens: 1000000, models: [] }, models };
+    publicPricingCache = { expiresAt: Date.now() + 5 * 60 * 1000, value };
+    res.set('Cache-Control', 'public, max-age=300');
+    res.json(value);
   });
 
   const mcpHandler = createMcpHttpHandler(router);
