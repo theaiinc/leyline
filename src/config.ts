@@ -152,6 +152,8 @@ function parseAliases(raw: string | undefined): Record<string, string> {
 export interface HostedConfig {
   enabled: boolean;
   publicUrl: string;
+  /** Additional approved public hosts for dashboard requests and sign-in callbacks. */
+  publicAliases: string[];
   keysBucket: string;
   keysDir: string;
   models: string[];
@@ -247,6 +249,7 @@ export const config: LeylineConfig = {
   hosted: {
     enabled: process.env.LEYLINE_HOSTED_KEYS === 'on',
     publicUrl: (process.env.LEYLINE_PUBLIC_URL || '').replace(/\/+$/, ''),
+    publicAliases: (process.env.LEYLINE_PUBLIC_ALIASES || '').split(',').map((url) => url.trim().replace(/\/+$/, '')).filter(Boolean),
     keysBucket: process.env.LEYLINE_KEYS_BUCKET || '',
     keysDir: process.env.LEYLINE_KEYS_DIR || '',
     models: (process.env.LEYLINE_OFFERED_MODELS || '').split(',').map((m) => m.trim()).filter(Boolean),

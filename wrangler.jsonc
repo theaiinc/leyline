@@ -13,7 +13,11 @@
   "placement": { "mode": "targeted", "region": "gcp:asia-southeast1" },
   // Not leyline.theaiinc.com (the Leyline Aegis tenant's issuer domain) or leyline-api.theaiinc.com (the Render
   // deployment, render.yaml).
-  "routes": [{ "pattern": "llm.theaiinc.com", "custom_domain": true }],
+  "routes": [
+    { "pattern": "llm.valefront.com", "custom_domain": true },
+    { "pattern": "llm.theaiinc.com", "custom_domain": true },
+    { "pattern": "dash.valefront.com", "custom_domain": true }
+  ],
   // The dashboard's files (vite build). The Worker runs first so it can keep the page behind sign-in.
   "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": true },
   "d1_databases": [
@@ -27,7 +31,8 @@
   "send_email": [{ "name": "EMAIL", "allowed_sender_addresses": ["alerts@notify.theaiinc.com"] }],
   "vars": {
     "LEYLINE_HOSTED_KEYS": "on",
-    "LEYLINE_PUBLIC_URL": "https://llm.theaiinc.com",
+    "LEYLINE_PUBLIC_URL": "https://llm.valefront.com",
+    "LEYLINE_PUBLIC_ALIASES": "https://llm.theaiinc.com,https://dash.valefront.com",
     "LEYLINE_KEYCHAIN_ENABLED": "false",
     "LEYLINE_TUNNEL_ENABLED": "false",
     "LEYLINE_LOGIN_ISSUER": "https://id.theaiinc.com",

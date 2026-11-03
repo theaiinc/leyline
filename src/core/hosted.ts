@@ -43,6 +43,10 @@ export type HostedOptions = {
   adminEmails: string[];
   adminToken?: string;
   publicUrl: string;
+  /** Additional approved public origins for dashboard requests and sign-in callbacks. */
+  publicAliases?: string[];
+  /** Builds the OAuth callback URI for the approved host used by this request. */
+  redirectUriForRequest?: (req: Request) => string;
   /** Models turned off for every key (ids or patterns with *). */
   blockedModels?: string[];
   /** The most all keys together may spend a month (US dollars); null: no limit. */
@@ -265,8 +269,19 @@ export function adminOf(opts: HostedOptions, req: Request): string | null {
 }
 
 export function sameOrigin(opts: HostedOptions, req: Request): boolean {
-  const o = req.headers.origin;
-  return !o || o === opts.publicUrl;
+  const origin = req.headers.origin;
+  if (!origin) return true;
+
+  const normalizeOrigin = (value: string): string => {
+    try {
+      return new URL(value).origin;
+    } catch {
+      return value.replace(/\/+$/, '');
+    }
+  };
+
+  const accepted = [opts.publicUrl, ...(opts.publicAliases ?? [])].map(normalizeOrigin);
+  return accepted.includes(normalizeOrigin(origin));
 }
 
 /** What a key looks like to the admin page (never the hash). */
@@ -461,7 +476,8 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
   if (login) {
     app.get('/auth/login', async (req, res) => {
       try {
-        const { url, cookie: c } = await login.start(typeof req.query.next === 'string' ? req.query.next : '/dashboard/', { switchAccount: req.query.switch === '1' });
+        const redirectUri = opts.redirectUriForRequest?.(req);
+        const { url, cookie: c } = await login.start(typeof req.query.next === 'string' ? req.query.next : '/dashboard/', { switchAccount: req.query.switch === '1', ...(redirectUri ? { redirectUri } : {}) });
         res.setHeader('Set-Cookie', c);
         res.redirect(302, url);
       } catch (err) {
