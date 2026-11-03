@@ -607,6 +607,23 @@ import type {
 } from '@theaiinc/leyline';
 ```
 
+## Valefront Billing
+
+Valefront billing administration is hosted only on `https://adm.valefront.com`, on a separate admin host from the public application. It is not mounted under the public app's `/dashboard` path.
+
+The billing admin surface must expose these paths on that host:
+
+- `GET /` — admin landing page
+- `GET /billing` — pending WorldFirst bank-transfer orders and order details
+- `POST /billing/orders/:orderId/mark-paid` — mark an order paid exactly once
+- `GET /settings` — WorldFirst USD receiving-account and legal settings
+- `PUT /settings/worldfirst-account` — configure the receiving account
+- `PUT /settings/legal` — configure company name, tax code, and address
+
+Cloudflare One must protect the `adm.valefront.com` host with a Cloudflare Access application on account `32351d590fd6134e6c2328cc976952f7`, allowing only The AI Inc administrators. The application's own admin authorization remains required in addition to Cloudflare Access; this project does not implement an Access bypass. Automation must use Cloudflare Access service-token client-id and client-secret headers retrieved from Arcana, never a bypass.
+
+Customer billing remains on the signed-in public account surface at `/dashboard/billing`. Customers can create pending bank-transfer orders, view their own order history, and view paid receipts. WorldFirst APIs are not called; the receiving-account details and unique order reference are shown for bank transfer.
+
 ## 🤝 Contributing
 
 We welcome contributions! Please feel free to submit a Pull Request.
