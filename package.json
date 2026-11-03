@@ -30,7 +30,7 @@
     "tauri:build": "tauri build"
   },
   "keywords": [],
-  "author": "Valefront",
+  "author": "The AI Inc",
   "license": "MIT",
   "description": "The ultimate cost-optimizing LLM load balancer & gateway.",
   "repository": {
