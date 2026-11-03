@@ -62,7 +62,7 @@ export function App() {
           <img src={`${import.meta.env.BASE_URL}icon.svg`} alt="" className="size-8" />
           <div className="leading-tight">
             <div className="font-semibold">Valefront</div>
-            <div className="text-xs text-muted-foreground">{hosted ? 'Cloud' : 'Local router'}</div>
+            <div className="text-xs text-muted-foreground">{hosted ? 'Valefront' : 'Local router'}</div>
           </div>
           <div className="ml-auto flex md:hidden">
             <Button variant="ghost" size="icon" onClick={toggleTheme} aria-label="Toggle theme">{dark ? <Sun /> : <Moon />}</Button>
