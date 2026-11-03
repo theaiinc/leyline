@@ -487,10 +487,9 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
     app.get('/auth/callback', async (req, res) => {
       try {
         const done = await login.finish(new URLSearchParams(req.url.split('?')[1] ?? ''), req.headers.cookie);
-        if (!opts.adminEmails.includes(done.session.email.toLowerCase())) {
-          res.setHeader('Set-Cookie', cookie('leyline_login', '', 0));
-          return res.status(403).type('html').send(refusedPage(done.session.email));
-        }
+        // Aegis sign-in is self-serve: every authenticated account may enter the
+        // dashboard. Admin-only operations remain protected by `guard`, which
+        // still checks adminEmails (or the configured admin token).
         res.setHeader('Set-Cookie', [...done.cookies, cookie('leyline_login', '', 0)]);
         res.redirect(302, done.next);
       } catch (err) {
