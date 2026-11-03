@@ -42,7 +42,7 @@ function setup(over: Partial<HostedOptions> = {}) {
   const keys = new IssuedKeys(new MemoryDocStore());
   const hosted: HostedOptions = {
     keys, models: ['gemini-2.5-pro', 'gpt-5.5'], aliases: { 'claude-*': 'gemini-2.5-pro' },
-    login: null, adminEmails: [], adminToken: 'admin-secret-token', publicUrl: 'https://leyline.test', ...over,
+    login: null, adminEmails: [], adminToken: 'admin-secret-token', publicUrl: 'https://leyline.test', publicAliases: ['https://leyline.theaiinc.com``'], ...over,
   };
   const app = createServer(router, quotaManager, { hosted, enforceExternalSurface: false, apiKeyStore: new MemorySecretStore() });
   return { app, keys, upstream };
@@ -199,12 +199,13 @@ describe('hosted dashboard', () => {
     expect(Object.keys(cookies(set.map((c) => c.split(';')[0]).join('; ')))).toEqual(['leyline_session', 'leyline_refresh']);
   });
 
-  it('refuses changes from another site', async () => {
+  it('accepts the primary host and configured alias but refuses a foreign Origin', async () => {
     const { app } = withLogin();
     const cookie = cookieFor('owner@example.com');
-    expect((await request(app).post('/dashboard/routing').set('Cookie', cookie).set('Origin', 'https://evil.example').send({ mode: 'auto' })).status).toBe(403);
+    const alias = 'https://leyline.theaiinc.com``';
     expect((await request(app).post('/dashboard/routing').set('Cookie', cookie).set('Origin', 'https://leyline.test').send({ mode: 'auto' })).status).toBe(200);
-    expect((await request(app).post('/dashboard/routing').set('Cookie', cookie).set('Origin', 'https://leyline.test').send({ mode: 'auto-vision' })).status).toBe(200);
+    expect((await request(app).post('/dashboard/routing').set('Cookie', cookie).set('Origin', alias).send({ mode: 'auto-vision' })).status).toBe(200);
+    expect((await request(app).post('/dashboard/routing').set('Cookie', cookie).set('Origin', 'https://evil.example').send({ mode: 'auto' })).status).toBe(403);
   });
 
   it('the playground works with the owner session and no key, and is not counted', async () => {
