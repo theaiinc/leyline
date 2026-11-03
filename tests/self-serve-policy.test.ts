@@ -15,7 +15,7 @@ describe('self-serve signup policy', () => {
   };
 
   it('creates an isolated workspace owned by the Aegis account', () => {
-    const workspace = createWorkspace(identity, 'workspace-a', 123);
+    const workspace = createWorkspace(identity, 'workspace-a', true, 123);
     expect(workspace).toMatchObject({
       id: 'workspace-a',
       ownerAegisAccountId: 'aegis-user-a',

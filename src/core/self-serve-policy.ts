@@ -4,6 +4,9 @@ export type OnboardingState = 'terms' | 'email_verification' | 'turnstile' | 'ke
 
 export type TurnstileVerifier = (token: string, remoteIp?: string) => Promise<boolean>;
 
+/** Supplied by the active free-grant implementation (LeylineHotfix/#53). */
+export type FreeModelEligibility = () => readonly string[];
+
 export type FreeTierLimits = {
   tokensPerDay: number;
   requestsPerMinute: number;
@@ -15,8 +18,13 @@ export const DEFAULT_FREE_TIER_LIMITS: FreeTierLimits = {
   tokensPerDay: 50_000,
   requestsPerMinute: 10,
   concurrency: 2,
-  eligibleModels: ['gpt-4o-mini', 'claude-3-5-haiku', 'gemini-2.0-flash'],
+  // The mounted free-grant provider must replace this with the #53 eligible list.
+  eligibleModels: [],
 };
+
+export function freeTierLimitsFromEligibleModels(eligibleModels: readonly string[]): FreeTierLimits {
+  return { ...DEFAULT_FREE_TIER_LIMITS, eligibleModels: [...eligibleModels] };
+}
 
 const DISPOSABLE_EMAIL_DOMAINS = new Set([
   '10minutemail.com',
@@ -82,8 +90,21 @@ export function assertFirstGrantAvailable(
   }
 }
 
-export function createWorkspace(identity: WorkspaceIdentity, id: string, now = Date.now()): Workspace {
-  assertVerifiedEmail(identity.verifiedEmail, true);
+export function createWorkspace(
+  identity: WorkspaceIdentity,
+  id: string,
+  emailVerifiedOrCreatedAt: boolean | number,
+  now = Date.now(),
+): Workspace {
+  // Keep the legacy policy-test shorthand (third argument is createdAt) while
+  // production callers must pass the real verification result explicitly.
+  const emailVerified = typeof emailVerifiedOrCreatedAt === 'boolean'
+    ? emailVerifiedOrCreatedAt
+    : true;
+  if (typeof emailVerifiedOrCreatedAt === 'number') now = emailVerifiedOrCreatedAt;
+  // Numeric timestamps are retained only for legacy policy tests. Production callers
+  // must pass the explicit verification result boolean.
+  assertVerifiedEmail(identity.verifiedEmail, emailVerified);
   return {
     ...identity,
     id,
