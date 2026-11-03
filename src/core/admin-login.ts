@@ -91,7 +91,7 @@ export function unseal(token: string | undefined, secret: string): string | null
 }
 
 type Discovery = { authorization_endpoint: string; token_endpoint: string; jwks_uri: string; issuer: string; userinfo_endpoint?: string };
-type PendingLogin = { state: string; verifier: string; nonce: string; next: string; exp: number };
+type PendingLogin = { state: string; verifier: string; nonce: string; next: string; redirectUri: string; exp: number };
 export type Session = AdminUser & { exp: number };
 
 export class AegisAuth {
@@ -119,19 +119,20 @@ export class AegisAuth {
   }
 
   /** Where to send the browser, and the cookie that remembers this attempt. switchAccount: ask Aegis to sign in again. */
-  async start(next: string, opts: { switchAccount?: boolean } = {}): Promise<{ url: string; cookie: string }> {
+  async start(next: string, opts: { switchAccount?: boolean; redirectUri?: string } = {}): Promise<{ url: string; cookie: string }> {
     const d = await this.discover();
     const pending: PendingLogin = {
       state: b64u(randomBytes(16)),
       verifier: b64u(randomBytes(32)),
       nonce: b64u(randomBytes(16)),
       next: next.startsWith('/') && !next.startsWith('//') ? next : '/',
+      redirectUri: opts.redirectUri ?? this.cfg.redirectUri,
       exp: Math.floor(Date.now() / 1000) + 600,
     };
     const url = new URL(d.authorization_endpoint);
     url.search = new URLSearchParams({
       client_id: this.cfg.clientId,
-      redirect_uri: this.cfg.redirectUri,
+      redirect_uri: pending.redirectUri,
       response_type: 'code',
       // offline_access: a refresh token, so the page stays signed in while it's used (see resume).
       scope: 'openid email profile offline_access',
@@ -161,7 +162,7 @@ export class AegisAuth {
       body: new URLSearchParams({
         grant_type: 'authorization_code',
         code,
-        redirect_uri: this.cfg.redirectUri,
+        redirect_uri: pending.redirectUri,
         code_verifier: pending.verifier,
         client_id: this.cfg.clientId,
         client_secret: this.cfg.clientSecret,

@@ -13,7 +13,7 @@ function idToken(claims: Record<string, unknown>): string {
 }
 
 /** A fake Aegis whose token endpoint answers with `token` (status, body), recording what it was sent. */
-function fakeAegis(token: { status: number; body?: unknown }) {
+function fakeAegis(token: { status: number; body?: unknown | ((sent: URLSearchParams) => unknown) }) {
   const sent: URLSearchParams[] = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -24,7 +24,8 @@ function fakeAegis(token: { status: number; body?: unknown }) {
     if (url === `${ISSUER}/jwks`) return json(200, { keys: [jwk] });
     if (url === `${ISSUER}/token`) {
       sent.push(new URLSearchParams(String(init?.body)));
-      return json(token.status, token.body ?? { error: 'invalid_grant' });
+      const body = typeof token.body === 'function' ? token.body(sent[sent.length - 1]) : token.body;
+      return json(token.status, body ?? { error: 'invalid_grant' });
     }
     return json(404, {});
   }) as typeof fetch;
@@ -35,6 +36,20 @@ function fakeAegis(token: { status: number; body?: unknown }) {
 const refreshCookie = (token: string) => `leyline_refresh=${encodeURIComponent(seal(token, SECRET))}`;
 
 describe('staying signed in', () => {
+  it('uses the request redirect URI for authorization and token exchange', async () => {
+    const token = { status: 200, body: {} as unknown };
+    const { auth, sent } = fakeAegis(token);
+    const redirectUri = 'https://dash.valefront.com/auth/callback';
+    const started = await auth.start('/dashboard/', { redirectUri });
+    expect(new URL(started.url).searchParams.get('redirect_uri')).toBe(redirectUri);
+    const pending = cookies(started.cookie)['leyline_login'];
+    const pendingClaims = JSON.parse(Buffer.from(pending.split('.')[0], 'base64url').toString()) as { nonce: string; state: string };
+    token.body = { id_token: idToken({ sub: 'u1', email: 'owner@example.com', nonce: pendingClaims.nonce }) };
+    const done = await auth.finish(new URLSearchParams(`code=code&state=${pendingClaims.state}`), started.cookie);
+    expect(done.session.email).toBe('owner@example.com');
+    expect(sent[0]?.get('redirect_uri')).toBe(redirectUri);
+  });
+
   it('asks Aegis for a refresh token, and keeps it when switching accounts', async () => {
     const { auth } = fakeAegis({ status: 200 });
     const plain = new URL((await auth.start('/dashboard/')).url);
