@@ -34,7 +34,7 @@ class TestSecretStore implements SecretStore {
   constructor(private readonly storeStatus: SecretStoreStatus = {
     mode: 'keychain',
     available: true,
-    service: '@theaiinc/leyline',
+    service: '@valefront/valefront',
   }) {}
 
   async get(account: string): Promise<string | undefined> {

@@ -89,14 +89,14 @@ describe('secret store', () => {
   it('reads keys from Apple Keychain through the security CLI', async () => {
     mockSecurity(() => ({ stdout: 'stored-key\n' }));
 
-    const store = new KeychainSecretStore('@theaiinc/leyline', true);
+    const store = new KeychainSecretStore('@valefront/valefront', true);
     await expect(store.get('api-key:OpenAI')).resolves.toBe('stored-key');
     expect(mockedExecFile).toHaveBeenCalledWith(
       'security',
       [
         'find-generic-password',
         '-s',
-        '@theaiinc/leyline',
+        '@valefront/valefront',
         '-a',
         'api-key:OpenAI',
         '-w',
@@ -111,7 +111,7 @@ describe('secret store', () => {
       stderr: 'security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.',
     }));
 
-    const store = new KeychainSecretStore('@theaiinc/leyline', true);
+    const store = new KeychainSecretStore('@valefront/valefront', true);
 
     await expect(store.get('api-key:OpenAI')).resolves.toBeUndefined();
     expect(store.status()).toMatchObject({
@@ -126,7 +126,7 @@ describe('secret store', () => {
       error: securityError('spawn security ENOENT', 'ENOENT'),
     }));
 
-    const store = new FallbackSecretStore(new KeychainSecretStore('@theaiinc/leyline', true));
+    const store = new FallbackSecretStore(new KeychainSecretStore('@valefront/valefront', true));
 
     await expect(store.get('api-key:OpenAI')).resolves.toBeUndefined();
     expect(store.status()).toMatchObject({
@@ -148,7 +148,7 @@ describe('secret store', () => {
       return { stdout: '' };
     });
 
-    const store = new FallbackSecretStore(new KeychainSecretStore('@theaiinc/leyline', true));
+    const store = new FallbackSecretStore(new KeychainSecretStore('@valefront/valefront', true));
     await store.set('api-key:OpenAI', 'sk-secret');
 
     expect(store.status()).toMatchObject({
@@ -163,7 +163,7 @@ describe('secret store', () => {
   it('saves keys by replacing the Keychain item without returning the secret', async () => {
     mockSecurity(() => ({ stdout: '' }));
 
-    const store = new KeychainSecretStore('@theaiinc/leyline', true);
+    const store = new KeychainSecretStore('@valefront/valefront', true);
     await store.set('api-key:OpenAI', 'sk-secret');
 
     expect(mockedExecFile).toHaveBeenCalledWith(
@@ -186,7 +186,7 @@ describe('secret store', () => {
       return { stdout: '' };
     });
 
-    const store = new FallbackSecretStore(new KeychainSecretStore('@theaiinc/leyline', true));
+    const store = new FallbackSecretStore(new KeychainSecretStore('@valefront/valefront', true));
     await store.set('api-key:OpenAI', 'memory-secret');
 
     expect(store.status().mode).toBe('memory');

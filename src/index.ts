@@ -1,6 +1,6 @@
 // ── Public API exports ──────────────────────────────────────────────
-// Consumers import models and types from @theaiinc/leyline:
-//   import { Router, ModelRegistry, Classifier, LMStudioProvider } from '@theaiinc/leyline';
+// Consumers import models and types from @valefront/valefront:
+//   import { Router, ModelRegistry, Classifier, LMStudioProvider } from '@valefront/valefront';
 export { Router, selectModelByRouter, UnsupportedContentError } from './core/router';
 export type { RouterOptions, SingleModelRouterConfig } from './core/router';
 export { ModelRegistry } from './core/model-registry';

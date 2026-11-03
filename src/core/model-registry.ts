@@ -5,10 +5,10 @@ import { ModelVariant, BillingClass, ResourceClass } from './types';
  *
  * Callers provide their own variant list at construction time so model
  * definitions live in the *consumer's* config, not
- * inside leyline itself.
+ * inside valefront itself.
  *
- * Leyline provides a small set of sensible defaults for the built-in
- * cloud providers so the standalone `npx @theaiinc/leyline` server
+ * Valefront provides a small set of sensible defaults for the built-in
+ * cloud providers so the standalone `npx @valefront/valefront` server
  * works out of the box.  Custom variants *replace* the defaults when
  * provided by the consumer (no automatic merge — the consumer owns the
  * full set).
