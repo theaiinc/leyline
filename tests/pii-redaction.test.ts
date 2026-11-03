@@ -114,9 +114,9 @@ describe('request-scoped PII redaction', () => {
     await redactor.redact('Email ada@example.com or +1 212-555-0199');
 
     expect(redactor.rehydrateStream('VF_EM', 'choice:0:content')).toBe('');
-    expect(redactor.rehydrateStream('VF_PH', 'choice:0:tool:0')).toBe('VF_PH');
+    expect(redactor.rehydrateStream('VF_PH', 'choice:0:tool:0')).toBe('');
     expect(redactor.finishStream('choice:0:content')).toBe('VF_EM');
-    expect(redactor.finishStream('choice:0:tool:0')).toBe('');
+    expect(redactor.finishStream('choice:0:tool:0')).toBe('VF_PH');
   });
 
   it('flushes a partial content tail before stream completion', async () => {
