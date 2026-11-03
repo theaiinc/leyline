@@ -58,9 +58,7 @@ import { PresidioDetector } from '@theaiinc/veil-presidio';
     private readonly allowlist: RegExp[];
     private readonly opts: PiiRedactionOptions;
     private readonly mappings = new Map<string, string>();
-    private readonly requestTokens = new Map<string, string>();
     private readonly counts: Record<string, number> = {};
-    private nextToken = 1;
     private readonly mode: PiiRedactionMode;
     private readonly startedAt = Date.now();
     private readonly fallback: boolean;
@@ -99,35 +97,24 @@ import { PresidioDetector } from '@theaiinc/veil-presidio';
       if (this.mode === 'off' || !input) return input;
       const protectedValue = protectAllowlisted(input, this.allowlist);
       const result = await this.veil.process({ content: protectedValue.value });
-      let transformed = result.transformedContent;
       for (const mapping of result.mappings) {
-        const veilToken = String(mapping.token);
-        const original = String(mapping.originalValue);
-        const rawType = veilToken.match(TOKEN_PATTERN)?.[1]
+        const token = String(mapping.token);
+        this.mappings.set(token, mapping.originalValue);
+        const rawType = token.match(TOKEN_PATTERN)?.[1]
           ?? String((mapping as { entityType?: unknown; type?: unknown }).entityType ?? (mapping as { type?: unknown }).type ?? 'unknown');
         const normalizedType = rawType.toLowerCase().replace(/[_-]+/g, '');
-        const isUrl = /^(?:https?:\/\/|ftp:\/\/|www\.)/i.test(original) || /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?:[/:?#]|$)/i.test(original);
-        if (isUrl) {
-          transformed = transformed.split(veilToken).join(original);
-          continue;
-        }
-        let token = this.requestTokens.get(original);
-        if (!token) {
-          const type = normalizedType === 'email' || normalizedType === 'emailaddress' ? 'email'
-            : normalizedType === 'phone' || normalizedType === 'phonenumber' ? 'phone'
-            : normalizedType === 'name' || normalizedType === 'person' || normalizedType === 'personname' ? 'name'
-            : normalizedType === 'address' || normalizedType === 'location' ? 'address'
-            : /@[^\s@]+\.[^\s@]+/.test(original) ? 'email'
-            : /(?:\+?\d[\d\s().-]{6,}\d)/.test(original) ? 'phone'
-            : rawType.toLowerCase();
-          token = `<${type}:${this.nextToken++}>`;
-          this.requestTokens.set(original, token);
-          this.mappings.set(token, original);
-          this.counts[type] = (this.counts[type] ?? 0) + 1;
-        }
-        transformed = transformed.split(veilToken).join(token);
+        const original = String(mapping.originalValue);
+        const inferredType = /@[^\s@]+\.[^\s@]+/.test(original) ? 'email'
+          : /(?:\+?\d[\d\s().-]{6,}\d)/.test(original) ? 'phone'
+          : rawType.toLowerCase();
+        const type = normalizedType === 'email' || normalizedType === 'emailaddress' ? 'email'
+          : normalizedType === 'phone' || normalizedType === 'phonenumber' ? 'phone'
+          : normalizedType === 'name' || normalizedType === 'person' || normalizedType === 'personname' ? 'name'
+          : normalizedType === 'address' || normalizedType === 'location' ? 'address'
+          : inferredType;
+        this.counts[type] = (this.counts[type] ?? 0) + 1;
       }
-      return protectedValue.restore(transformed);
+      return protectedValue.restore(result.transformedContent);
     }
 
     async redact<T>(value: T): Promise<T> {
@@ -146,8 +133,7 @@ import { PresidioDetector } from '@theaiinc/veil-presidio';
         }
         return block;
       };
-      const messages = [];
-      for (const message of request.messages) {
+      const messages = await Promise.all(request.messages.map(async (message) => {
         if (!message || typeof message !== 'object') return message;
         const copy = { ...(message as Record<string, unknown>) };
         // Only message content is PII-bearing input. Do not walk or clone tools,
@@ -156,8 +142,8 @@ import { PresidioDetector } from '@theaiinc/veil-presidio';
         else if (Array.isArray(copy.content)) copy.content = await Promise.all(copy.content.map(redactBlock));
         // Anthropic tool results can be represented as a top-level message content
         // block; redactBlock handles only text-bearing blocks and preserves all else.
-        messages.push(copy);
-      }
+        return copy;
+      }));
       return { ...request, messages } as T;
     }
 
