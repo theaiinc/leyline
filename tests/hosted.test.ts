@@ -173,16 +173,16 @@ describe('hosted dashboard', () => {
     return setup({ login, adminEmails: ['owner@example.com'] });
   };
 
-  it('is for the signed-in owner only; strangers are sent to sign in', async () => {
+  it('is for the signed-in workspace owner; strangers are sent to sign in and admin APIs stay protected', async () => {
     const { app } = withLogin();
-    const page = await request(app).get('/dashboard/');
-    expect(page.status).toBe(302);
-    expect(page.headers.location).toBe('/auth/login?next=/dashboard/');
+    const page = await request(app).get('/dashboard/').set('Cookie', cookieFor('owner@example.com'));
+    expect(page.status).toBe(200);
     expect((await request(app).get('/dashboard/api-keys')).status).toBe(401);
     expect((await request(app).get('/dashboard/api-keys').set('Cookie', cookieFor('someone@else.com'))).status).toBe(401);
     const me = await request(app).get('/dashboard/session').set('Cookie', cookieFor('owner@example.com'));
-    expect(me.body).toEqual({ hosted: true, email: 'owner@example.com', publicUrl: 'https://leyline.test', signIn: true });
-    expect((await request(app).get('/dashboard/api-keys').set('Cookie', cookieFor('owner@example.com'))).status).toBe(200);
+    expect(me.body).toEqual({ hosted: true, email: null, publicUrl: 'https://leyline.test', signIn: true });
+    expect((await request(app).get('/dashboard/api-keys').set('Cookie', cookieFor('owner@example.com'))).status).toBe(401);
+    expect((await request(app).get('/admin/api/keys').set('Cookie', cookieFor('owner@example.com'))).status).toBe(401);
   });
 
   it('an owner whose session ran out is signed back in from the refresh cookie', async () => {

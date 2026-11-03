@@ -1,4 +1,6 @@
-# Get started with Valefront
+# Get started
+
+> This page documents the self-serve foundation currently implemented in this branch. Workspace persistence, key issuance, email verification, Turnstile verification, billing, and production free-grant fulfillment are not yet enabled here; do not use this branch as a production signup flow. with Valefront
 
 ## Sign in and create your workspace
 

@@ -131,6 +131,18 @@ function requireLocalDashboardAccess(req: Request, res: Response, next: NextFunc
   });
 }
 
+function requireHostedDashboard(hosted: HostedOptions) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    // The dashboard shell is self-serve. Admin authorization is enforced separately
+    // by `guard` on every /admin API route; do not make the shell admin-only.
+    if (req.method !== 'GET' && req.method !== 'HEAD' && !sameOrigin(hosted, req)) {
+      res.status(403).json({ error: 'forbidden' });
+      return;
+    }
+    next();
+  };
+}
+
 function requireHostedAdmin(hosted: HostedOptions) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const who = adminOf(hosted, req);
@@ -247,7 +259,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   });
 
   // Local: the dashboard is for this machine only. Hosted: it's for the owner, signed in with Aegis (or the admin token).
-  app.use('/dashboard', hosted ? requireHostedAdmin(hosted) : requireLocalDashboardAccess);
+  app.use('/dashboard', hosted ? requireHostedDashboard(hosted) : requireLocalDashboardAccess);
   app.get('/dashboard/session', (req, res) => {
     res.json(hosted
       ? { hosted: true, email: adminOf(hosted, req), publicUrl: hosted.publicUrl, signIn: Boolean(hosted.login) }
