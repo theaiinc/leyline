@@ -270,7 +270,18 @@ export function adminOf(opts: HostedOptions, req: Request): string | null {
 
 export function sameOrigin(opts: HostedOptions, req: Request): boolean {
   const origin = req.headers.origin;
-  return !origin || [opts.publicUrl, ...(opts.publicAliases ?? [])].includes(origin);
+  if (!origin) return true;
+
+  const normalizeOrigin = (value: string): string => {
+    try {
+      return new URL(value).origin;
+    } catch {
+      return value.replace(/\/+$/, '');
+    }
+  };
+
+  const accepted = [opts.publicUrl, ...(opts.publicAliases ?? [])].map(normalizeOrigin);
+  return accepted.includes(normalizeOrigin(origin));
 }
 
 /** What a key looks like to the admin page (never the hash). */
