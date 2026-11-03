@@ -58,6 +58,52 @@ export type ProviderCredit = {
   expiresAt: string;
 };
 
+export type FreeGrant = {
+  remainingTokens: number;
+  expiresAt: string;
+};
+
+export type FreeTierCandidate = {
+  id: string;
+  provider: string;
+  input: number;
+  output: number;
+  healthy?: boolean;
+};
+
+/** A grant is usable only while it has balance and has not reached its expiry instant. */
+export function canUseFreeGrant(grant: FreeGrant, now = Date.now()): boolean {
+  const expiry = Date.parse(grant.expiresAt);
+  return grant.remainingTokens > 0 && Number.isFinite(expiry) && now < expiry;
+}
+
+/**
+ * Select a free-tier model after capability filtering. A pinned model outside the eligible
+ * set returns undefined so the caller can bill it normally instead of silently switching models.
+ */
+export function selectFreeTierCandidate(
+  candidates: readonly FreeTierCandidate[],
+  eligibleModelIds: readonly string[],
+  options: {
+    pinnedModel?: string;
+    credits?: readonly ProviderCredit[];
+    volumeDiscountProviders?: readonly string[];
+    providerBudgetsUsd?: Record<string, number>;
+    providerSpendUsd?: Record<string, number>;
+    now?: number;
+  } = {},
+): FreeTierCandidate | undefined {
+  if (options.pinnedModel && !eligibleModelIds.includes(options.pinnedModel)) return undefined;
+  const eligible = candidates.filter((candidate) =>
+    eligibleModelIds.includes(candidate.id)
+    && candidate.healthy !== false
+    && (options.pinnedModel === undefined || candidate.id === options.pinnedModel)
+    && (options.providerBudgetsUsd?.[candidate.provider] === undefined
+      || (options.providerSpendUsd?.[candidate.provider] ?? 0) < options.providerBudgetsUsd[candidate.provider]),
+  );
+  return rankFreeTierProviders(eligible, options.credits, options.volumeDiscountProviders, options.now)[0];
+}
+
 /** Deterministic provider ordering for a free request. Credits expiring soon win, then discounts, then price. */
 export function rankFreeTierProviders<T extends { provider: string; input: number; output: number }>(
   models: readonly T[],
