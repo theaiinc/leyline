@@ -2,6 +2,30 @@
 // Consumers import models and types from @valefront/valefront:
 //   import { Router, ModelRegistry, Classifier, LMStudioProvider } from '@valefront/valefront';
 export { Router, selectModelByRouter, UnsupportedContentError } from './core/router';
+export {
+  defaultAdmissionPolicy,
+  defaultKeyPolicy,
+  defaultUsageRecorder,
+  defaultWorkspaceResolver,
+  assertRouteMountsDoNotConflict,
+  withDefaultExtensionHooks,
+} from './core/extension-hooks';
+export type {
+  AdmissionContext,
+  AdmissionDecision,
+  AdmissionPolicy,
+  ExtensionHooks,
+  KeyContext,
+  KeyDecision,
+  KeyPolicy,
+  RouteMethod,
+  RouteMount,
+  RouteMountTarget,
+  UsageEvent,
+  UsageRecorder,
+  WorkspaceContext,
+  WorkspaceResolver,
+} from './core/extension-hooks';
 export type { RouterOptions, SingleModelRouterConfig } from './core/router';
 export { ModelRegistry } from './core/model-registry';
 export { Classifier } from './core/classifier';
