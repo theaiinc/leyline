@@ -43,6 +43,12 @@ export function requestHasNonTextContent(messages: ReadonlyArray<{ content?: unk
   return Array.isArray(messages) && messages.some(m => hasNonTextParts(m?.content));
 }
 
+/** Whether any message carries image content. */
+export function hasImageContent(messages: ReadonlyArray<{ content?: unknown }> | undefined): boolean {
+  return Array.isArray(messages) && messages.some(m => Array.isArray(m?.content)
+    && m.content.some((part: unknown) => isPart(part) && part.type === 'image_url'));
+}
+
 /** How many image parts the messages carry. */
 export function countImageParts(messages: ReadonlyArray<{ content?: unknown }> | undefined): number {
   if (!Array.isArray(messages)) return 0;

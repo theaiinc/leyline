@@ -32,6 +32,7 @@
   "vars": {
     "LEYLINE_HOSTED_KEYS": "on",
     "LEYLINE_PUBLIC_URL": "https://llm.valefront.com",
+    "LEYLINE_PUBLIC_ALIASES": "https://llm.theaiinc.com",
     "LEYLINE_KEYCHAIN_ENABLED": "false",
     "LEYLINE_TUNNEL_ENABLED": "false",
     "LEYLINE_LOGIN_ISSUER": "https://id.theaiinc.com",

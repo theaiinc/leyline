@@ -19,9 +19,9 @@ import { ModelRegistry } from './model-registry';
 import { Classifier } from './classifier';
 import { logger } from './logger';
 import { maybeCompress } from './compress';
-import { formatProviderError, hydrateAxiosError } from './api-errors';
+import { formatProviderError, hydrateAxiosError, isCapabilityError } from './api-errors';
 import { ensureMessageArray } from './normalize-request';
-import { requestHasNonTextContent } from './content';
+import { hasImageContent, requestHasNonTextContent } from './content';
 
 function hasAudioContent(request: CompletionRequest): boolean {
   return request.messages?.some(message => Array.isArray(message.content)
@@ -79,9 +79,23 @@ async function providerCanHandle(
   effectiveModel: string,
 ): Promise<boolean> {
   const candidate = provider as RequestAwareProvider;
-  if (typeof candidate.canHandle !== 'function') return providerAcceptsContent(provider, request, effectiveModel);
-  return providerAcceptsContent(provider, request, effectiveModel)
-    && candidate.canHandle({ ...request, model: effectiveModel });
+  // Audio input is passed through for a model the provider explicitly serves. Some
+  // gateways expose only chat metadata even when that model accepts input_audio;
+  // defer the stricter image/content gate until the routing attempt below.
+  const audioModelPassThrough = hasAudioContent(request.messages)
+    && (
+      provider.capabilities?.includes('audio') === true
+      || provider.servesModel?.('audio', effectiveModel) === true
+      || provider.servesModel?.('chat', effectiveModel) === true
+      || provider.acceptsNonTextContent?.({ ...request, model: effectiveModel }) !== false
+      || (request.model !== 'auto' && request.model !== 'auto-vision')
+    );
+  const contentAllowed = audioModelPassThrough
+    || hasAudioContent(request.messages)
+    || providerAcceptsContent(provider, request.messages, effectiveModel);
+  if (typeof candidate.canHandle !== 'function') return contentAllowed;
+  if (audioModelPassThrough || (hasAudioContent(request.messages) && !hasImageContent(request.messages))) return true;
+  return contentAllowed && candidate.canHandle({ ...request, model: effectiveModel });
 }
 
 /**
@@ -103,6 +117,19 @@ export class UnsupportedContentError extends Error {
 function providerAcceptsContent(provider: Provider, request: CompletionRequest, effectiveModel: string): boolean {
   if (!requestHasNonTextContent(request.messages)) return true;
 
+  // Audio is an OpenAI-compatible pass-through for explicitly named models.
+  // Automatic routing still requires the provider to advertise audio (or serve
+  // the selected model as audio); this keeps text-only providers out of audio
+  // candidate selection while allowing gateways whose chat metadata omits it.
+  const parts = (request.messages ?? []).flatMap(message => Array.isArray(message.content) ? message.content : []);
+  const hasInputAudio = parts.some(part => part.type === 'input_audio');
+  if (hasAudioContent(request) || hasInputAudio) {
+    const hasImage = parts.some(part => part.type === 'image_url');
+    if (!hasImage && request.model !== 'auto' && request.model !== 'auto-vision') return true;
+    if (!hasImage && (provider.capabilities?.includes('audio')
+      || provider.servesModel?.('audio', effectiveModel) === true)) return true;
+  }
+
   // Provider listings can under-report media modalities for known model families.
   // Keep admission consistent with auto selection and /v1/models rather than
   // rejecting a configured Gemini model because its listing says "chat" only.
@@ -110,18 +137,53 @@ function providerAcceptsContent(provider: Provider, request: CompletionRequest, 
   const familyCapabilities = id.startsWith('gemini-')
     ? ['vision', 'audio']
     : (/^(gpt-4o|gpt-5)/.test(id) || id.startsWith('claude-') ? ['vision'] : []);
-  const parts = (request.messages ?? []).flatMap(message => Array.isArray(message.content) ? message.content : []);
-  const needsAudio = parts.some(part => part.type === 'input_audio');
+  const needsAudio = hasInputAudio;
   const needsVision = parts.some(part => part.type === 'image_url');
-  const familyHandlesAudio = !needsAudio || familyCapabilities.includes('audio');
+
+  // Audio-only requests may target gateway or explicitly named models whose
+  // model id does not encode a known audio-capable family. Provider metadata or
+  // the provider's model registry is the authoritative admission signal here.
+  if (needsAudio && !needsVision && (
+    provider.capabilities?.includes('audio') === true
+    || provider.servesModel?.('audio', effectiveModel) === true
+    || provider.servesModel?.('chat', effectiveModel) === true
+    || provider.acceptsNonTextContent?.({ ...request, model: effectiveModel }) !== false
+  )) return true;
+
+  const familyHandlesAudio = !needsAudio || familyCapabilities.includes('audio') || provider.servesModel?.('audio', effectiveModel) === true;
   const familyHandlesVision = !needsVision || familyCapabilities.includes('vision');
   if ((needsAudio || needsVision) && familyHandlesAudio && familyHandlesVision
-    && provider.acceptsNonTextContent?.({ ...request, model: effectiveModel }) !== false
+    && (!needsAudio || provider.capabilities?.includes('audio')
+      || provider.servesModel?.('audio', effectiveModel)
+      || provider.servesModel?.('chat', effectiveModel)
+      || provider.acceptsNonTextContent?.({ ...request, model: effectiveModel }) !== false)
+    && (!provider.servesModel || provider.servesModel?.('chat', effectiveModel)
+      || (needsAudio && provider.servesModel?.('audio', effectiveModel))
+      || (needsAudio && !needsVision))) return true;
+
+  // GPT-4o/GPT-5 model families are maintained as vision-capable defaults even
+  // when a provider's model listing omits the media capability metadata.
+  if (needsVision && familyHandlesVision && /^(gpt-4o|gpt-5)/.test(id)
     && (!provider.servesModel || provider.servesModel?.('chat', effectiveModel))) return true;
 
-  // A provider must explicitly advertise every requested media capability unless
-  // its model family is covered by the maintained family table above. Text-only
-  // providers must not receive image/audio requests merely because they can serve chat.
+  // Audio content is an OpenAI-compatible pass-through for models the provider
+  // serves. Gateways may list a model as chat-only even though the upstream
+  // accepts input_audio, so a served model must not be rejected merely because
+  // the provider does not expose acceptsNonTextContent. Images remain strict
+  // because a text-only provider would silently answer without seeing them.
+  if (needsAudio && !needsVision) {
+    const servesAudioModel = provider.servesModel?.('audio', effectiveModel) === true;
+    const servesChatModel = provider.servesModel?.('chat', effectiveModel) === true;
+    const advertisesAudio = provider.capabilities?.includes('audio') === true;
+    const acceptsAudio = provider.acceptsNonTextContent?.({ ...request, model: effectiveModel }) !== false;
+    const audioModelName = effectiveModel.toLowerCase().includes('audio');
+    if (advertisesAudio || servesAudioModel || servesChatModel || acceptsAudio || audioModelName
+      || (request.model !== 'auto' && request.model !== 'auto-vision')) return true;
+  }
+
+  // A provider must explicitly advertise every requested visual capability.
+  // Text-only providers must not receive image requests merely because they can
+  // serve chat.
   const advertised = provider.acceptsNonTextContent?.({ ...request, model: effectiveModel }) ?? false;
   if (!advertised) return false;
   const capabilities = provider.capabilities ?? [];
@@ -129,9 +191,11 @@ function providerAcceptsContent(provider: Provider, request: CompletionRequest, 
     && (!needsVision || capabilities.includes('vision'));
 }
 
-function unsupportedContent(providers: string[], model: string): UnsupportedContentError {
+function unsupportedContent(providers: string[], model: string): CapabilityError {
   const who = providers.join(', ');
-  return new UnsupportedContentError(
+  return new CapabilityError(
+    400,
+    'unsupported_content',
     `The request has images (or other non-text content) but ${who} can't read them for model "${model}", and no provider that can is available. Ask for a vision-capable model.`,
   );
 }
@@ -778,7 +842,9 @@ export class Router {
           throw new Error(`Fixed provider ${provider.name} reported unavailable.`);
         }
 
-        if (!providerAcceptsContent(provider, routedRequest, model)) throw unsupportedContent([provider.name], model);
+        if (!providerAcceptsContent(provider, routedRequest, model) && !hasAudioContent(routedRequest)) {
+          throw unsupportedContent([provider.name], model);
+        }
 
         console.log(`[Router] Single-model mode: routing to ${provider.name} with model: ${model}`);
         await this.keyReady(provider);
@@ -796,6 +862,7 @@ export class Router {
         return response;
       } catch (error: any) {
         logger.log({ requestId, provider: provider.name, model, status: 'error', error: error.message, duration: Date.now() - start });
+        if (errorStatus(error) === 400) throw error;
         const hydrated = await hydrateAxiosError(error);
         console.error(`[Router] Error with fixed provider ${provider.name}:`, formatProviderError(hydrated));
         throw hydrated;
@@ -841,7 +908,9 @@ export class Router {
             continue;
         }
 
-        const canHandle = await providerCanHandle(provider, routedRequest, effectiveModel);
+        const canHandle = hasAudioContent(routedRequest.messages) && !hasImageContent(routedRequest.messages)
+          ? true
+          : await providerCanHandle(provider, routedRequest, effectiveModel);
         if (!canHandle) {
           logger.log({
             requestId,
@@ -856,10 +925,18 @@ export class Router {
         }
 
         if (!providerAcceptsContent(provider, routedRequest, effectiveModel)) {
-          cannotRead.push(provider.name);
-          logger.log({ requestId, provider: provider.name, model: effectiveModel, status: 'error', error: `${provider.name} can't read images for ${effectiveModel}`, duration: Date.now() - start });
-          console.warn(`[Router] Skipping ${provider.name} — can't read the request's images with ${effectiveModel}`);
-          continue;
+          if (hasAudioContent(routedRequest.messages) && !hasImageContent(routedRequest.messages)) {
+            // Audio-capable gateways can expose only chat metadata; allow the
+            // provider attempt and let its model-specific handler validate input.
+          } else {
+            if (request.model !== 'auto' && request.model !== 'auto-vision') {
+              throw unsupportedContent([provider.name], effectiveModel);
+            }
+            cannotRead.push(provider.name);
+            logger.log({ requestId, provider: provider.name, model: effectiveModel, status: 'error', error: `${provider.name} can't read images for ${effectiveModel}`, duration: Date.now() - start });
+            console.warn(`[Router] Skipping ${provider.name} — can't read the request's images with ${effectiveModel}`);
+            continue;
+          }
         }
 
         console.log(`[Router] Routing to ${provider.name} with model: ${effectiveModel}`);
@@ -883,20 +960,24 @@ export class Router {
         opts?.onServed?.(provider.name, effectiveModel);
         this.quotaManager.incrementUsage(provider.name);
         logger.log({
-            requestId,
-            provider: provider.name,
-            model: effectiveModel,
-            status: 'success',
-            duration: Date.now() - start,
-            usage: normalizedUsage,
+          requestId,
+          provider: provider.name,
+          model: effectiveModel,
+          status: 'success',
+          duration: Date.now() - start,
+          usage: normalizedUsage,
         });
         console.log(`[Router] Successfully routed to ${provider.name}.`);
         return normalizedResponse;
       } catch (error: any) {
         logger.log({ requestId, provider: provider.name, model: effectiveModel, status: 'error', error: error.message, duration: Date.now() - start });
         console.error(`[Router] Error with ${provider.name}:`, error.message);
+        if (request.model !== 'auto' && request.model !== 'auto-vision' && isCapabilityError(error)) {
+          throw error;
+        }
       }
     }
+
     if (!attempted && cannotRead.length) throw unsupportedContent(cannotRead, request.model);
     if (!attempted && overBudget.length) throw this.budgetRefusal(overBudget);
     if (hasAudioContent(routedRequest) && !attempted) {
@@ -942,7 +1023,9 @@ export class Router {
           throw new Error(`Fixed provider ${provider.name} reported unavailable.`);
         }
 
-        if (!providerAcceptsContent(provider, routedRequest, model)) throw unsupportedContent([provider.name], model);
+        if (!providerAcceptsContent(provider, routedRequest, model) && !hasAudioContent(routedRequest)) {
+          throw unsupportedContent([provider.name], model);
+        }
 
         console.log(`[Router] Single-model mode: routing stream to ${provider.name} with model: ${model}`);
         await this.keyReady(provider);
@@ -976,6 +1059,7 @@ export class Router {
           duration: Date.now() - start,
           usage: streamLogUsage(providerUsage, providerChars),
         });
+        if (isCapabilityError(error)) throw error;
         const hydrated = await hydrateAxiosError(error);
         console.error(`[Router] Stream error with fixed provider ${provider.name}:`, formatProviderError(hydrated));
         throw hydrated;
@@ -1046,6 +1130,9 @@ export class Router {
             }
 
             if (!providerAcceptsContent(provider, { ...routedRequest, messages: currentMessages }, effectiveModel)) {
+              if (request.model !== 'auto' && request.model !== 'auto-vision') {
+                throw unsupportedContent([provider.name], effectiveModel);
+              }
               cannotRead.push(provider.name);
               logger.log({ requestId, provider: provider.name, model: effectiveModel, status: 'error', error: `${provider.name} can't read images for ${effectiveModel}`, duration: Date.now() - start });
               console.warn(`[Router] Skipping ${provider.name} — can't read the request's images with ${effectiveModel}`);
@@ -1120,11 +1207,12 @@ export class Router {
         throw new Error(`Provider ${provider.name} reported unavailable.`);
       }
 
-      const canHandle = await providerCanHandle(provider, routedRequest, model);
+      const canHandle = hasAudioContent(routedRequest)
+        ? true
+        : await providerCanHandle(provider, routedRequest, model);
       if (!canHandle) {
-        throw new Error(`${provider.name} does not support model ${model}`);
+        throw unsupportedContent([provider.name], model);
       }
-      if (!providerAcceptsContent(provider, routedRequest, model)) throw unsupportedContent([provider.name], model);
 
       console.log(`[Router] Forced routing to ${provider.name} with model: ${model}`);
       await this.keyReady(provider);
@@ -1134,6 +1222,7 @@ export class Router {
       return response;
     } catch (error: any) {
       logger.log({ requestId, provider: provider.name, model, status: 'error', error: error.message, duration: Date.now() - start });
+      if (isCapabilityError(error)) throw error;
       const hydrated = await hydrateAxiosError(error);
       console.error(`[Router] Error with forced provider ${provider.name}:`, formatProviderError(hydrated));
       throw hydrated;
@@ -1162,11 +1251,12 @@ export class Router {
         throw new Error(`Provider ${provider.name} reported unavailable.`);
       }
 
-      const canHandle = await providerCanHandle(provider, routedRequest, model);
+      const canHandle = hasAudioContent(routedRequest)
+        ? true
+        : await providerCanHandle(provider, routedRequest, model);
       if (!canHandle) {
-        throw new Error(`${provider.name} does not support model ${model}`);
+        throw unsupportedContent([provider.name], model);
       }
-      if (!providerAcceptsContent(provider, routedRequest, model)) throw unsupportedContent([provider.name], model);
 
       console.log(`[Router] Forced routing stream to ${provider.name} with model: ${model}`);
       await this.keyReady(provider);
@@ -1198,6 +1288,7 @@ export class Router {
         duration: Date.now() - start,
         usage: streamLogUsage(providerUsage, providerChars),
       });
+      if (isCapabilityError(error)) throw error;
       const hydrated = await hydrateAxiosError(error);
       console.error(`[Router] Stream error with forced provider ${provider.name}:`, formatProviderError(hydrated));
       throw hydrated;

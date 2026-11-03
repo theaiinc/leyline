@@ -225,11 +225,26 @@ function getDefaultVariants(): ModelVariant[] {
       billing_class: 'paid_api',
       resource_class: 'standard',
     },
-    // BytePlus ModelArk — pricing is not published yet; see https://ai.byteplus.com/ark/region:ap-southeast-1/docs/model-pricing.
-    {
-      id: 'deepseek-v4-1-flash-261017',
-      name: 'DeepSeek V4.1 Flash (BytePlus ModelArk)',
-      family: 'deepseek-v4',
+    // BytePlus ModelArk — ModelArk pricing is not published in this repository; prices remain unset.
+    ...[
+      ['dola-seed-2-1-turbo-260628', 'Dola Seed 2.1 Turbo'],
+      ['seed-2-0-pro-260328', 'Seed 2.0 Pro'],
+      ['seed-2-0-lite-260428', 'Seed 2.0 Lite'],
+      ['seed-2-0-mini-260428', 'Seed 2.0 Mini'],
+      ['seed-2-0-code-preview-260328', 'Seed 2.0 Code Preview'],
+      ['deepseek-v4-1-flash-261017', 'DeepSeek V4.1 Flash'],
+      ['deepseek-v4-1-flash-economy-261017', 'DeepSeek V4.1 Flash Economy'],
+      ['deepseek-v4-1-flash-260910', 'DeepSeek V4.1 Flash'],
+      ['deepseek-v4-pro-ga-260813', 'DeepSeek V4 Pro GA'],
+      ['deepseek-v4-flash-ga-260731', 'DeepSeek V4 Flash GA'],
+      ['deepseek-v4-pro-260425', 'DeepSeek V4 Pro'],
+      ['deepseek-v4-flash-260425', 'DeepSeek V4 Flash'],
+      ['glm-5-3-flash-260828', 'GLM 5.3 Flash'],
+      ['glm-5-2-260617', 'GLM 5.2'],
+    ].map(([id, name]) => ({
+      id,
+      name: `${name} (BytePlus ModelArk)`,
+      family: id.split('-').slice(0, 2).join('-'),
       provider: 'byteplus',
       source: 'byteplus-modelark',
       parameter_size_b: 0,
@@ -238,7 +253,8 @@ function getDefaultVariants(): ModelVariant[] {
       capabilities: { tools: true, thinking: true, vision: false, code: true, embedding: false },
       billing_class: 'paid_api',
       resource_class: 'standard',
-    },
+    } as ModelVariant)),
+ 
     // OpenAI
     {
       id: 'gpt-5.5',

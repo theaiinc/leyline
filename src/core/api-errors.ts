@@ -1,5 +1,14 @@
 import { CapabilityError } from './media';
 
+export function isCapabilityError(error: unknown): error is CapabilityError {
+  const candidate = error as { status?: unknown; code?: unknown; name?: unknown; message?: unknown };
+  if (error instanceof CapabilityError) return true;
+  if (candidate?.name === 'CapabilityError' && candidate.status === 400) return true;
+  return candidate?.code === 'unsupported_content'
+    || (candidate?.status === 400 && typeof candidate.message === 'string'
+      && /can't read them|cannot read|unsupported content|does not support/i.test(candidate.message));
+}
+
 export function isRateLimitError(error: unknown): boolean {
   const candidate = error as { message?: string; response?: { status?: number } };
   const message = candidate?.message?.toLowerCase() || '';
@@ -139,14 +148,23 @@ export function chatCompletionErrorResponse(error: unknown): { status: number; b
     return { status: 429, body: { error: { message, type: 'rate_limit_error', code: 'provider_budget_exhausted' } } };
   }
 
-  if (error instanceof CapabilityError) {
+  // Preserve router capability rejections even when the error crossed an adapter
+  // boundary and no longer has the original prototype (for example, streaming and
+  // Anthropic/OpenAI route adapters). The status/code shape is the stable contract.
+  const capability = error as { status?: number; code?: string; name?: string };
+  const capabilityText = `${message} ${providerMessage}`;
+  const capabilityMessage = /can't read them|cannot read|does not support (?:image|audio|vision)|no (?:audio|vision)[- ]capable model|unsupported content/i.test(capabilityText);
+  if (error instanceof CapabilityError
+    || (capability.name === 'CapabilityError' && typeof capability.status === 'number')
+    || capability.code === 'unsupported_content'
+    || capabilityMessage) {
     return {
-      status: error.status,
+      status: 400,
       body: {
         error: {
-          message: error.message,
-          type: error.status >= 400 && error.status < 500 ? 'invalid_request_error' : 'service_unavailable',
-          code: error.code,
+          message,
+          type: 'invalid_request_error',
+          code: capability.code || 'unsupported_content',
         },
       },
     };

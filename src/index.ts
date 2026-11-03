@@ -359,11 +359,25 @@ export function hostedOptions(docs?: DocStore, opts: { sharedMinute?: boolean; w
   const h = config.hosted;
   const store = docs ?? (h.keysBucket ? new GcsDocStore(h.keysBucket) : h.keysDir ? new FileDocStore(h.keysDir) : new MemoryDocStore());
   if (!docs && !h.keysBucket && !h.keysDir) console.warn('[Leyline] hosted keys are kept in memory only (set LEYLINE_KEYS_BUCKET or LEYLINE_KEYS_DIR)');
+  const trustedHosts = [h.publicUrl, ...h.publicAliases].map((url) => {
+    try { return new URL(url).host; } catch { return ''; }
+  }).filter(Boolean);
+  const redirectUriForRequest = (req: import('express').Request): string => {
+    const host = req.get('host') ?? '';
+    const approvedHost = trustedHosts.includes(host) ? host : new URL(h.publicUrl).host;
+    return `${req.protocol}://${approvedHost}/auth/callback`;
+  };
   const login = h.loginClientId && h.loginClientSecret && h.sessionSecret && h.publicUrl
-    ? new AegisAuth({ issuer: h.loginIssuer, clientId: h.loginClientId, clientSecret: h.loginClientSecret, redirectUri: `${h.publicUrl}/auth/callback`, sessionSecret: h.sessionSecret })
+    ? new AegisAuth({
+      issuer: h.loginIssuer,
+      clientId: h.loginClientId,
+      clientSecret: h.loginClientSecret,
+      redirectUri: redirectUriForRequest({ get: (name: string) => name.toLowerCase() === 'host' ? new URL(h.publicUrl).host : undefined, protocol: new URL(h.publicUrl).protocol.replace(':', '') } as import('express').Request),
+      sessionSecret: h.sessionSecret,
+    })
     : null;
   if (!login && !h.adminToken) console.warn('[Leyline] hosted keys: no admin sign-in and no LEYLINE_ADMIN_TOKEN; keys can\'t be managed');
-  const hosted: HostedOptions = { keys: new IssuedKeys(store, { sharedMinute: opts.sharedMinute }), models: h.models, aliases: h.aliases, login, adminEmails: h.adminEmails, monthlyBudgetUsd: h.monthlyBudgetUsd, ...(h.adminToken ? { adminToken: h.adminToken } : {}), publicUrl: h.publicUrl };
+  const hosted: HostedOptions = { keys: new IssuedKeys(store, { sharedMinute: opts.sharedMinute }), models: h.models, aliases: h.aliases, login, adminEmails: h.adminEmails, monthlyBudgetUsd: h.monthlyBudgetUsd, ...(h.adminToken ? { adminToken: h.adminToken } : {}), publicUrl: h.publicUrl, publicAliases: h.publicAliases, redirectUriForRequest };
   if (opts.benchmarks) {
     const benchmarkCache = {
       get: async () => (await store.get<BenchmarkSnapshot>('benchmarks'))?.value ?? null,

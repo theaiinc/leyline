@@ -46,6 +46,10 @@ export type HostedOptions = {
   adminEmails: string[];
   adminToken?: string;
   publicUrl: string;
+  /** Additional trusted host origins accepted alongside publicUrl. */
+  publicAliases?: string[];
+  /** Builds the OAuth callback URI for the request's approved primary or alias host. */
+  redirectUriForRequest?: (req: Request) => string;
   /** Models turned off for every key (ids or patterns with *). */
   blockedModels?: string[];
   /** The most all keys together may spend a month (US dollars); null: no limit. */
@@ -269,7 +273,8 @@ export function adminOf(opts: HostedOptions, req: Request): string | null {
 
 export function sameOrigin(opts: HostedOptions, req: Request): boolean {
   const o = req.headers.origin;
-  return !o || o === opts.publicUrl;
+  if (!o) return true;
+  return [opts.publicUrl, ...(opts.publicAliases ?? [])].includes(o);
 }
 
 /** What a key looks like to the admin page (never the hash). */
