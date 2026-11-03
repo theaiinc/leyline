@@ -18,7 +18,11 @@ import { PresidioDetector } from '@theaiinc/veil-presidio';
     presidioFallback: boolean;
   };
 
-  const TOKEN_PATTERN = /<([a-z-]+):\d+>/gi;
+  // Plain-word placeholders survive HTML/JSON/code generation without being escaped or reinterpreted.
+  // VF_<TYPE>_<N>X is made only from word characters, so models do not HTML-escape or reinterpret it.
+  const TOKEN_PATTERN = /\bVF_[A-Z][A-Z0-9_]*\d+X\b/g;
+  const LEGACY_TOKEN_PATTERN = /(?:&lt;|\\?<)([a-z-]+:\d+)(?:&gt;|\\?>)/gi;
+  const PARTIAL_TOKEN_PATTERN = /(VF(?:_[A-Z][A-Z0-9_]*)?)$/;
 
   function compileAllowlist(patterns: string[]): RegExp[] {
     return patterns.flatMap((pattern) => {
@@ -103,8 +107,7 @@ import { PresidioDetector } from '@theaiinc/veil-presidio';
       for (const mapping of result.mappings) {
         const veilToken = String(mapping.token);
         const original = String(mapping.originalValue);
-        const rawType = veilToken.match(TOKEN_PATTERN)?.[1]
-          ?? String((mapping as { entityType?: unknown; type?: unknown }).entityType ?? (mapping as { type?: unknown }).type ?? 'unknown');
+        const rawType = String((mapping as { entityType?: unknown; type?: unknown }).entityType ?? (mapping as { type?: unknown }).type ?? veilToken.match(/<([a-z-]+):\d+>/i)?.[1] ?? 'unknown');
         const normalizedType = rawType.toLowerCase().replace(/[_-]+/g, '');
         const isUrl = /^(?:https?:\/\/|ftp:\/\/|www\.)/i.test(original) || /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?:[/:?#]|$)/i.test(original);
         if (isUrl) {
@@ -120,14 +123,17 @@ import { PresidioDetector } from '@theaiinc/veil-presidio';
             : /@[^\s@]+\.[^\s@]+/.test(original) ? 'email'
             : /(?:\+?\d[\d\s().-]{6,}\d)/.test(original) ? 'phone'
             : rawType.toLowerCase();
-          token = `<${type}:${this.nextToken++}>`;
+          token = `VF_${type.toUpperCase()}_${this.nextToken++}X`;
           this.requestTokens.set(original, token);
           this.mappings.set(token, original);
           this.counts[type] = (this.counts[type] ?? 0) + 1;
         }
         replacements.set(veilToken, token);
       }
-      const transformed = result.transformedContent.replace(TOKEN_PATTERN, (token) => replacements.get(token) ?? token);
+      const transformed = result.transformedContent.replace(
+        new RegExp(`${TOKEN_PATTERN.source}|(?:&lt;|\\\\?<)[a-z-]+:\\d+(?:&gt;|\\\\?>)`, 'gi'),
+        (token) => replacements.get(token) ?? token,
+      );
       return protectedValue.restore(transformed);
     }
 
@@ -164,9 +170,29 @@ import { PresidioDetector } from '@theaiinc/veil-presidio';
 
     private replace(value: string): string {
       if (this.mode === 'off' || !value) return value;
-      let output = value;
-      for (const [token, original] of this.mappings) output = output.split(token).join(original);
-      return output;
+      const replacements = new Map<string, string>();
+      for (const [token, original] of this.mappings) {
+        replacements.set(token, original);
+        const match = token.match(/^VF_([A-Z][A-Z0-9_]*)_(\d+)X$/);
+        if (!match) continue;
+        const legacy = `<${match[1].toLowerCase()}:${match[2]}>`;
+        replacements.set(legacy, original);
+        replacements.set(`&lt;${match[1].toLowerCase()}:${match[2]}&gt;`, original);
+        replacements.set(`\\${legacy}`, original);
+      }
+      const allTokens = new RegExp(
+        `${TOKEN_PATTERN.source}|(?:&lt;|\\\\?<)[a-z-]+:\\d+(?:&gt;|\\\\?>)`,
+        'gi',
+      );
+      return value.replace(allTokens, (token) => {
+        if (replacements.has(token)) return replacements.get(token)!;
+        const normalized = token
+          .replace(/^&lt;/i, '<')
+          .replace(/^\\</, '<')
+          .replace(/&gt;$/i, '>')
+          .replace(/\\>$/, '>');
+        return replacements.get(normalized) ?? token;
+      });
     }
 
     rehydrateValue<T>(value: T): T {
@@ -181,22 +207,61 @@ import { PresidioDetector } from '@theaiinc/veil-presidio';
       return this.replace(value);
     }
 
-    /** Rehydrate a streamed delta, retaining only a possible incomplete Veil token for this channel. */
+    /** Rehydrate a streamed delta, retaining only a possible incomplete token for this channel. */
     rehydrateStream(value: string, streamKey = 'default'): string {
       if (this.mode === 'off' || !value) return value;
       const combined = (this.streamBuffers.get(streamKey) ?? '') + value;
-      const tokenStart = combined.lastIndexOf('<');
-      if (tokenStart < 0) {
+      const issuedTokens = [...this.mappings.keys()];
+      const legacyTokens = issuedTokens.flatMap((token) => {
+        const match = token.match(/^VF_([A-Z][A-Z0-9_]*)_(\d+)X$/);
+        return match
+          ? [
+              `<${match[1].toLowerCase()}:${match[2]}>`,
+              `&lt;${match[1].toLowerCase()}:${match[2]}&gt;`,
+              `\\<${match[1].toLowerCase()}:${match[2]}\\>`,
+            ]
+          : [];
+      });
+      const allIssuedTokens = [...issuedTokens, ...legacyTokens];
+
+      // Replace complete tokens first. Retain the longest non-empty suffix that
+      // is a strict prefix of an issued token, even when the model split inside
+      // the token before the underscore or type name (for example, `VF`).
+      const replaced = this.replace(combined);
+      // A complete token (including a legacy escaped token) has been resolved.
+      // Do not run prefix buffering against the original text after replacement:
+      // the resolved value may itself end in characters that resemble a token
+      // prefix, and retaining that suffix would leak the placeholder.
+      if (replaced !== combined) {
         this.streamBuffers.delete(streamKey);
-        return this.replace(combined);
+        return replaced;
       }
-      const suffix = combined.slice(tokenStart);
-      if (!/^<[a-z-]*:?\d*$/.test(suffix) || suffix.length > 128) {
-        this.streamBuffers.delete(streamKey);
-        return this.replace(combined);
+
+      let partialSuffix = '';
+      for (const token of allIssuedTokens) {
+        const maxLength = Math.min(token.length - 1, combined.length);
+        for (let length = 1; length <= maxLength; length += 1) {
+          const suffix = combined.slice(-length);
+          if (token.startsWith(suffix) && suffix.length > partialSuffix.length) {
+            partialSuffix = suffix;
+          }
+        }
       }
-      this.streamBuffers.set(streamKey, suffix);
-      return this.replace(combined.slice(0, tokenStart));
+      // Retain a syntactically valid token prefix even when the detector has
+      // not issued that exact token (for example, a phone token may arrive
+      // before its mapping is available to this stream channel).
+      const genericPartialMatch = combined.match(/(VF(?:_[A-Z][A-Z0-9_]*)?)$/);
+      const genericPartial = genericPartialMatch?.[1] ?? '';
+      // Keep any syntactically valid VF prefix, including prefixes that have
+      // not yet matched an issued token (for example VF_PH before VF_PHONE_2X).
+      if (genericPartial.length > partialSuffix.length) partialSuffix = genericPartial;
+      if (partialSuffix) {
+        this.streamBuffers.set(streamKey, partialSuffix);
+        return this.replace(combined.slice(0, -partialSuffix.length));
+      }
+
+      this.streamBuffers.delete(streamKey);
+      return replaced;
     }
 
     get streamKeys(): string[] {
