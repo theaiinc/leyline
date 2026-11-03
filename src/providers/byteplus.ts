@@ -8,13 +8,16 @@ import { config } from '../config';
  */
 const BYTEPLUS_PRICING_SOURCE = 'https://www.byteplus.com/en/product/modelark/pricing';
 
-const BYTEPLUS_CATALOG: Array<ModelDetail & { pricing: { input: number; output: number; cached_input?: number } }> = [
-  { id: 'seed-2-0-lite-260428', name: 'Seed 2.0 Lite', pricing: { input: 0.4, output: 1.6 } },
-  { id: 'seed-2-0-mini-260428', name: 'Seed 2.0 Mini', pricing: { input: 0.4, output: 1.6 } },
-  { id: 'deepseek-v4-1-flash-261017', name: 'DeepSeek V4.1 Flash', pricing: { input: 0.14, output: 0.28, cached_input: 0.028 } },
-  { id: 'deepseek-v4-flash-ga-260731', name: 'DeepSeek V4 Flash', pricing: { input: 0.14, output: 0.28, cached_input: 0.028 } },
-  { id: 'glm-5-3-flash-260828', name: 'GLM-5.3 Flash', pricing: { input: 0.2, output: 1.1 } },
+const BYTEPLUS_CATALOG: Array<ModelDetail & { pricing: { input: number; output: number } }> = [
+  { id: 'seed-2-0-lite-260428', name: 'Seed 2.0 Lite', pricing: { input: 0.25, output: 2.0 } },
+  { id: 'seed-2-0-mini-260428', name: 'Dola Seed 2.0 Mini', pricing: { input: 0.1, output: 0.4 } },
+  { id: 'deepseek-v4-flash-ga-260731', name: 'DeepSeek V4 Flash', pricing: { input: 0.14, output: 0.28 } },
+  // TODO: confirm official prices for DeepSeek V4.1 Flash and GLM-5.3 Flash from BytePlus console/docs.
 ].map((model) => ({ ...model, source: BYTEPLUS_PRICING_SOURCE }));
+
+export const BYTEPLUS_CATALOG_PRICING = Object.fromEntries(
+  BYTEPLUS_CATALOG.map(({ id, pricing }) => [id, pricing]),
+);
 
 export class BytePlusProvider extends OpenAIProvider {
   name = 'BytePlus';

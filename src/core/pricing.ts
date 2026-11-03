@@ -67,15 +67,6 @@ export const PUBLIC_SALE_MODEL_IDS = new Set<string>([
   ...(config.offeredModels ?? []),
 ]);
 
-/** Official BytePlus ModelArk prices in USD per 1M tokens. */
-export const BYTEPLUS_MODEL_PRICES: Record<string, { input: number; output: number; cachedInput?: number }> = {
-  'seed-2-0-lite-260428': { input: 0.4, output: 1.6 },
-  'seed-2-0-mini-260428': { input: 0.4, output: 1.6 },
-  'deepseek-v4-1-flash-261017': { input: 0.14, output: 0.28 },
-  'deepseek-v4-flash-ga-260731': { input: 0.14, output: 0.28 },
-  'glm-5-3-flash-260828': { input: 0.2, output: 1.1 },
-};
-
 export function isPublicSaleModel(modelId: string): boolean {
   return PUBLIC_SALE_MODEL_IDS.has(modelId);
 }
@@ -116,7 +107,7 @@ export function toPublicPricingModel(
   freeModels: readonly string[] = [],
 ): PublicPricingModel | undefined {
   const id = typeof model.id === 'string' ? model.id : '';
-  const prices = modelPricing(model) ?? (provider === 'BytePlus' ? BYTEPLUS_MODEL_PRICES[id] : undefined);
+  const prices = modelPricing(model);
   if (!id || !prices) return undefined;
   return {
     id,
