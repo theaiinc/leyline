@@ -53,12 +53,10 @@ export const DEFAULT_FREE_TIER_TOKENS = 1_000_000;
 export const DEFAULT_FREE_TIER_EXPIRES_AFTER_DAYS = 30;
 
 /** BytePlus ModelArk chat models covered by the public free-tier offer. */
-export const FREE_TIER_MODEL_IDS = [
-  'doubao-seed-1-6-251015',
-  'doubao-seed-1-6-flash-250828',
-  'doubao-1-5-pro-32k-250115',
-  'doubao-1-5-lite-32k-250115',
-] as const;
+import { config } from '../config';
+
+/** Verified free-tier model IDs, supplied by deployment configuration. */
+export const FREE_TIER_MODEL_IDS = config.freeTierModels;
 
 const OFFICIAL_PRICING_PAGES: Record<string, string> = {
   Anthropic: 'https://www.anthropic.com/pricing',
@@ -75,6 +73,14 @@ function modelPricing(model: unknown): { input: number; output: number; cachedIn
   const detail = model as { pricing?: unknown; input_price?: unknown; output_price?: unknown };
   const parsed = parsePublishedPricing(detail.pricing);
   if (parsed) return parsed;
+  if (detail.pricing && typeof detail.pricing === 'object') {
+    const normalized = detail.pricing as { input?: unknown; output?: unknown };
+    const input = Number(normalized.input);
+    const output = Number(normalized.output);
+    if (Number.isFinite(input) && Number.isFinite(output) && input >= 0 && output >= 0) {
+      return { input, output };
+    }
+  }
   const input = Number(detail.input_price);
   const output = Number(detail.output_price);
   return Number.isFinite(input) && Number.isFinite(output) && input >= 0 && output >= 0

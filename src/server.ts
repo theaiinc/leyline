@@ -20,7 +20,6 @@ import { INSTANCE_FAMILIES } from './core/provider-instances';
 import {
   DEFAULT_FREE_TIER_EXPIRES_AFTER_DAYS,
   DEFAULT_FREE_TIER_TOKENS,
-  FREE_TIER_MODEL_IDS,
   parsePublishedPricing,
   toPublicPricingModel,
 } from './core/pricing';
@@ -402,19 +401,13 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     res.json({ status: 'ready', service: 'leyline' });
   });
 
-  let publicPricingCache: { expiresAt: number; value: unknown } | undefined;
   app.get('/v1/pricing', async (_req, res) => {
-    if (publicPricingCache && publicPricingCache.expiresAt > Date.now()) {
-      res.set('Cache-Control', 'public, max-age=300');
-      res.json(publicPricingCache.value);
-      return;
-    }
 
     const models = (await Promise.all(router.getProviders().map(async provider => {
       try {
         const offered = await provider.getModels();
         return offered
-          .map(model => toPublicPricingModel(provider.name, model, FREE_TIER_MODEL_IDS))
+          .map(model => toPublicPricingModel(provider.name, model, config.freeTierModels))
           .filter((model): model is NonNullable<typeof model> => Boolean(model));
       } catch {
         return [];
@@ -427,11 +420,10 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       free_tier: {
         tokens: DEFAULT_FREE_TIER_TOKENS,
         expires_after_days: DEFAULT_FREE_TIER_EXPIRES_AFTER_DAYS,
-        models: FREE_TIER_MODEL_IDS,
+        models: config.freeTierModels.filter((id) => models.some((model) => model.id === id && Number.isFinite(model.input) && Number.isFinite(model.output))),
       },
       models,
     };
-    publicPricingCache = { expiresAt: Date.now() + 5 * 60 * 1000, value };
     res.set('Cache-Control', 'public, max-age=300');
     res.json(value);
   });
