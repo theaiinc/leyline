@@ -42,7 +42,7 @@ function setup(over: Partial<HostedOptions> = {}) {
   const keys = new IssuedKeys(new MemoryDocStore());
   const hosted: HostedOptions = {
     keys, models: ['gemini-2.5-pro', 'gpt-5.5'], aliases: { 'claude-*': 'gemini-2.5-pro' },
-    login: null, adminEmails: [], adminToken: 'admin-secret-token', publicUrl: 'https://leyline.test', publicAliases: ['https://leyline.theaiinc.com``'], ...over,
+    login: null, adminEmails: [], adminToken: 'admin-secret-token', publicUrl: 'https://leyline.test', publicAliases: ['https://llm.theaiinc.com'], ...over,
   };
   const app = createServer(router, quotaManager, { hosted, enforceExternalSurface: false, apiKeyStore: new MemorySecretStore() });
   return { app, keys, upstream };
