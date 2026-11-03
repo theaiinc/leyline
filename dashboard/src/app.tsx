@@ -17,7 +17,6 @@ import { PlaygroundPage } from '@/pages/playground';
 import { ProvidersPage } from '@/pages/providers';
 import { RoutingPage } from '@/pages/routing';
 import { SpendingPage } from '@/pages/spending';
-import { ModelsPage } from '@/pages/models';
 
 type Nav = { id: string; label: string; icon: typeof Activity; hosted?: true };
 const NAV: Nav[] = [
@@ -29,7 +28,6 @@ const NAV: Nav[] = [
   { id: 'spending', label: 'Spending', icon: Wallet, hosted: true },
   { id: 'offered', label: 'Offered models', icon: Layers, hosted: true },
   { id: 'playground', label: 'Playground', icon: FlaskConical },
-  { id: 'models', label: 'Models', icon: Layers },
   { id: 'activity', label: 'Activity', icon: Activity },
 ];
 
@@ -112,7 +110,6 @@ export function App() {
                   : current === 'spending' ? <SpendingPage />
                   : current === 'offered' ? <OfferedPage d={d} />
                     : current === 'playground' ? <PlaygroundPage d={d} />
-                      : current === 'models' ? <ModelsPage route={page} go={go} />
                       : <ActivityPage d={d} />}
         </div>
       </main>
