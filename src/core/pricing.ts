@@ -48,6 +48,46 @@ export type PublicPricingModel = {
   source: string;
 };
 
+/** Public defaults for the Valefront product's free grant. Billing state is private-product data. */
+export const DEFAULT_FREE_TIER_TOKENS = 1_000_000;
+export const DEFAULT_FREE_TIER_EXPIRES_AFTER_DAYS = 30;
+
+export type ProviderCredit = {
+  provider: string;
+  amountUsd: number;
+  expiresAt: string;
+};
+
+/** Deterministic provider ordering for a free request. Credits expiring soon win, then discounts, then price. */
+export function rankFreeTierProviders<T extends { provider: string; input: number; output: number }>(
+  models: readonly T[],
+  credits: readonly ProviderCredit[] = [],
+  volumeDiscountProviders: readonly string[] = [],
+  now = Date.now(),
+): T[] {
+  const creditRank = new Map<string, number>();
+  for (const credit of credits) {
+    const expiry = Date.parse(credit.expiresAt);
+    if (!Number.isFinite(expiry) || credit.amountUsd <= 0 || expiry <= now) continue;
+    const current = creditRank.get(credit.provider);
+    if (current === undefined || expiry < current) creditRank.set(credit.provider, expiry);
+  }
+  const discountRank = new Set(volumeDiscountProviders);
+  return [...models].sort((a, b) => {
+    const ac = creditRank.get(a.provider);
+    const bc = creditRank.get(b.provider);
+    if (ac !== undefined || bc !== undefined) {
+      if (ac === undefined) return 1;
+      if (bc === undefined) return -1;
+      if (ac !== bc) return ac - bc;
+    }
+    const ad = discountRank.has(a.provider);
+    const bd = discountRank.has(b.provider);
+    if (ad !== bd) return ad ? -1 : 1;
+    return (a.input + a.output) - (b.input + b.output);
+  });
+}
+
 const OFFICIAL_PRICING_PAGES: Record<string, string> = {
   Anthropic: 'https://www.anthropic.com/pricing',
   AzureOpenAI: 'https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/',
