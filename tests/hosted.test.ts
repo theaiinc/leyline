@@ -202,7 +202,7 @@ describe('hosted dashboard', () => {
   it('accepts the primary host and configured alias but refuses a foreign Origin', async () => {
     const { app } = withLogin();
     const cookie = cookieFor('owner@example.com');
-    const alias = 'https://leyline.theaiinc.com``';
+    const alias = 'https://llm.theaiinc.com';
     expect((await request(app).post('/dashboard/routing').set('Cookie', cookie).set('Origin', 'https://leyline.test').send({ mode: 'auto' })).status).toBe(200);
     expect((await request(app).post('/dashboard/routing').set('Cookie', cookie).set('Origin', alias).send({ mode: 'auto-vision' })).status).toBe(200);
     expect((await request(app).post('/dashboard/routing').set('Cookie', cookie).set('Origin', 'https://evil.example').send({ mode: 'auto' })).status).toBe(403);

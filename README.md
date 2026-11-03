@@ -305,8 +305,8 @@ Run Leyline in the cloud and hand out API keys that use your provider keys, each
 
 | Variable | Meaning |
 | --- | --- |
-| `LEYLINE_PUBLIC_URL` | e.g. `https://llm.theaiinc.com/healthz (sign-in callback, snippets) |
-| `LEYLINE_PUBLIC_ALIASES` | Comma-separated approved alternate public origins, e.g. `https://leyline.theaiinc.com`` |
+| `LEYLINE_PUBLIC_URL` | `https://llm.valefront.com` (sign-in callback, snippets) |
+| `LEYLINE_PUBLIC_ALIASES` | Comma-separated approved alternate public origins, e.g. `https://llm.theaiinc.com` |
 | `LEYLINE_KEYS_BUCKET` / `LEYLINE_KEYS_DIR` | Where keys, usage and the offered models live: a GCS bucket (Cloud Run), else a directory, else memory |
 | `LEYLINE_SECRET_STORE=gcp`, `LEYLINE_GCP_PROJECT` | Keep provider keys and dashboard settings in Secret Manager (project defaults to the one Cloud Run runs in) |
 | `LEYLINE_OFFERED_MODELS`, `LEYLINE_MODEL_ALIASES` | Defaults for Offered models until it's first saved on the dashboard |

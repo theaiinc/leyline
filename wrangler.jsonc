@@ -15,7 +15,8 @@
   // deployment, render.yaml).
   "routes": [
     { "pattern": "llm.valefront.com", "custom_domain": true },
-    { "pattern": "llm.theaiinc.com", "custom_domain": true }
+    { "pattern": "llm.theaiinc.com", "custom_domain": true },
+    { "pattern": "dash.valefront.com", "custom_domain": true }
   ],
   // The dashboard's files (vite build). The Worker runs first so it can keep the page behind sign-in.
   "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": true },
@@ -30,8 +31,8 @@
   "send_email": [{ "name": "EMAIL", "allowed_sender_addresses": ["alerts@notify.theaiinc.com"] }],
   "vars": {
     "LEYLINE_HOSTED_KEYS": "on",
-    "LEYLINE_PUBLIC_URL": "https://your-resource.services.ai.azure.com/openai/v1",
-    "LEYLINE_PUBLIC_ALIASES": "https://github.com/theaiinc/headroom-ai",
+    "LEYLINE_PUBLIC_URL": "https://llm.valefront.com",
+    "LEYLINE_PUBLIC_ALIASES": "https://llm.theaiinc.com,https://dash.valefront.com",
     "LEYLINE_KEYCHAIN_ENABLED": "false",
     "LEYLINE_TUNNEL_ENABLED": "false",
     "LEYLINE_LOGIN_ISSUER": "https://id.theaiinc.com",
