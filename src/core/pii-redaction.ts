@@ -99,7 +99,7 @@ import { PresidioDetector } from '@theaiinc/veil-presidio';
       if (this.mode === 'off' || !input) return input;
       const protectedValue = protectAllowlisted(input, this.allowlist);
       const result = await this.veil.process({ content: protectedValue.value });
-      let transformed = result.transformedContent;
+      const replacements = new Map<string, string>();
       for (const mapping of result.mappings) {
         const veilToken = String(mapping.token);
         const original = String(mapping.originalValue);
@@ -108,7 +108,7 @@ import { PresidioDetector } from '@theaiinc/veil-presidio';
         const normalizedType = rawType.toLowerCase().replace(/[_-]+/g, '');
         const isUrl = /^(?:https?:\/\/|ftp:\/\/|www\.)/i.test(original) || /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?:[/:?#]|$)/i.test(original);
         if (isUrl) {
-          transformed = transformed.split(veilToken).join(original);
+          replacements.set(veilToken, original);
           continue;
         }
         let token = this.requestTokens.get(original);
@@ -125,8 +125,9 @@ import { PresidioDetector } from '@theaiinc/veil-presidio';
           this.mappings.set(token, original);
           this.counts[type] = (this.counts[type] ?? 0) + 1;
         }
-        transformed = transformed.split(veilToken).join(token);
+        replacements.set(veilToken, token);
       }
+      const transformed = result.transformedContent.replace(TOKEN_PATTERN, (token) => replacements.get(token) ?? token);
       return protectedValue.restore(transformed);
     }
 

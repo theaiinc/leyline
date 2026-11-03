@@ -46,19 +46,19 @@ describe('request-scoped PII redaction', () => {
     ]);
   });
 
-  it('assigns distinct tokens to different emails and rehydrates each one', async () => {
+  it('assigns distinct tokens across messages and rehydrates each one', async () => {
     const redactor = new RequestPiiRedactor({ mode: 'regex' });
     const request = await redactor.redact({
       messages: [
         { role: 'user', content: 'First ada@example.com' },
-        { role: 'user', content: 'Second grace@example.com' },
+        { role: 'user', content: 'Second grace@example.com and third linus@example.com' },
       ],
     });
     const contents = (request as { messages: Array<{ content: string }> }).messages.map((message) => message.content);
 
     expect(contents[0]).toContain('<email:1>');
-    expect(contents[1]).toContain('<email:2>');
-    expect(redactor.rehydrate(contents.join(' '))).toContain('First ada@example.com Second grace@example.com');
+    expect(contents[1]).toContain('<email:2> and third <email:3>');
+    expect(redactor.rehydrate(contents.join(' '))).toBe('First ada@example.com Second grace@example.com and third linus@example.com');
   });
 
   it('reuses one token for the same email across messages', async () => {
