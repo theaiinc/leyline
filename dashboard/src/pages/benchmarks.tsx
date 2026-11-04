@@ -96,14 +96,14 @@ export function BenchmarksPage({ base }: { base: string }) {
             <CardDescription>{DETAILS[chosen.id]?.description ?? 'Benchmark results.'} {DETAILS[chosen.id]?.unit ?? 'Higher is better.'}</CardDescription>
             <div className="flex flex-wrap gap-2">
               {data.benchmarks.map(item => <Button key={item.id} variant={item.id === chosen.id ? 'default' : 'outline'} size="sm" onClick={() => setSelected(item.id)}>{item.name}</Button>)}
-              <Button variant="outline" size="sm" onClick={() => setOnlyServed(value => !value)}>{onlyServed ? 'Show all models' : 'Only Leyline models'}</Button>
+              <Button variant="outline" size="sm" onClick={() => setOnlyServed(value => !value)}>{onlyServed ? 'Show all models' : 'Only Valefront models'}</Button>
               <Button variant="outline" size="sm" onClick={() => setAscending(value => !value)}><ArrowUpDown />Sort {ascending ? 'ascending' : 'descending'}</Button>
             </div>
           </CardHeader>
           <CardContent>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
-                <thead><tr className="border-b"><th className="p-2">Model</th><th className="p-2">Score</th><th className="p-2">Leyline</th><th className="p-2">Date</th></tr></thead>
+                <thead><tr className="border-b"><th className="p-2">Model</th><th className="p-2">Score</th><th className="p-2">Valefront</th><th className="p-2">Date</th></tr></thead>
                 <tbody>{rows.map(row => <tr key={`${row.model}-${row.asOf}`} className="border-b last:border-0">
                   <td className="p-2 font-medium">{row.model}</td><td className="p-2 tabular-nums">{row.score}</td>
                   <td className="p-2">{row.leylineModel ? <><span className="text-success">{row.leylineModel}</span>{row.aliases?.length ? <span className="ml-1 text-xs text-muted-foreground">({row.aliases.join(', ')})</span> : null}</> : '—'}</td>
