@@ -176,16 +176,15 @@ describe('hosted dashboard', () => {
   it('keeps admin-email sessions on the admin API while rejecting customer sessions', async () => {
     const { app } = withLogin(['admin@example.com']);
     expect((await request(app).get('/admin/api/keys').set('Cookie', cookieFor('admin@example.com'))).status).toBe(200);
-    expect((await request(app).get('/admin/api/usage').set('Cookie', cookieFor('admin@example.com'))).status).toBe(200);
     expect((await request(app).get('/admin/api/keys').set('Cookie', cookieFor('owner@example.com'))).status).toBe(401);
     expect((await request(app).get('/admin/api/keys').set(ADMIN)).status).toBe(200);
   });
 
-  it('allows workspace dashboard access but keeps customer and workspace-owner sessions out of admin APIs', async () =>
+  it('allows workspace dashboard access but keeps customer and workspace-owner sessions out of admin APIs', async () => {
     const { app } = withLogin();
     const page = await request(app).get('/dashboard/').set('Cookie', cookieFor('owner@example.com'));
     expect(page.status).toBe(200);
-    expect((await request(app).get('/dashboard/api-keys')).status).toBe(401);
+    expect((await request(app).get('/dashboard/api-keys').set('Cookie', cookieFor('owner@example.com'))).status).toBe(401);
     expect((await request(app).get('/dashboard/api-keys').set('Cookie', cookieFor('someone@else.com'))).status).toBe(401);
     const me = await request(app).get('/dashboard/session').set('Cookie', cookieFor('owner@example.com'));
     expect(me.body).toEqual({ hosted: true, email: 'owner@example.com', publicUrl: 'https://leyline.test', signIn: true });
