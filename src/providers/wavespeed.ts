@@ -24,6 +24,16 @@ export interface WaveSpeedClient {
   getPrediction(id: string): Promise<WaveSpeedPrediction>;
 }
 
+export function computeWaveSpeedCost(model: WaveSpeedModel, input: Record<string, unknown>): number {
+  const rule = model.pricingRule;
+  if (rule.unit === 'per_run') return Number(rule.usd);
+  if (rule.unit === 'audio_5_seconds') {
+    const seconds = Math.min(600, Math.max(3, Number(input.audio_seconds ?? input.duration_seconds ?? 3)));
+    return Math.ceil(seconds / 5) * Number(rule.usd);
+  }
+  throw new Error(`No executable pricing rule for ${model.id}`);
+}
+
 const WAVESPEED_API = 'https://api.wavespeed.ai/api/v3';
 
 export const WAVESPEED_CATALOG: WaveSpeedModel[] = [
@@ -32,6 +42,7 @@ export const WAVESPEED_CATALOG: WaveSpeedModel[] = [
     name: 'FLUX.1 dev',
     modality: 'image',
     inputSchema: { type: 'object', properties: { prompt: { type: 'string' } }, required: ['prompt'] },
+    // WaveSpeed model page: "Billed per image generation at $0.025 per run."
     pricing: { usd: 0.025, source: 'https://wavespeed.ai/models/bfl/flux-dev' },
     pricingRule: { unit: 'per_run', usd: 0.025 },
   },
@@ -40,40 +51,10 @@ export const WAVESPEED_CATALOG: WaveSpeedModel[] = [
     name: 'LatentSync',
     modality: 'lip-sync',
     inputSchema: { type: 'object', properties: { video: { type: 'string' }, audio: { type: 'string' } }, required: ['video', 'audio'] },
-    pricing: { usd: 0.10, source: 'https://wavespeed.ai/models/bytedance/latentsync' },
-    pricingRule: { unit: 'per_run', usd: 0.10 },
-  },
-  {
-    id: 'wavespeed/bytedance/seedance-1-0-pro',
-    name: 'Seedance 1.0 Pro',
-    modality: 'video',
-    inputSchema: { type: 'object', properties: { prompt: { type: 'string' } }, required: ['prompt'] },
-    pricing: { usd: 0.40, source: 'https://wavespeed.ai/models/bytedance/seedance-1-0-pro' },
-    pricingRule: { unit: 'per_second', usd: 0.40 },
-  },
-  {
-    id: 'wavespeed/tencent/hunyuan-video',
-    name: 'HunyuanVideo',
-    modality: 'video',
-    inputSchema: { type: 'object', properties: { prompt: { type: 'string' } }, required: ['prompt'] },
-    pricing: { usd: 0.50, source: 'https://wavespeed.ai/models/tencent/hunyuan-video' },
-    pricingRule: { unit: 'per_run', usd: 0.50 },
-  },
-  {
-    id: 'wavespeed/elevenlabs/tts',
-    name: 'ElevenLabs TTS',
-    modality: 'audio',
-    inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
-    pricing: { usd: 0.30, source: 'https://wavespeed.ai/models/elevenlabs/tts' },
-    pricingRule: { unit: 'per_1000_characters', usd: 0.30 },
-  },
-  {
-    id: 'wavespeed/openai/whisper',
-    name: 'Whisper',
-    modality: 'audio',
-    inputSchema: { type: 'object', properties: { audio: { type: 'string' } }, required: ['audio'] },
-    pricing: { usd: 0.006, source: 'https://wavespeed.ai/models/openai/whisper' },
-    pricingRule: { unit: 'per_minute', usd: 0.006 }
+    // WaveSpeed model page: "Billed per 5 seconds of audio at $0.15, minimum charge 3 seconds, maximum billable 600 seconds."
+    // Exact rule: ceil(audio_seconds / 5) * $0.15, with 3 seconds charged minimum and 600 seconds billable maximum.
+    pricing: { usd: 0.15, source: 'https://wavespeed.ai/models/bytedance/latentsync' },
+    pricingRule: { unit: 'audio_5_seconds', usd: 0.15, minimum_seconds: 3, maximum_seconds: 600, rounding: 'ceil' },
   },
 ];
 
@@ -121,7 +102,8 @@ export class WaveSpeedProvider implements Provider {
 
   async predict(provider: string, model: string, input: Record<string, unknown>): Promise<WaveSpeedPrediction> {
     if (!this.hasApiKey()) throw new Error('WaveSpeed is not configured');
-    if (!WAVESPEED_CATALOG.some(entry => entry.id === `wavespeed/${provider}/${model}`)) {
+    const modelId = `wavespeed/${provider}/${model}`;
+    if (!WAVESPEED_CATALOG.some(entry => entry.id === modelId)) {
       throw new Error(`WaveSpeed model is not offered: ${provider}/${model}`);
     }
     return this.client.submit(provider, model, input);

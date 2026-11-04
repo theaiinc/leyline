@@ -42,6 +42,8 @@ export { LlmApiProvider } from './providers/llm-api';
 export { AzureOpenAIProvider } from './providers/azure-openai';
 export { BytePlusProvider } from './providers/byteplus';
 export { WaveSpeedProvider, WAVESPEED_CATALOG } from './providers/wavespeed';
+export { installWaveSpeedRoutes } from './routes/wavespeed';
+export type { WaveSpeedRouteDeps, WaveSpeedUsage } from './routes/wavespeed';
 export { DeepgramProvider } from './providers/deepgram';
 export { WorkersAiProvider } from './providers/workers-ai';
 export type { WorkersAiBinding } from './providers/workers-ai';

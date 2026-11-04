@@ -39,9 +39,9 @@ Release notes will be included in short and full form in the PR.
 
 This is a local-only check and does not deploy or configure WaveSpeed on `dash.valefront.com`. After Arcana injects the testing credential into the single process, run:
 
-`WAVESPEED_API_KEY="$(arcana read arcana://wavespeed/api-key)" npx tsx scripts/wavespeed-smoke.ts`
+`arcana run --secret arcana://wavespeed/api-key --env WAVESPEED_API_KEY -- npx tsx scripts/wavespeed-smoke.ts`
 
-The script submits one small image request and one small `bytedance/latentsync` request, polls both to completion or failure, and prints only outputs and recorded costs. It reads `WAVESPEED_API_KEY` from the process environment and does not write the value to files, logs, CI, Worker configuration, or deployment settings. Do not run this command against production; WaveSpeed remains unavailable in production until Steve provides and explicitly provisions a production credential.
+The script submits one small image request and one small `bytedance/latentsync` request, polls both to completion or failure, and prints only outputs plus WaveSpeed-reported and locally computed costs for comparison. It reads `WAVESPEED_API_KEY` from the process environment and does not write the value to files, logs, CI, Worker configuration, or deployment settings. Do not run this command against production; WaveSpeed remains unavailable in production until Steve provides and explicitly provisions a production credential.
 
 ### Validation
 
