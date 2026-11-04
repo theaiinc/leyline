@@ -34,9 +34,11 @@ describe('WaveSpeedProvider', () => {
     expect(image).toBeDefined();
     expect(lipSync).toBeDefined();
     expect(computeWaveSpeedCost(image!, { prompt: 'x' })).toBe(0.025);
-    expect(computeWaveSpeedCost(lipSync!, { audio_seconds: 3 })).toBe(0.15);
+    expect(computeWaveSpeedCost(lipSync!, { audio_seconds: 2.1 })).toBe(0.09);
+    expect(computeWaveSpeedCost(lipSync!, { audio_seconds: 3 })).toBe(0.09);
     expect(computeWaveSpeedCost(lipSync!, { audio_seconds: 5 })).toBe(0.15);
-    expect(computeWaveSpeedCost(lipSync!, { audio_seconds: 6 })).toBe(0.30);
+    expect(computeWaveSpeedCost(lipSync!, { audio_seconds: 6 })).toBe(0.18);
+    expect(computeWaveSpeedCost(lipSync!, { audio_seconds: 7 })).toBe(0.21);
     expect(computeWaveSpeedCost(lipSync!, { audio_seconds: 600 })).toBe(18);
     expect(computeWaveSpeedCost(lipSync!, { audio_seconds: 900 })).toBe(18);
 

@@ -27,9 +27,12 @@ export interface WaveSpeedClient {
 export function computeWaveSpeedCost(model: WaveSpeedModel, input: Record<string, unknown>): number {
   const rule = model.pricingRule;
   if (rule.unit === 'per_run') return Number(rule.usd);
-  if (rule.unit === 'audio_5_seconds') {
-    const seconds = Math.min(600, Math.max(3, Number(input.audio_seconds ?? input.duration_seconds ?? 3)));
-    return Math.ceil(seconds / 5) * Number(rule.usd);
+  if (rule.unit === 'audio_per_second') {
+    // WaveSpeed documents whole-second rounding, a 3-second minimum, and a
+    // 600-second billable maximum. The published $0.03/second rate is derived
+    // from its unchanged $0.15 per 5-second table.
+    const seconds = Math.min(600, Math.max(3, Math.ceil(Number(input.audio_seconds ?? input.duration_seconds ?? 3))));
+    return seconds * Number(rule.usd);
   }
   throw new Error(`No executable pricing rule for ${model.id}`);
 }
@@ -51,10 +54,10 @@ export const WAVESPEED_CATALOG: WaveSpeedModel[] = [
     name: 'LatentSync',
     modality: 'lip-sync',
     inputSchema: { type: 'object', properties: { video: { type: 'string' }, audio: { type: 'string' } }, required: ['video', 'audio'] },
-    // WaveSpeed model page: "Billed per 5 seconds of audio at $0.15, minimum charge 3 seconds, maximum billable 600 seconds."
-    // Exact rule: ceil(audio_seconds / 5) * $0.15, with 3 seconds charged minimum and 600 seconds billable maximum.
-    pricing: { usd: 0.15, source: 'https://wavespeed.ai/models/bytedance/latentsync' },
-    pricingRule: { unit: 'audio_5_seconds', usd: 0.15, minimum_seconds: 3, maximum_seconds: 600, rounding: 'ceil' },
+    // WaveSpeed model page: "Input media duration is rounded up to whole seconds. The minimum billed duration is 3 seconds; shorter inputs are billed as 3 seconds. Existing per-5-second rate tables remain unchanged."
+    // The unchanged $0.15/5-second table is $0.03 per billed second; apply the page's whole-second rounding, minimum, and maximum exactly.
+    pricing: { usd: 0.03, source: 'https://wavespeed.ai/models/bytedance/latentsync' },
+    pricingRule: { unit: 'audio_per_second', usd: 0.03, table_rate_usd: 0.15, table_seconds: 5, minimum_seconds: 3, maximum_seconds: 600, rounding: 'ceil_whole_second' },
   },
 ];
 

@@ -93,7 +93,7 @@ describe('WaveSpeed routes', () => {
     expect(models.body.data).toHaveLength(WAVESPEED_CATALOG.length);
     expect(pricing.body.data).toHaveLength(WAVESPEED_CATALOG.length);
     expect(pricing.body.data.find((entry: { model: string }) => entry.model.endsWith('latentsync'))).toMatchObject({
-      rule: { unit: 'audio_5_seconds', minimum_seconds: 3, maximum_seconds: 600, rounding: 'ceil' },
+      rule: { unit: 'audio_per_second', minimum_seconds: 3, maximum_seconds: 600, rounding: 'ceil_whole_second' },
     });
   });
 });
