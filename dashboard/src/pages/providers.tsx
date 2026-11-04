@@ -151,8 +151,8 @@ export function ProvidersPage({ d }: { d: Dashboard }) {
     <>
       <PageHeader
         title="Providers"
-        description={hosted ? 'The provider accounts this Leyline uses. Everyone with an access key is served from these.' : 'Provider keys, runtime settings, and extra endpoints.'}
-        actions={families.map(family => <AddInstanceDialog key={family.family} family={family} d={d} onAdded={setSelected} />)}
+        description={hosted ? 'The provider accounts Valefront serves. Provider configuration is managed by the platform.' : 'Provider keys, runtime settings, and extra endpoints.'}
+        actions={!hosted ? families.map(family => <AddInstanceDialog key={family.family} family={family} d={d} onAdded={setSelected} />) : undefined}
       />
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -172,7 +172,7 @@ export function ProvidersPage({ d }: { d: Dashboard }) {
                 <span className="truncate font-medium">{provider.label || provider.name}</span>
                 <ToneBadge tone={s.tone} className="ml-auto">{s.label}</ToneBadge>
               </div>
-              <p className="text-xs text-muted-foreground">{providerDescription(provider.name, provider.family) || sourceLabel(provider.source, storeLabel)}</p>
+              <p className="text-xs text-muted-foreground">{providerDescription(provider.name, provider.family) || (hosted ? providerStatusLabel(provider).label : sourceLabel(provider.source, storeLabel))}</p>
               {provider.capabilities.some(c => c !== 'chat') ? (
                 <div className="flex flex-wrap gap-1">
                   {provider.capabilities.map(c => <ToneBadge key={c} tone="neutral">{CAPABILITY_LABELS[c]}</ToneBadge>)}
@@ -194,7 +194,7 @@ export function ProvidersPage({ d }: { d: Dashboard }) {
         })}
       </div>
 
-      {active ? (
+      {active && !hosted ? (
         <div className="mt-6 grid gap-4 lg:grid-cols-2">
           <Card>
             <CardHeader>

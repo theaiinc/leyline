@@ -514,6 +514,11 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     };
   };
 
+  // Hosted customers may inspect the provider catalog, but platform provider secrets
+  // are managed only through the admin surface. Keep this check at the API boundary
+  // as well as in the hosted dashboard UI.
+  const hostedCustomer = (req: Request): boolean => Boolean(hosted && !adminOf(hosted, req));
+
   // Dashboard Stats API
   app.get('/dashboard/stats', async (req, res) => {
     await apiKeyInitialization;
@@ -546,11 +551,13 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
             family: p.family,
             label: p.label,
             defaultModel: p.defaultModel,
-            apiKeyConfigurable: isApiKeyConfigurableProvider(p),
-            apiKeyConfigured: isApiKeyConfigurableProvider(p) ? p.hasApiKey() : undefined,
-            apiKeyStatus: isApiKeyConfigurableProvider(p) ? providerKeyStatus(p) : undefined,
-            runtimeConfigurable: isRuntimeConfigurableProvider(p),
-            runtimeConfig: isRuntimeConfigurableProvider(p) ? p.getRuntimeConfig() : undefined,
+            apiKeyConfigurable: hostedCustomer(req) ? false : isApiKeyConfigurableProvider(p),
+            ...(hostedCustomer(req) ? {} : {
+              apiKeyConfigured: isApiKeyConfigurableProvider(p) ? p.hasApiKey() : undefined,
+              apiKeyStatus: isApiKeyConfigurableProvider(p) ? providerKeyStatus(p) : undefined,
+              runtimeConfigurable: isRuntimeConfigurableProvider(p),
+              runtimeConfig: isRuntimeConfigurableProvider(p) ? p.getRuntimeConfig() : undefined,
+            }),
             runtimeReady: providerRuntimeReady(p),
             capabilities: providerCapabilities(p),
             models,
@@ -578,8 +585,11 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     res.json(getTunnelInfo?.() ?? { enabled: false, state: 'disabled' });
   });
 
-  app.get('/dashboard/api-keys', async (_req, res) => {
+  app.get('/dashboard/api-keys', async (req, res) => {
     await apiKeyInitialization;
+    if (hostedCustomer(req)) {
+      return res.json({ persistence: null, routing: dashboardRoutingStatus(router), providers: [] });
+    }
     res.json({
       persistence: dashboardPersistenceStatus(),
       routing: dashboardRoutingStatus(router),
@@ -600,6 +610,9 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   });
 
   app.post('/dashboard/api-keys', async (req, res) => {
+    if (hostedCustomer(req)) {
+      return res.status(403).json({ error: 'Provider configuration is managed by Valefront.' });
+    }
     await apiKeyInitialization;
     const { provider: providerName, apiKey, baseUrl, model, persistence, arcanaReference } = req.body || {};
 
@@ -693,6 +706,9 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   });
 
   app.delete('/dashboard/api-keys/:provider', async (req, res) => {
+    if (hostedCustomer(req)) {
+      return res.status(403).json({ error: 'Provider configuration is managed by Valefront.' });
+    }
     await apiKeyInitialization;
     const providerName = req.params.provider;
     const provider = router.getProviders()
@@ -821,7 +837,10 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     };
   }
 
-  app.get('/dashboard/provider-instances', (_req, res) => {
+  app.get('/dashboard/provider-instances', (req, res) => {
+    if (hostedCustomer(req)) {
+      return res.json({ families: [] });
+    }
     res.json({
       families: INSTANCE_FAMILIES.map(f => ({
         family: f.family,
@@ -836,6 +855,9 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   });
 
   app.post('/dashboard/provider-instances', async (req, res) => {
+    if (hostedCustomer(req)) {
+      return res.status(403).json({ error: 'Provider configuration is managed by Valefront.' });
+    }
     await apiKeyInitialization;
     const { family, config: instanceConfig } = req.body || {};
 
@@ -910,6 +932,9 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   });
 
   app.delete('/dashboard/provider-instances/:family/:id', async (req, res) => {
+    if (hostedCustomer(req)) {
+      return res.status(403).json({ error: 'Provider configuration is managed by Valefront.' });
+    }
     await apiKeyInitialization;
     const familyDef = INSTANCE_FAMILIES.find(f => f.family === req.params.family);
     if (!familyDef) {
