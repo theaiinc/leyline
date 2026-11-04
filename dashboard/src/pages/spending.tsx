@@ -69,7 +69,7 @@ export function SpendingPage() {
     <>
       <PageHeader
         title="Spending"
-        description="What requests through this Leyline cost, by the provider that served them and the model that answered, at the prices set on Offered models."
+        description="What requests through Valefront cost, by the provider that served them and the model that answered, at the prices set on Offered models."
         actions={months.length ? (
           <Select value={spend?.month} onValueChange={setMonth}>
             <SelectTrigger className="w-36" aria-label="Month"><SelectValue /></SelectTrigger>

@@ -61,7 +61,7 @@ export function App() {
         <div className="flex items-center gap-2 px-4 py-3 md:py-5">
           <img src={`${import.meta.env.BASE_URL}icon.svg`} alt="" className="size-8" />
           <div className="leading-tight">
-            <div className="font-semibold">Leyline</div>
+            <div className="font-semibold">Valefront</div>
             <div className="text-xs text-muted-foreground">{hosted ? 'Cloud' : 'Local router'}</div>
           </div>
           <div className="ml-auto flex md:hidden">
@@ -99,7 +99,7 @@ export function App() {
 
       <main className="min-w-0 px-4 py-6 md:px-8 md:py-8">
         <div className="mx-auto max-w-6xl">
-          {d.waiting ? <div className="mb-4"><ToneBadge tone="warning">Waiting for the Leyline API…</ToneBadge></div> : null}
+          {d.waiting ? <div className="mb-4"><ToneBadge tone="warning">Waiting for the Valefront API…</ToneBadge></div> : null}
           {current === 'benchmarks' ? <BenchmarksPage base={d.session?.hosted ? (d.session.publicUrl || window.location.origin) : d.stats.tunnel?.publicBaseUrl?.replace(/\/v1$/, '') || apiUrl('')} /> : null}
           {!d.status ? (
             <div className="grid gap-4"><Skeleton className="h-8 w-48" /><Skeleton className="h-28" /><Skeleton className="h-64" /></div>

@@ -28,7 +28,7 @@ function storageAvailable(): boolean {
   }
 }
 
-/** Everything the dashboard shows, loaded from Leyline and refreshed every few seconds. */
+/** Everything the dashboard shows, loaded from Valefront and refreshed every few seconds. */
 export function useDashboard() {
   const [session, setSession] = useState<Session | null>(null);
   const [status, setStatus] = useState<ApiKeyStatusResponse | null>(null);

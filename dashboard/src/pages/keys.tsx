@@ -102,7 +102,7 @@ export function KeysPage({ d }: { d: Dashboard }) {
     <>
       <PageHeader
         title="Access keys"
-        description="Keys you hand out so people can use this Leyline from their coding agents, on your provider accounts. Each has its own caps; usage resets each calendar month (UTC)."
+        description="Keys you hand out so people can use this Valefront from their coding agents, on your provider accounts. Each has its own caps; usage resets each calendar month (UTC)."
         actions={<Button onClick={() => setCreating(true)}><Plus />New key</Button>}
       />
 
