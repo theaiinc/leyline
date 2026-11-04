@@ -11,17 +11,17 @@ import {
   type StatsResponse,
 } from '@/normalization';
 
-const LOCAL_KEY_PREFIX = 'valefront.apiKey.';
-const LOCAL_MODE_PREFIX = 'valefront.persistence.';
-const LOCAL_RUNTIME_PREFIX = 'valefront.runtime.';
+const LOCAL_KEY_PREFIX = 'leyline.apiKey.';
+const LOCAL_MODE_PREFIX = 'leyline.persistence.';
+const LOCAL_RUNTIME_PREFIX = 'leyline.runtime.';
 export const localKey = (provider: string) => `${LOCAL_KEY_PREFIX}${provider}`;
 export const localModeKey = (provider: string) => `${LOCAL_MODE_PREFIX}${provider}`;
 export const localRuntimeKey = (provider: string) => `${LOCAL_RUNTIME_PREFIX}${provider}`;
 
 function storageAvailable(): boolean {
   try {
-    window.localStorage.setItem('valefront.localStorage.test', '1');
-    window.localStorage.removeItem('valefront.localStorage.test');
+    window.localStorage.setItem('leyline.localStorage.test', '1');
+    window.localStorage.removeItem('leyline.localStorage.test');
     return true;
   } catch {
     return false;
