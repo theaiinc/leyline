@@ -19,6 +19,7 @@ import { KeysPage } from '@/pages/keys';
 import { OfferedPage } from '@/pages/offered';
 import { OverviewPage } from '@/pages/overview';
 import { PlaygroundPage } from '@/pages/playground';
+import { ModelPlaygroundPage } from '@/pages/model-playground';
 import { ProvidersPage } from '@/pages/providers';
 import { RoutingPage } from '@/pages/routing';
 import { SpendingPage } from '@/pages/spending';
@@ -136,7 +137,7 @@ export function App() {
                   : current === 'spending' ? <SpendingPage />
                   : current === 'billing' ? <AdminBillingPage />
                   : current === 'offered' ? <OfferedPage d={d} />
-                    : current === 'playground' ? <PlaygroundPage d={d} />
+                    : current === 'playground' ? <ModelPlaygroundPage d={d} />
                       : current === 'calculator' ? <CalculatorPage />
                       : <ActivityPage d={d} />}
         </div>
