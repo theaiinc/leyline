@@ -13,6 +13,11 @@ export default defineConfig({
   esbuild: {
     jsx: 'automatic',
   },
+  server: {
+    proxy: {
+      '/v1': 'http://127.0.0.1:3000',
+    },
+  },
   build: {
     outDir: '../public',
     emptyOutDir: true,

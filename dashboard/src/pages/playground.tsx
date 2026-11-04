@@ -61,7 +61,7 @@ export function PlaygroundPage({ d }: { d: Dashboard }) {
         headers: {
           'Content-Type': 'application/json',
           ...(d.session?.hosted ? {} : { Authorization: `Bearer ${d.stats.clientAuth?.apiKey || ''}` }),
-          'X-Leyline-Force-Provider': provider.name,
+          'X-Valefront-Force-Provider': provider.name,
         },
         body: JSON.stringify({ model: modelId, messages: [{ role: 'user', content: prompt }] }),
       });
