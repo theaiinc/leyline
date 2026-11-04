@@ -32,7 +32,8 @@ const NAV: Nav[] = [
   { id: 'routing', label: 'Routing', icon: Route },
   { id: 'keys', label: 'Access keys', icon: KeyRound, hosted: true },
   { id: 'offered', label: 'Offered models', icon: Layers, hosted: true },
-  { id: 'playground', label: 'Playground', icon: FlaskConical },
+  { id: 'model-playground', label: 'Playground', icon: FlaskConical },
+  { id: 'calculator', label: 'Cost calculator', icon: Wallet },
   { id: 'activity', label: 'Activity', icon: Activity },
 ];
 /** Money in one place: billing (hosted), spending (hosted), the cost calculator. */
@@ -137,7 +138,7 @@ export function App() {
                   : current === 'spending' ? <SpendingPage />
                   : current === 'billing' ? <AdminBillingPage />
                   : current === 'offered' ? <OfferedPage d={d} />
-                    : current === 'playground' ? <ModelPlaygroundPage d={d} />
+                    : current === 'model-playground' ? <ModelPlaygroundPage d={d} />
                       : current === 'calculator' ? <CalculatorPage />
                       : <ActivityPage d={d} />}
         </div>
