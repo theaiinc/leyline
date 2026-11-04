@@ -35,11 +35,11 @@ const NAV: Nav[] = [
 
 function useTheme(): [boolean, () => void] {
   const media = window.matchMedia('(prefers-color-scheme: dark)');
-  const stored = (() => { try { return window.localStorage.getItem('leyline.theme'); } catch { return null; } })();
+  const stored = (() => { try { return window.localStorage.getItem('valefront.theme'); } catch { return null; } })();
   const [dark, setDark] = useState(stored ? stored === 'dark' : media.matches);
   useEffect(() => { document.documentElement.classList.toggle('dark', dark); }, [dark]);
   return [dark, () => setDark(v => {
-    try { window.localStorage.setItem('leyline.theme', v ? 'light' : 'dark'); } catch { /* per-browser preference only */ }
+    try { window.localStorage.setItem('valefront.theme', v ? 'light' : 'dark'); } catch { /* per-browser preference only */ }
     return !v;
   })];
 }
@@ -54,7 +54,7 @@ export function App() {
 
   async function signOut() {
     await fetch(apiUrl('/auth/logout'), { method: 'POST', credentials: 'same-origin' });
-    window.location.href = '/auth/login?next=/dashboard/';
+    window.location.href = '/auth/login?next=/';
   }
 
   return (
