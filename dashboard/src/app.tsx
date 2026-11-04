@@ -9,6 +9,7 @@ import { useDashboard } from '@/hooks/use-dashboard';
 import { useHashRoute } from '@/hooks/use-hash-route';
 import { cn } from '@/lib/utils';
 import { ActivityPage } from '@/pages/activity';
+import { CalculatorPage } from '@/pages/calculator';
 import { BenchmarksPage } from '@/pages/benchmarks';
 import { KeysPage } from '@/pages/keys';
 import { OfferedPage } from '@/pages/offered';
@@ -28,6 +29,7 @@ const NAV: Nav[] = [
   { id: 'spending', label: 'Spending', icon: Wallet, hosted: true },
   { id: 'offered', label: 'Offered models', icon: Layers, hosted: true },
   { id: 'playground', label: 'Playground', icon: FlaskConical },
+  { id: 'calculator', label: 'Cost calculator', icon: Wallet },
   { id: 'activity', label: 'Activity', icon: Activity },
 ];
 
@@ -110,6 +112,7 @@ export function App() {
                   : current === 'spending' ? <SpendingPage />
                   : current === 'offered' ? <OfferedPage d={d} />
                     : current === 'playground' ? <PlaygroundPage d={d} />
+                      : current === 'calculator' ? <CalculatorPage />
                       : <ActivityPage d={d} />}
         </div>
       </main>
