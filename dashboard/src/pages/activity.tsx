@@ -8,7 +8,7 @@ import { formatLogTime, formatLogUsage, providerTone, statusTone } from '@/norma
 export function ActivityPage({ d }: { d: Dashboard }) {
   const logs = [...d.stats.logs].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).slice(0, 100);
   const base = d.session?.hosted ? `${d.session.publicUrl || window.location.origin}/v1` : d.stats.tunnel?.publicBaseUrl || apiUrl('/v1');
-  const token = d.session?.hosted ? 'll_…' : d.stats.clientAuth?.apiKey || 'leyline';
+  const token = d.session?.hosted ? 'll_…' : d.stats.clientAuth?.apiKey || 'valefront';
   return (
     <>
       <PageHeader title="Activity" description="Recent requests through Valefront (newest first, kept in memory)." />

@@ -1,4 +1,4 @@
-const API_BASE = (import.meta.env.VITE_LEYLINE_API_BASE_URL || window.location.origin).replace(/\/$/, '');
+const API_BASE = (import.meta.env.VITE_VALEFRONT_API_BASE_URL || window.location.origin).replace(/\/$/, '');
 
 export function apiUrl(path: string): string {
   return `${API_BASE}${path}`;
@@ -21,7 +21,7 @@ export async function api<T = unknown>(path: string, init: { method?: string; bo
   return data as T;
 }
 
-/** Who is looking: the local desktop/dashboard, or hosted Leyline with its signed-in owner. */
+/** Who is looking: the local desktop/dashboard, or hosted Valefront with its signed-in owner. */
 export type Session = { hosted: boolean; email?: string | null; publicUrl?: string; signIn?: boolean };
 
 export async function fetchSession(): Promise<Session> {
