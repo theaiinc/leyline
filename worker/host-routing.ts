@@ -1,5 +1,3 @@
-import { Response } from 'undici';
-
 export function legacyDashboardRedirect(url: URL): Response | null {
   if (url.hostname !== 'llm.theaiinc.com') return null;
   if (url.pathname !== '/' && url.pathname !== '/dashboard' && url.pathname !== '/dashboard/' && !url.pathname.startsWith('/auth/')) {
