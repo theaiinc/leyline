@@ -58,6 +58,19 @@ import { config } from '../config';
 /** Verified free-tier model IDs, supplied by deployment configuration. */
 export const FREE_TIER_MODEL_IDS = config.freeTierModels;
 
+/**
+ * Models explicitly offered by Valefront. Provider model listings are not a sales catalogue:
+ * gateways may return thousands of models that are not enabled for customers.
+ */
+export const PUBLIC_SALE_MODEL_IDS = new Set<string>([
+  ...FREE_TIER_MODEL_IDS,
+  ...(config.offeredModels ?? []),
+]);
+
+export function isPublicSaleModel(modelId: string): boolean {
+  return PUBLIC_SALE_MODEL_IDS.has(modelId);
+}
+
 const OFFICIAL_PRICING_PAGES: Record<string, string> = {
   Anthropic: 'https://www.anthropic.com/pricing',
   AzureOpenAI: 'https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/',
