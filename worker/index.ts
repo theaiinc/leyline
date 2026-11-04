@@ -9,7 +9,7 @@ import { logger } from '../src/core/logger';
 import { fetchBenchmarkSnapshot, mapBenchmarkSnapshot, refreshBenchmarks, type BenchmarkCache, type BenchmarkSnapshot } from '../src/core/benchmarks';
 import type { ModelListSnapshot } from '../src/core/router';
 import type { WorkersAiBinding } from '../src/providers/workers-ai';
-import { dashboardPageRedirect, legacyDashboardRedirect } from './host-routing';
+import { dashboardApiRequest, dashboardPageRedirect, legacyDashboardRedirect } from './host-routing';
 
 /**
  * Hosted Valefront on Cloudflare Workers. The same Express app as the Node server (src/server.ts), in hosted keys
@@ -266,6 +266,7 @@ export default {
       return Response.json({ status: 'ok', service: 'leyline', ...(env.GIT_SHA ? { commit: env.GIT_SHA } : {}) });
     }
 
+    const routedRequest = dashboardApiRequest(request) ?? request;
     const t0 = Date.now();
     const b = await current(env);
     if (url.pathname === '/v1/benchmarks/refresh' && request.method === 'POST') {
@@ -286,7 +287,7 @@ export default {
       }
     }
     const appMs = Date.now() - t0;
-    const res = await handleAsNodeRequest(b.port, request, env, ctx as never);
+    const res = await handleAsNodeRequest(b.port, routedRequest, env, ctx as never);
     // Where a request's time to its first byte goes: getting the app (a cold build), then the app itself.
     if (url.pathname.startsWith('/v1/')) console.log(JSON.stringify({ event: 'leyline_request', path: url.pathname, appMs, headersMs: Date.now() - t0 }));
     // Server-Timing for the caller too: getting the app (with its build stages when this request built it), the
