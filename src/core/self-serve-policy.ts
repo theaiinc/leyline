@@ -132,9 +132,12 @@ export function freeTierRefusal(
   if (!input.hasPaidCredit && input.concurrent >= limits.concurrency) {
     return { status: 429, code: 'free_concurrency_limited', message: 'This key has reached its free-tier concurrency limit.' };
   }
+<<<<<<< HEAD
   if (!limits.eligibleModels.some((model) => model.toLowerCase() === input.model.toLowerCase()) && !input.hasPaidCredit) {
     return { status: 403, code: 'free_model_not_allowed', message: 'This model requires paid credit.' };
   }
+=======
+>>>>>>> origin/feat/self-serve-signup
   return null;
 }
 

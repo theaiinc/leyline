@@ -181,7 +181,7 @@ describe('hosted dashboard', () => {
     expect((await request(app).get('/admin/api/keys').set(ADMIN)).status).toBe(200);
   });
 
-  it('allows workspace dashboard access but keeps customer and workspace-owner sessions out of admin APIs', async () => {
+  it('allows workspace dashboard access but keeps customer and workspace-owner sessions out of admin APIs', async () =>
     const { app } = withLogin();
     const page = await request(app).get('/dashboard/').set('Cookie', cookieFor('owner@example.com'));
     expect(page.status).toBe(200);
