@@ -3,6 +3,7 @@ import { ArrowUpDown, ExternalLink } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { EmptyState, PageHeader } from '@/components/common';
+import { fetchBenchmarks } from '@/lib/benchmarks';
 
 type Score = {
   model: string;
@@ -46,9 +47,7 @@ export function BenchmarksPage({ base }: { base: string }) {
 
   useEffect(() => {
     let alive = true;
-    // Benchmarks are a dashboard capability: use the dashboard origin so the
-    // signed-in session is sent without a credentialed cross-origin request.
-    fetch('/v1/benchmarks', { credentials: 'include' })
+    fetchBenchmarks()
       .then(async response => {
         if (!response.ok) throw new Error(`Benchmark service returned ${response.status}`);
         return response.json() as Promise<Response>;
