@@ -9,7 +9,7 @@ import { logger } from '../src/core/logger';
 import { fetchBenchmarkSnapshot, mapBenchmarkSnapshot, refreshBenchmarks, type BenchmarkCache, type BenchmarkSnapshot } from '../src/core/benchmarks';
 import type { ModelListSnapshot } from '../src/core/router';
 import type { WorkersAiBinding } from '../src/providers/workers-ai';
-import { legacyDashboardRedirect } from './host-routing';
+import { dashboardPageRedirect, legacyDashboardRedirect } from './host-routing';
 
 /**
  * Hosted Valefront on Cloudflare Workers. The same Express app as the Node server (src/server.ts), in hosted keys
@@ -239,12 +239,8 @@ export default {
     if (url.pathname === '/' && url.hostname === 'llm.valefront.com') {
       return Response.redirect(new URL('https://dash.valefront.com/').toString(), 301);
     }
-    if (url.pathname === '/dashboard' || url.pathname === '/dashboard/' || url.pathname.startsWith('/dashboard/')) {
-      const suffix = url.pathname.slice('/dashboard'.length) || '/';
-      const target = new URL(`${suffix}${url.search}`, url.hostname === 'llm.valefront.com' ? 'https://dash.valefront.com' : url.origin);
-      if (url.hostname === 'llm.valefront.com') return Response.redirect(target.toString(), 301);
-      return Response.redirect(target.toString(), 301);
-    }
+    const dashboardRedirect = dashboardPageRedirect(url);
+    if (dashboardRedirect) return dashboardRedirect;
 
     const asset = assetPath(url.pathname);
     if (asset) {
