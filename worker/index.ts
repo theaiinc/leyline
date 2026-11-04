@@ -217,6 +217,9 @@ const DASHBOARD_FILES = new Set(['/logo.png', '/icon.svg', '/favicon-32.png', '/
 
 /** The dashboard's own files (built into public/ by vite, base /dashboard/). */
 function assetPath(path: string): string | null {
+  if (path === '/' || path === '/index.html') return '/';
+  if (path.startsWith('/assets/') || DASHBOARD_FILES.has(path)) return path;
+  // Keep the old dashboard path working while callers move to the dashboard host root.
   if (path === '/dashboard' || path === '/dashboard/' || path === '/dashboard/index.html') return '/';
   if (path.startsWith('/dashboard/assets/') || DASHBOARD_FILES.has(path.slice('/dashboard'.length))) return path.slice('/dashboard'.length);
   // Browsers and agents ask the site root for these.
@@ -233,7 +236,15 @@ export default {
     // but send dashboard and authentication traffic to Valefront's canonical dashboard host.
     const legacyRedirect = legacyDashboardRedirect(url);
     if (legacyRedirect) return legacyRedirect;
-    if (url.pathname === '/') return Response.redirect(new URL('/dashboard/', url).toString(), 302);
+    if (url.pathname === '/' && url.hostname === 'llm.valefront.com') {
+      return Response.redirect(new URL('https://dash.valefront.com/').toString(), 301);
+    }
+    if (url.pathname === '/dashboard' || url.pathname === '/dashboard/' || url.pathname.startsWith('/dashboard/')) {
+      const suffix = url.pathname.slice('/dashboard'.length) || '/';
+      const target = new URL(`${suffix}${url.search}`, url.hostname === 'llm.valefront.com' ? 'https://dash.valefront.com' : url.origin);
+      if (url.hostname === 'llm.valefront.com') return Response.redirect(target.toString(), 301);
+      return Response.redirect(target.toString(), 301);
+    }
 
     const asset = assetPath(url.pathname);
     if (asset) {
@@ -243,10 +254,10 @@ export default {
         const req = { headers: { cookie: request.headers.get('cookie') ?? undefined, authorization: request.headers.get('authorization') ?? undefined } };
         if (!adminOf(b.hosted, req as never)) {
           return b.hosted.login
-            ? Response.redirect(new URL('/auth/login?next=/dashboard/', url).toString(), 302)
+            ? Response.redirect(new URL('/auth/login?next=/', url).toString(), 302)
             : new Response('Sign-in is not configured.', { status: 503 });
         }
-        if (url.pathname === '/dashboard') return Response.redirect(new URL('/dashboard/', url).toString(), 302);
+        if (url.pathname === '/dashboard') return Response.redirect(new URL('/', url).toString(), 301);
       }
       const res = await env.ASSETS.fetch(new Request(new URL(asset, url), request));
       if (asset !== '/') return res;

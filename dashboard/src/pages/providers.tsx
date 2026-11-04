@@ -37,6 +37,7 @@ export function ProvidersPage({ d }: { d: Dashboard }) {
   const { status, families, session, storeLabel, localStorageAvailable } = d;
   const hosted = Boolean(session?.hosted);
   const providers = useMemo(() => [...(status?.providers ?? [])]
+    .filter(provider => provider.name !== 'Shared pool' && provider.label !== 'Shared pool')
     .sort((a, b) => familyOf(a.name, a.family).localeCompare(familyOf(b.name, b.family)) || a.name.localeCompare(b.name)), [status]);
   const [selected, setSelected] = useState('');
   const active = providers.find(p => p.name === selected) ?? providers.find(p => p.name === status?.routing?.fixedProvider) ?? providers[0];
