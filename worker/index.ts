@@ -239,9 +239,11 @@ export default {
     if (url.pathname === '/' && url.hostname === 'llm.valefront.com') {
       return Response.redirect(new URL('https://dash.valefront.com/').toString(), 301);
     }
-    if (url.pathname === '/dashboard' || url.pathname === '/dashboard/') {
-      if (url.hostname === 'llm.valefront.com') return Response.redirect(new URL('https://dash.valefront.com/').toString(), 301);
-      return Response.redirect(new URL('/', url).toString(), 301);
+    if (url.pathname === '/dashboard' || url.pathname === '/dashboard/' || url.pathname.startsWith('/dashboard/')) {
+      const suffix = url.pathname.slice('/dashboard'.length) || '/';
+      const target = new URL(`${suffix}${url.search}`, url.hostname === 'llm.valefront.com' ? 'https://dash.valefront.com' : url.origin);
+      if (url.hostname === 'llm.valefront.com') return Response.redirect(target.toString(), 301);
+      return Response.redirect(target.toString(), 301);
     }
 
     const asset = assetPath(url.pathname);
