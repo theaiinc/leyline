@@ -52,7 +52,7 @@ export function useDashboard() {
     await Promise.all([refreshStatus(), refreshStats(), refreshFamilies()]);
   }, [refreshStatus, refreshStats, refreshFamilies]);
 
-  // Keys kept in this browser (localStorage mode) are re-sent to Leyline when the dashboard opens.
+  // Keys kept in this browser (localStorage mode) are re-sent to Valefront when the dashboard opens.
   async function rehydrate(data: ApiKeyStatusResponse) {
     if (!localStorageAvailable) return;
     await Promise.all(data.providers.map(async provider => {
