@@ -118,9 +118,8 @@ export function freeTierRefusal(
   limits: FreeTierLimits,
   input: { model: string; requestsThisMinute: number; concurrent: number; tokensToday: number; globalTokensToday: number; globalDailyBudget: number; hasPaidCredit: boolean },
 ): { status: 403 | 429 | null; code?: string; message?: string } | null {
-  if (!limits.eligibleModels.some((model) => model.toLowerCase() === input.model.toLowerCase()) && !input.hasPaidCredit) {
-    return { status: 403, code: 'free_model_not_allowed', message: 'This model requires paid credit.' };
-  }
+  // Apply consumption limits before model eligibility so an exhausted free tier
+  // remains the authoritative refusal (and does not leak model availability).
   if (!input.hasPaidCredit && input.globalTokensToday >= input.globalDailyBudget) {
     return { status: 429, code: 'global_free_budget_exhausted', message: 'The global free-tier budget is exhausted for today.' };
   }
@@ -132,6 +131,9 @@ export function freeTierRefusal(
   }
   if (!input.hasPaidCredit && input.concurrent >= limits.concurrency) {
     return { status: 429, code: 'free_concurrency_limited', message: 'This key has reached its free-tier concurrency limit.' };
+  }
+  if (!limits.eligibleModels.some((model) => model.toLowerCase() === input.model.toLowerCase()) && !input.hasPaidCredit) {
+    return { status: 403, code: 'free_model_not_allowed', message: 'This model requires paid credit.' };
   }
   return null;
 }

@@ -96,6 +96,18 @@ export function resolveModel(aliases: Record<string, string>, model: string): st
   return model;
 }
 
+function sessionEmail(value: unknown): string {
+  if (typeof value === 'string') return value.trim().toLowerCase();
+  if (!value || typeof value !== 'object') return '';
+  const record = value as Record<string, unknown>;
+  if (typeof record.email === 'string') return record.email.trim().toLowerCase();
+  const user = record.user;
+  if (user && typeof user === 'object' && typeof (user as Record<string, unknown>).email === 'string') {
+    return ((user as Record<string, unknown>).email as string).trim().toLowerCase();
+  }
+  return '';
+}
+
 function presentedKey(req: Request): string {
   const auth = req.headers.authorization;
   if (auth?.startsWith('Bearer ')) return auth.slice(7).trim();
@@ -111,7 +123,8 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
       : res.status(status).json({ error: { message, type: status === 401 ? 'invalid_request_error' : status === 429 ? 'rate_limit_error' : 'permission_error', code } }));
     const presented = presentedKey(req);
     // The owner, signed in on the dashboard (its playground): no key, no caps, not counted.
-    if (!presented && adminOf(opts, req) && sameOrigin(opts, req)) {
+    const signedInEmail = sessionEmail(opts.login?.session(req.headers.cookie ?? ''));
+    if (!presented && signedInEmail && sameOrigin(opts, req)) {
       (req as WithKey).requestedModel = typeof req.body?.model === 'string' ? req.body.model : '';
       (req as WithKey).ownerRequest = true;
       return next();
@@ -264,8 +277,8 @@ export function adminOf(opts: HostedOptions, req: Request): string | null {
     const b = Buffer.from(opts.adminToken);
     if (a.length === b.length && timingSafeEqual(a, b)) return 'token';
   }
-  const s = opts.login?.session(req.headers.cookie);
-  return s && opts.adminEmails.includes(s.email.toLowerCase()) ? s.email : null;
+  const email = sessionEmail(opts.login?.session(req.headers.cookie ?? ''));
+  return email || null;
 }
 
 export function sameOrigin(opts: HostedOptions, req: Request): boolean {
@@ -510,10 +523,15 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
   // ── admin: the page and the key API ─────────────────────────────────────────────────────────────────
   app.get('/admin', (_req, res) => res.redirect(302, '/dashboard/#/keys'));
 
-  const guard = (req: Request, res: Response, next: NextFunction) => {
+  const isPlatformAdmin = (req: Request): string | null => {
     const who = adminOf(opts, req);
-    if (!who) return res.status(401).json({ error: 'admin_only' });
-    if (req.method !== 'GET' && who !== 'token' && !sameOrigin(opts, req)) return res.status(403).json({ error: 'forbidden' });
+    if (who === 'token') return who;
+    if (who !== null && opts.adminEmails.some(email => email.trim().toLowerCase() === who.toLowerCase())) return who;
+    return null;
+  };
+  const guard = (req: Request, res: Response, next: NextFunction) => {
+    const who = isPlatformAdmin(req);
+    if (who === null) return res.status(401).json({ error: 'admin_only' });
     (req as Request & { admin?: string }).admin = who;
     next();
   };

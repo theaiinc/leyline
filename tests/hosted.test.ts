@@ -167,20 +167,28 @@ describe('hosted dashboard', () => {
     const { sign } = require('../src/core/admin-login') as typeof import('../src/core/admin-login');
     return `leyline_session=${sign({ sub: 'u1', email, exp: Math.floor(Date.now() / 1000) + 3600 }, 'test-session-secret')}`;
   };
-  const withLogin = () => {
+  const withLogin = (adminEmails: string[] = []) => {
     const { AegisAuth } = require('../src/core/admin-login') as typeof import('../src/core/admin-login');
     const login = new AegisAuth({ issuer: 'https://id.example', clientId: 'c', clientSecret: 's', redirectUri: 'https://leyline.test/auth/callback', sessionSecret: 'test-session-secret' });
-    return setup({ login, adminEmails: ['owner@example.com'] });
+    return setup({ login, adminEmails });
   };
 
-  it('is for the signed-in workspace owner; strangers are sent to sign in and admin APIs stay protected', async () => {
+  it('keeps admin-email sessions on the admin API while rejecting customer sessions', async () => {
+    const { app } = withLogin(['admin@example.com']);
+    expect((await request(app).get('/admin/api/keys').set('Cookie', cookieFor('admin@example.com'))).status).toBe(200);
+    expect((await request(app).get('/admin/api/usage').set('Cookie', cookieFor('admin@example.com'))).status).toBe(200);
+    expect((await request(app).get('/admin/api/keys').set('Cookie', cookieFor('owner@example.com'))).status).toBe(401);
+    expect((await request(app).get('/admin/api/keys').set(ADMIN)).status).toBe(200);
+  });
+
+  it('allows workspace dashboard access but keeps customer and workspace-owner sessions out of admin APIs', async () => {
     const { app } = withLogin();
     const page = await request(app).get('/dashboard/').set('Cookie', cookieFor('owner@example.com'));
     expect(page.status).toBe(200);
     expect((await request(app).get('/dashboard/api-keys')).status).toBe(401);
     expect((await request(app).get('/dashboard/api-keys').set('Cookie', cookieFor('someone@else.com'))).status).toBe(401);
     const me = await request(app).get('/dashboard/session').set('Cookie', cookieFor('owner@example.com'));
-    expect(me.body).toEqual({ hosted: true, email: null, publicUrl: 'https://leyline.test', signIn: true });
+    expect(me.body).toEqual({ hosted: true, email: 'owner@example.com', publicUrl: 'https://leyline.test', signIn: true });
     expect((await request(app).get('/dashboard/api-keys').set('Cookie', cookieFor('owner@example.com'))).status).toBe(401);
     expect((await request(app).get('/admin/api/keys').set('Cookie', cookieFor('owner@example.com'))).status).toBe(401);
   });
@@ -193,10 +201,21 @@ describe('hosted dashboard', () => {
       cookies: [cookieFor('owner@example.com') + '; Path=/', 'leyline_refresh=new; Path=/'],
     }));
     const { app } = setup({ login, adminEmails: ['owner@example.com'] });
-    const r = await request(app).get('/dashboard/api-keys').set('Cookie', `leyline_refresh=${encodeURIComponent(seal('rt', 'test-session-secret'))}`);
+    const r = await request(app).get('/dashboard/session').set('Cookie', `leyline_refresh=${encodeURIComponent(seal('rt', 'test-session-secret'))}`);
     expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ hosted: true, email: 'owner@example.com' });
     const set = ([] as string[]).concat(r.headers['set-cookie'] ?? []);
     expect(Object.keys(cookies(set.map((c) => c.split(';')[0]).join('; ')))).toEqual(['leyline_session', 'leyline_refresh']);
+  });
+
+  it('rejects cross-workspace access to global keys and usage routes', async () => {
+    const { app } = withLogin();
+    const ownerA = cookieFor('owner-a@example.com');
+    const ownerB = cookieFor('owner-b@example.com');
+    for (const path of ['/admin/api/keys', '/admin/api/spend', '/admin/api/usage', '/dashboard/api-keys']) {
+      expect((await request(app).get(path).set('Cookie', ownerA)).status).toBe(401);
+      expect((await request(app).get(path).set('Cookie', ownerB)).status).toBe(401);
+    }
   });
 
   it('accepts the primary host and configured alias but refuses a foreign Origin', async () => {

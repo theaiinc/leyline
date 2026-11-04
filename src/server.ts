@@ -146,7 +146,7 @@ function requireHostedDashboard(hosted: HostedOptions) {
 function requireHostedAdmin(hosted: HostedOptions) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const who = adminOf(hosted, req);
-    if (!who) {
+    if (!who || (who !== 'token' && !hosted.adminEmails.some((email) => email.trim().toLowerCase() === who))) {
       const page = req.method === 'GET' && (req.path === '/' || req.path.endsWith('.html'));
       if (page && hosted.login) {
         res.redirect(302, '/auth/login?next=/dashboard/');
@@ -243,6 +243,19 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
 
   if (options.enforceExternalSurface !== false) {
     app.use(requireExternalSurfaceAllowlist);
+  }
+
+  // Hosted customer sessions are workspace-scoped and must never reach the
+  // global admin API surface. Keep this guard before all admin routes so
+  // unknown admin paths cannot fall through as public 404s.
+  if (hosted) {
+    app.use('/admin/api', (req, res, next) => {
+      const who = adminOf(hosted, req);
+      const allowed = who === 'token' || (who && hosted.adminEmails.some((email) => email.trim().toLowerCase() === who));
+      if (!allowed) return res.status(401).json({ error: 'admin_only' });
+      (req as Request & { admin?: string }).admin = who;
+      next();
+    });
   }
 
   app.get('/healthz', (_req, res) => {
@@ -590,7 +603,16 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     res.json(getTunnelInfo?.() ?? { enabled: false, state: 'disabled' });
   });
 
-  app.get('/dashboard/api-keys', async (_req, res) => {
+  app.get('/dashboard/api-keys', hosted ? ((req, res, next) => {
+    // The legacy dashboard endpoint exposes the global key inventory. Hosted
+    // customers, including configured admin-email workspace owners, must use
+    // customer-scoped endpoints instead; only the explicit admin token may
+    // access this compatibility route.
+    const who = adminOf(hosted, req);
+    if (who !== 'token') return res.status(401).json({ error: 'admin_only' });
+    (req as Request & { admin?: string }).admin = who;
+    next();
+  }) : requireLocalDashboardAccess, async (_req, res) => {
     await apiKeyInitialization;
     res.json({
       persistence: dashboardPersistenceStatus(),
