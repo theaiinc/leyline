@@ -600,6 +600,9 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   });
 
   app.post('/dashboard/api-keys', async (req, res) => {
+    if (hosted && !(req as Request & { admin?: boolean }).admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
     await apiKeyInitialization;
     const { provider: providerName, apiKey, baseUrl, model, persistence, arcanaReference } = req.body || {};
 
@@ -693,6 +696,9 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   });
 
   app.delete('/dashboard/api-keys/:provider', async (req, res) => {
+    if (hosted && !(req as Request & { admin?: boolean }).admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
     await apiKeyInitialization;
     const providerName = req.params.provider;
     const provider = router.getProviders()
@@ -726,6 +732,9 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   });
 
   app.post('/dashboard/routing', async (req, res) => {
+    if (hosted && !(req as Request & { admin?: boolean }).admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
     await apiKeyInitialization;
     const { mode, pinnedProvider, pinnedModel, enabledModels, modelPins } = req.body || {};
 
@@ -836,6 +845,9 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   });
 
   app.post('/dashboard/provider-instances', async (req, res) => {
+    if (hosted && !(req as Request & { admin?: boolean }).admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
     await apiKeyInitialization;
     const { family, config: instanceConfig } = req.body || {};
 
@@ -910,6 +922,9 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   });
 
   app.delete('/dashboard/provider-instances/:family/:id', async (req, res) => {
+    if (hosted && !(req as Request & { admin?: boolean }).admin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
     await apiKeyInitialization;
     const familyDef = INSTANCE_FAMILIES.find(f => f.family === req.params.family);
     if (!familyDef) {
