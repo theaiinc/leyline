@@ -17,6 +17,13 @@ import { normalizeCompletionRequest } from './core/normalize-request';
 import { createMcpHttpHandler } from './mcp/http';
 import type { TunnelInfo } from './core/cloudflared-tunnel';
 import { INSTANCE_FAMILIES } from './core/provider-instances';
+import {
+  DEFAULT_FREE_TIER_EXPIRES_AFTER_DAYS,
+  DEFAULT_FREE_TIER_TOKENS,
+  isPublicSaleModel,
+  parsePublishedPricing,
+  toPublicPricingModel,
+} from './core/pricing';
 import { generateInstanceId } from './core/instance-naming';
 import {
   ApiKeyPersistenceMode,
@@ -393,6 +400,59 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   app.get('/readyz', async (_req, res) => {
     await apiKeyInitialization;
     res.json({ status: 'ready', service: 'leyline' });
+  });
+
+  const pricingCacheTtlMs = 5 * 60 * 1000;
+  let pricingCache: { value: unknown; expiresAt: number } | undefined;
+  let pricingInFlight: Promise<unknown> | undefined;
+
+  const computePricing = async () => {
+    const models = (await Promise.all(router.getProviders().map(async provider => {
+      try {
+        const offered = await provider.getModels();
+        return offered
+          .filter(model => typeof model.id === 'string' && isPublicSaleModel(model.id))
+          .map(model => toPublicPricingModel(provider.name, model, config.freeTierModels))
+          .filter((model): model is NonNullable<typeof model> => Boolean(model));
+      } catch {
+        return [];
+      }
+    }))).flat();
+
+    return {
+      currency: 'USD',
+      unit: 'per 1M tokens',
+      free_tier: {
+        tokens: DEFAULT_FREE_TIER_TOKENS,
+        expires_after_days: DEFAULT_FREE_TIER_EXPIRES_AFTER_DAYS,
+        models: config.freeTierModels.filter((id) => models.some((model) => model.id === id && Number.isFinite(model.input) && Number.isFinite(model.output))),
+      },
+      models,
+    };
+  };
+
+  app.get('/v1/pricing', async (_req, res) => {
+    const now = Date.now();
+    const cached = pricingCache;
+    if (cached && cached.expiresAt > now) {
+      res.set('Cache-Control', 'public, max-age=300');
+      res.json(cached.value);
+      return;
+    }
+
+    if (!pricingInFlight) {
+      pricingInFlight = computePricing()
+        .then(result => {
+          pricingCache = { value: result, expiresAt: Date.now() + pricingCacheTtlMs };
+          return result;
+        })
+        .finally(() => {
+          pricingInFlight = undefined;
+        });
+    }
+    const value = await pricingInFlight;
+    res.set('Cache-Control', 'public, max-age=300');
+    res.json(value);
   });
 
   const mcpHandler = createMcpHttpHandler(router);

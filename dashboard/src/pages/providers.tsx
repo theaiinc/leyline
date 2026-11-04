@@ -143,7 +143,7 @@ export function ProvidersPage({ d }: { d: Dashboard }) {
   const modes: Array<{ value: PersistenceMode; label: string; hint: string; available: boolean; show: boolean }> = [
     { value: 'keychain', label: storeLabel, hint: keychainAvailable ? (hosted ? 'Kept in the cloud project; survives restarts and deploys.' : 'Most secure server-side option on macOS.') : 'Unavailable on this server.', available: keychainAvailable, show: true },
     { value: 'arcana', label: 'Arcana', hint: arcanaAvailable ? 'Resolve this key from an Arcana reference.' : 'No Arcana reference is available for this provider.', available: arcanaAvailable, show: !hosted || arcanaAvailable },
-    { value: 'localStorage', label: 'Browser localStorage', hint: 'Browser-local fallback; re-sent to Leyline when this dashboard opens.', available: localStorageAvailable, show: !hosted },
+    { value: 'localStorage', label: 'Browser localStorage', hint: 'Browser-local fallback; re-sent to Valefront when this dashboard opens.', available: localStorageAvailable, show: !hosted },
     { value: 'memory', label: 'Server memory', hint: hosted ? 'Until this instance restarts (deploys and scale-downs restart it).' : 'Until this server process exits.', available: true, show: true },
   ];
 
@@ -222,7 +222,7 @@ export function ProvidersPage({ d }: { d: Dashboard }) {
                 </RadioGroup>
 
                 {mode === 'arcana' ? (
-                  <Field id="arcana-ref" label="Arcana reference" hint="The secret stays in Arcana; Leyline keeps only this reference.">
+                  <Field id="arcana-ref" label="Arcana reference" hint="The secret stays in Arcana; Valefront keeps only this reference.">
                     <Input id="arcana-ref" value={arcanaReference} onChange={e => setArcanaReference(e.target.value)} placeholder="arcana://provider/name" autoComplete="off" />
                   </Field>
                 ) : (

@@ -11,11 +11,11 @@ export function ActivityPage({ d }: { d: Dashboard }) {
   const token = d.session?.hosted ? 'll_…' : d.stats.clientAuth?.apiKey || 'leyline';
   return (
     <>
-      <PageHeader title="Activity" description="Recent requests through this Leyline (newest first, kept in memory)." />
+      <PageHeader title="Activity" description="Recent requests through Valefront (newest first, kept in memory)." />
       {logs.length === 0 ? (
         <EmptyState title="No requests yet">
           <p className="mb-3">Send a chat completion through the router and it shows up here.</p>
-          <CodeBlock>{`curl -X POST ${base}/chat/completions \\\n  -H 'Authorization: Bearer ${token}' -H 'Content-Type: application/json' \\\n  -d '{"model":"auto","messages":[{"role":"user","content":"Hello Leyline"}]}'`}</CodeBlock>
+          <CodeBlock>{`curl -X POST ${base}/chat/completions \\\n  -H 'Authorization: Bearer ${token}' -H 'Content-Type: application/json' \\\n  -d '{"model":"auto","messages":[{"role":"user","content":"Hello Valefront"}]}'`}</CodeBlock>
         </EmptyState>
       ) : (
         <Card className="py-0">

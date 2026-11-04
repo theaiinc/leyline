@@ -127,6 +127,10 @@ export interface LeylineConfig {
   singleModel: SingleModelConfig;
   /** Expected client Bearer token for /v1/* endpoints. Empty string disables validation. */
   clientApiKey: string;
+  /** Model IDs verified by the deployed provider and eligible for the public free tier. */
+  freeTierModels: string[];
+  /** Model IDs explicitly offered for sale through the public model and pricing routes. */
+  offeredModels: string[];
   tunnel: TunnelConfig;
   /** Max JSON request body size (express limit string, e.g. 50mb). */
   bodyLimit: string;
@@ -231,6 +235,10 @@ export const config: LeylineConfig = {
     model: process.env.LEYLINE_FIXED_MODEL || '',
   },
   clientApiKey: resolveClientApiKey(),
+  freeTierModels: (process.env.FREE_TIER_MODELS || 'seed-2-0-lite-260428,seed-2-0-mini-260428,deepseek-v4-1-flash-261017,deepseek-v4-flash-ga-260731,glm-5-3-flash-260828')
+    .split(',').map((model) => model.trim()).filter(Boolean),
+  offeredModels: (process.env.LEYLINE_OFFERED_MODELS || 'seed-2-0-lite-260428,seed-2-0-mini-260428,deepseek-v4-1-flash-261017,deepseek-v4-flash-ga-260731,glm-5-3-flash-260828')
+    .split(',').map((model) => model.trim()).filter(Boolean),
   tunnel: {
     enabled: process.env.LEYLINE_TUNNEL_ENABLED !== 'false',
     command: process.env.LEYLINE_JANUS_COMMAND || 'janus',
