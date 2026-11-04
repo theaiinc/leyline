@@ -9,6 +9,7 @@ import { logger } from '../src/core/logger';
 import { fetchBenchmarkSnapshot, mapBenchmarkSnapshot, refreshBenchmarks, type BenchmarkCache, type BenchmarkSnapshot } from '../src/core/benchmarks';
 import type { ModelListSnapshot } from '../src/core/router';
 import type { WorkersAiBinding } from '../src/providers/workers-ai';
+import { legacyDashboardRedirect } from './host-routing';
 
 /**
  * Hosted Leyline on Cloudflare Workers. The same Express app as the Node server (src/server.ts), in hosted keys
@@ -228,6 +229,10 @@ export default {
     liveCtx = ctx;
     if (pending.size) ctx.waitUntil(Promise.allSettled([...pending]));
     const url = new URL(request.url);
+    // llm.theaiinc.com is an API compatibility alias only. Keep API callers working there,
+    // but send dashboard and authentication traffic to Valefront's canonical dashboard host.
+    const legacyRedirect = legacyDashboardRedirect(url);
+    if (legacyRedirect) return legacyRedirect;
     if (url.pathname === '/') return Response.redirect(new URL('/dashboard/', url).toString(), 302);
 
     const asset = assetPath(url.pathname);
