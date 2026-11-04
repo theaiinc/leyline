@@ -367,7 +367,12 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
     res.json({ object: 'list', data });
   });
 
-  app.get('/v1/benchmarks', requireIssuedKeyNoModel(opts), async (_req, res) => {
+  app.get('/v1/benchmarks', async (req, res, next) => {
+    // Dashboard admins may view benchmarks from the same-origin dashboard session;
+    // API clients continue through issued-key authorization.
+    if (adminOf(opts, req) && sameOrigin(opts, req)) return next();
+    return requireIssuedKeyNoModel(opts)(req, res, next);
+  }, async (_req, res) => {
     const snapshot = await opts.benchmarks?.();
     res.json(snapshot ?? { fetchedAt: null, benchmarks: [] });
   });

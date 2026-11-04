@@ -348,6 +348,21 @@ describe('empty offered model pool', () => {
   });
 });
 
+describe('benchmarks authorization', () => {
+  it('keeps issued-key access and permits the authenticated dashboard admin session', async () => {
+    const { app } = setup({ benchmarks: async () => ({ fetchedAt: Date.now(), benchmarks: [] }) });
+    const key = (await request(app).post('/admin/api/keys').set(ADMIN).send({ name: 'benchmarks' })).body.key;
+
+    const byKey = await request(app).get('/v1/benchmarks').set({ Authorization: `Bearer ${key}` });
+    expect(byKey.status).toBe(200);
+    expect(byKey.body.benchmarks).toEqual([]);
+
+    const byAdmin = await request(app).get('/v1/benchmarks').set(ADMIN);
+    expect(byAdmin.status).toBe(200);
+    expect(byAdmin.body.benchmarks).toEqual([]);
+  });
+});
+
 describe('turned-off models', () => {
   it('refuses them for every key (also through an alias) and hides them from /v1/models', async () => {
     const { app } = setup({ models: ['gemini-2.5-pro', 'gpt-5.5'], aliases: { 'claude-*': 'gemini-2.5-pro' } });
@@ -452,11 +467,11 @@ describe('cost alerts', () => {
       expect(ids).toHaveLength(2);
       expect(ids).toContain('budget:50');
       expect(ids.some((id: string) => /^key:key_.*:100$/.test(id))).toBe(true);
-      expect(emails.map((e) => e.subject).sort()).toEqual(['Leyline: 50% of the monthly limit spent', 'Leyline: key "Minh" limit reached'].sort());
+      expect(emails.map((e) => e.subject).sort()).toEqual(['Valefront: 50% of the monthly limit spent', 'Valefront: key "Minh" limit reached'].sort());
       expect(emails[0]!.to).toEqual(['owner@example.com']);
       expect(hooks).toHaveLength(2);
       expect(hooks[0]!.url).toBe('https://hooks.example.com/x');
-      expect(hooks[0]!.body.text).toContain('Leyline');
+      expect(hooks[0]!.body.text).toContain('Valefront');
       // The key is now refused (its cap), so nothing more is counted and nothing is sent twice.
       await call();
       expect(emails).toHaveLength(2);

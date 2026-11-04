@@ -46,7 +46,9 @@ export function BenchmarksPage({ base }: { base: string }) {
 
   useEffect(() => {
     let alive = true;
-    fetch(`${base}/v1/benchmarks`, { credentials: 'include' })
+    // Benchmarks are a dashboard capability: use the dashboard origin so the
+    // signed-in session is sent without a credentialed cross-origin request.
+    fetch('/v1/benchmarks', { credentials: 'include' })
       .then(async response => {
         if (!response.ok) throw new Error(`Benchmark service returned ${response.status}`);
         return response.json() as Promise<Response>;
@@ -54,7 +56,7 @@ export function BenchmarksPage({ base }: { base: string }) {
       .then(value => { if (alive) { setData(value); setSelected(value.benchmarks[0]?.id ?? null); } })
       .catch(reason => { if (alive) setError(reason instanceof Error ? reason.message : 'Unable to load benchmarks'); });
     return () => { alive = false; };
-  }, [base]);
+  }, []);
 
   const chosen = data?.benchmarks.find(item => item.id === selected) ?? data?.benchmarks[0];
   const rows = useMemo(() => [...(chosen?.scores ?? [])]
