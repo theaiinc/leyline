@@ -55,6 +55,8 @@ export type KeyUsage = {
   /** Requests per day (yyyy-mm-dd), for the daily cap. */
   days: Record<string, number>;
   byModel: Record<string, { requests: number; tokens: number; usd?: number }>;
+  /** Paid add-ons (src/core/addons.ts) by id, e.g. "pii-protection": requests protected, input tokens, dollars charged. */
+  addons?: Record<string, { requests: number; tokens: number; usd: number }>;
 };
 
 /** Spend, requests and tokens for one provider or model. */
@@ -616,6 +618,39 @@ export class IssuedKeys {
     } else {
       await update<KeyUsage>(this.store, `usage/${key.id}/${month}`, (cur) => applyIncrements(structuredClone(cur ?? emptyUsage(month)) as Record<string, unknown>, usageAdds) as KeyUsage);
     }
+    await this.touch(key, now);
+  }
+
+  /**
+   * Count a paid add-on's fee for a request already counted by record(): its own spend line (provider "Valefront",
+   * model = the add-on's id, e.g. "pii-protection", so Spending shows it apart from the models) and the key's
+   * usage.addons. The month's dollars include it; the month's requests and tokens don't (record() counted them).
+   */
+  async recordAddon(key: IssuedKey | null, addon: { id: string; provider: string }, inputTokens: number, usd: number): Promise<void> {
+    const now = this.now();
+    const month = monthOf(now);
+    const day = dayOf(now);
+    const tokens = Math.max(0, Math.round(inputTokens));
+    const id = `${addon.provider}/${addon.id}`;
+    const line = (path: string[]): Increment[] => [[[...path, 'usd'], usd], [[...path, 'requests'], 1], [[...path, 'tokens'], tokens]];
+    const spendAdds: Increment[] = [[['usd'], usd], ...line(['byProvider', addon.provider]), ...line(['byModel', id]), ...line(['byDay', day, id])];
+    const spendSets: Array<[string[], string]> = [[['byModel', id, 'provider'], addon.provider], [['byModel', id, 'model'], addon.id]];
+    const spendInit: MonthSpend = { month, usd: 0, requests: 0 };
+    if (this.store.increment) {
+      await this.store.increment(`spend/${month}`, spendInit, spendAdds, spendSets);
+    } else {
+      await update<MonthSpend>(this.store, `spend/${month}`, (cur) => applyIncrements(structuredClone(cur ?? spendInit) as Record<string, unknown>, spendAdds, spendSets) as MonthSpend);
+    }
+    if (!key) return;
+    const usageAdds: Increment[] = [[['usd'], usd], ...line(['addons', addon.id])];
+    if (this.store.increment) {
+      await this.store.increment(`usage/${key.id}/${month}`, emptyUsage(month), usageAdds);
+    } else {
+      await update<KeyUsage>(this.store, `usage/${key.id}/${month}`, (cur) => applyIncrements(structuredClone(cur ?? emptyUsage(month)) as Record<string, unknown>, usageAdds) as KeyUsage);
+    }
+  }
+
+  private async touch(key: IssuedKey, now: number): Promise<void> {
     // Last used: at most once a minute per key, to keep writes down.
     if (!key.lastUsedAt || now - key.lastUsedAt > 60_000) {
       key.lastUsedAt = now;

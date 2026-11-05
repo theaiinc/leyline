@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { BookOpen, Calculator, ChevronDown, CreditCard, Gift, Database, KeyRound, Landmark, LogOut, Moon, Sun, Wallet } from 'lucide-react';
+import { BookOpen, Calculator, ChevronDown, CreditCard, Gift, Database, KeyRound, Landmark, LogOut, Moon, ShieldCheck, Sun, Wallet } from 'lucide-react';
 import { SideNav, navIds, type NavEntry } from '@/components/side-nav';
 import { CalculatorPage } from '@/pages/calculator';
 import { toast } from 'sonner';
@@ -10,6 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Switch } from '@/components/ui/switch';
 import { useHashRoute } from '@/hooks/use-hash-route';
 import { cn } from '@/lib/utils';
 import { Turnstile } from './turnstile';
@@ -33,7 +34,16 @@ type Me = {
   freeTier: { tokens: number; bonusTokens?: number; expiresAfterDays: number; models: string[]; tokensPerDay: number; granted: { tokens: number; usedTokens: number; expiresAt: number; bonusUnlocked?: boolean } | null };
 };
 
-type KeyView = { id: string; name: string; prefix: string; createdAt: number; revokedAt: number | null; lastUsedAt: number | null; usage: { month: string; requests: number; promptTokens: number; completionTokens: number; byModel: Record<string, { requests: number; tokens: number }> } };
+type PiiMode = 'off' | 'regex' | 'presidio';
+type KeyView = {
+  id: string; name: string; prefix: string; createdAt: number; revokedAt: number | null; lastUsedAt: number | null; piiProtection?: PiiMode;
+  usage: { month: string; requests: number; promptTokens: number; completionTokens: number; byModel: Record<string, { requests: number; tokens: number }>; addons?: Record<string, { requests: number; tokens: number; usd: number }> };
+};
+/** The PII protection add-on as the server offers it (GET /dashboard/me/keys). */
+type PiiOffer = { id: string; name: string; unit: string; price: number; currency: string; modes: Array<'regex' | 'presidio'> };
+const PII_ID = 'pii-protection';
+const PII_EXPLAINER = 'Emails, phone numbers, card numbers and API keys in your prompts are masked before the prompt leaves Valefront and restored in the reply.';
+const piiPrice = (offer: PiiOffer | null) => (offer ? `$${offer.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })} ${offer.unit}` : '');
 
 type VatInvoice = { companyName: string; taxCode: string; address: string; email: string };
 type Profile = { name: string; email: string; company?: string; taxId?: string; address?: string; country: string; vatInvoice?: VatInvoice };
@@ -299,18 +309,38 @@ function KeysPage({ me }: { me: Me }) {
   const [token, setToken] = useState<string | null>(null);
   const [reset, setReset] = useState(0);
   const [shown, setShown] = useState<string | null>(null);
-  const load = useCallback(async () => setKeys((await api<{ keys: KeyView[] }>('/dashboard/me/keys')).keys), []);
+  const [offer, setOffer] = useState<PiiOffer | null>(null);
+  const [newPii, setNewPii] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const load = useCallback(async () => {
+    const out = await api<{ keys: KeyView[]; addons?: { piiProtection?: PiiOffer } }>('/dashboard/me/keys');
+    setKeys(out.keys);
+    setOffer(out.addons?.piiProtection ?? null);
+  }, []);
   useEffect(() => { void load().catch(failToast); }, [load]);
   async function create() {
     try {
-      const out = await api<{ key: string }>('/dashboard/me/keys', { method: 'POST', body: { name, turnstileToken: token } });
+      const out = await api<{ key: string }>('/dashboard/me/keys', { method: 'POST', body: { name, turnstileToken: token, piiProtection: newPii } });
       setShown(out.key);
       setName('');
+      setNewPii(false);
       await load();
     } catch (err) {
       failToast(err);
     } finally {
       setReset((n) => n + 1);
+    }
+  }
+  async function setPii(k: KeyView, enabled: boolean, mode?: 'regex' | 'presidio') {
+    setBusy(k.id);
+    try {
+      await api(`/dashboard/me/keys/${k.id}/pii`, { method: 'PUT', body: { enabled, ...(mode ? { mode } : {}) } });
+      toast.success(enabled ? `PII protection is on for "${k.name}".` : `PII protection is off for "${k.name}".`);
+      await load();
+    } catch (err) {
+      failToast(err);
+    } finally {
+      setBusy(null);
     }
   }
   async function revoke(k: KeyView) {
@@ -328,6 +358,13 @@ function KeysPage({ me }: { me: Me }) {
     <Section title="New key">
       <div className="grid gap-3 sm:max-w-md">
         <div className="grid gap-1"><Label htmlFor="key-name">Name</Label><Input id="key-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Claude Code on my laptop" /></div>
+        <div className="flex items-start gap-3">
+          <Switch id="new-key-pii" checked={newPii} onCheckedChange={setNewPii} className="mt-0.5" />
+          <div className="grid gap-0.5">
+            <Label htmlFor="new-key-pii">PII protection{offer ? <span className="font-normal text-muted-foreground"> · {piiPrice(offer)}</span> : null}</Label>
+            <p className="text-xs text-muted-foreground">{PII_EXPLAINER} Charged from credit, on top of the model's price.</p>
+          </div>
+        </div>
         <Turnstile siteKey={me.turnstileSiteKey} action="create_key" onToken={setToken} resetKey={reset} />
         <div><Button disabled={!token} onClick={create}><KeyRound />Create key</Button></div>
       </div>
@@ -340,6 +377,23 @@ function KeysPage({ me }: { me: Me }) {
               <div className="min-w-0 flex-1"><div className="font-medium">{k.name}</div><div className="text-xs text-muted-foreground"><code>{k.prefix}…</code> · made {date(k.createdAt)}{k.lastUsedAt ? ` · last used ${date(k.lastUsedAt)}` : ''}</div></div>
               <div className="text-xs text-muted-foreground tabular-nums">{tokens(k.usage.requests)} requests this month</div>
               {k.revokedAt ? <span className="text-xs text-destructive">revoked</span> : <Button variant="outline" size="sm" onClick={() => revoke(k)}>Revoke</Button>}
+              {k.revokedAt ? null : (
+                <div className="flex w-full items-start gap-3 border-t pt-3">
+                  <Switch id={`pii-${k.id}`} checked={(k.piiProtection ?? 'off') !== 'off'} disabled={busy === k.id}
+                    onCheckedChange={(on) => setPii(k, on, on && k.piiProtection === 'presidio' ? 'presidio' : undefined)} className="mt-0.5" />
+                  <div className="grid min-w-0 flex-1 gap-0.5">
+                    <Label htmlFor={`pii-${k.id}`} className="flex items-center gap-1.5"><ShieldCheck className="size-3.5" />PII protection{offer ? <span className="font-normal text-muted-foreground"> · {piiPrice(offer)}</span> : null}</Label>
+                    <p className="text-xs text-muted-foreground">{PII_EXPLAINER}</p>
+                  </div>
+                  {(k.piiProtection ?? 'off') !== 'off' && offer && offer.modes.includes('presidio') ? (
+                    <select aria-label={`PII protection mode for ${k.name}`} className="h-8 rounded-md border bg-background px-2 text-xs" value={k.piiProtection} disabled={busy === k.id}
+                      onChange={(e) => setPii(k, true, e.target.value as 'regex' | 'presidio')}>
+                      <option value="regex">Fast (patterns)</option>
+                      <option value="presidio">Thorough (also names, addresses, IDs)</option>
+                    </select>
+                  ) : null}
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -349,7 +403,7 @@ function KeysPage({ me }: { me: Me }) {
 }
 
 function UsagePage({ me }: { me: Me }) {
-  const [data, setData] = useState<{ month: string; keys: KeyView[]; free: { tokens: number; usedTokens: number; expiresAt: number } | null } | null>(null);
+  const [data, setData] = useState<{ month: string; keys: KeyView[]; free: { tokens: number; usedTokens: number; expiresAt: number } | null; addons?: { piiProtection?: PiiOffer } } | null>(null);
   useEffect(() => { void api<typeof data>('/dashboard/me/usage').then(setData).catch(failToast); }, []);
   const byModel = useMemo(() => {
     const out: Record<string, { requests: number; tokens: number }> = {};
@@ -357,6 +411,14 @@ function UsagePage({ me }: { me: Me }) {
       out[m] = { requests: (out[m]?.requests ?? 0) + u.requests, tokens: (out[m]?.tokens ?? 0) + u.tokens };
     }
     return Object.entries(out).sort((a, b) => b[1].tokens - a[1].tokens);
+  }, [data]);
+  const pii = useMemo(() => {
+    const out = { requests: 0, tokens: 0, usd: 0 };
+    for (const k of data?.keys ?? []) {
+      const a = k.usage.addons?.[PII_ID];
+      if (a) { out.requests += a.requests; out.tokens += a.tokens; out.usd += a.usd; }
+    }
+    return out;
   }, [data]);
   return (<>
     <PageHeader title="Spending" description={data ? `Usage this month (${data.month}, UTC). Charges are on the ledger on the Billing page.` : undefined} />
@@ -370,6 +432,10 @@ function UsagePage({ me }: { me: Me }) {
           <tbody>{byModel.map(([m, u]) => <tr key={m} className="border-b last:border-0"><td className="p-2 font-medium break-all">{m}</td><td className="p-2 text-right tabular-nums">{tokens(u.requests)}</td><td className="p-2 text-right tabular-nums">{tokens(u.tokens)}</td></tr>)}</tbody></table></div>
       )}
     </Section>
+    {pii.requests > 0 || (data?.keys ?? []).some((k) => (k.piiProtection ?? 'off') !== 'off') ? <Section title="Add-ons" description="Charged from credit on top of model usage; on the Billing page's ledger as their own line.">
+      <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr className="border-b"><th className="p-2">Add-on</th><th className="p-2 text-right">Requests</th><th className="p-2 text-right">Input tokens</th><th className="p-2 text-right">Charged</th></tr></thead>
+        <tbody><tr><td className="p-2 font-medium">PII protection{data?.addons?.piiProtection ? <span className="block text-xs font-normal text-muted-foreground">{piiPrice(data.addons.piiProtection)}</span> : null}</td><td className="p-2 text-right tabular-nums">{tokens(pii.requests)}</td><td className="p-2 text-right tabular-nums">{tokens(pii.tokens)}</td><td className="p-2 text-right tabular-nums">${pii.usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}</td></tr></tbody></table></div>
+    </Section> : null}
     <Section title="By key">
       {(data?.keys ?? []).map((k) => <div key={k.id} className="flex justify-between border-b py-2 text-sm last:border-0"><span>{k.name} <code className="text-xs text-muted-foreground">{k.prefix}…</code></span><span className="tabular-nums">{tokens(k.usage.promptTokens + k.usage.completionTokens)} tokens</span></div>)}
     </Section>

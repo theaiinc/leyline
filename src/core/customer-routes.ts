@@ -6,6 +6,8 @@ import type { WorkspaceRecord } from './billing-store';
 import { isAdminEmail, sameOrigin, sessionOf, type HostedOptions } from './hosted';
 import type { AdminUser } from './admin-login';
 import { SignupError, TERMS_VERSION, signUp } from './self-serve-workspaces';
+import { PII_ADDON_ID, PII_ADDON_NAME, customerPiiModes, piiPricePerMTokens } from './addons';
+import type { KeyCaps } from './issued-keys';
 
 /**
  * The customer's side of hosted Valefront, for anyone signed in with Aegis: /dashboard/me/… on the dashboard host.
@@ -134,10 +136,20 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
   // ── API keys ───────────────────────────────────────────────────────────────────────────────────────────
   const keyView = (k: Awaited<ReturnType<HostedOptions['keys']['listForWorkspace']>>[number]) => ({
     id: k.id, name: k.name, prefix: k.prefix, createdAt: k.createdAt, revokedAt: k.revokedAt ?? null, lastUsedAt: k.lastUsedAt ?? null,
-    usage: { month: k.usage.month, requests: k.usage.requests, promptTokens: k.usage.promptTokens, completionTokens: k.usage.completionTokens, byModel: k.usage.byModel },
+    piiProtection: piiModeOf(k.caps),
+    usage: { month: k.usage.month, requests: k.usage.requests, promptTokens: k.usage.promptTokens, completionTokens: k.usage.completionTokens, byModel: k.usage.byModel, addons: k.usage.addons ?? {} },
   });
+  /** The PII protection add-on as the dashboard offers it: price and the modes this server has. */
+  const piiOffer = () => ({ id: PII_ADDON_ID, name: PII_ADDON_NAME, unit: 'per 1M input tokens', price: piiPricePerMTokens(), currency: 'USD', modes: customerPiiModes() });
+  /** A customer's choice -> the mode stored on the key: off, regex, or presidio only where it's offered. */
+  const piiChoice = (enabled: unknown, mode: unknown): 'off' | 'regex' | 'presidio' => {
+    if (enabled !== true) return 'off';
+    if (mode === undefined || mode === null || mode === '' || mode === 'regex') return 'regex';
+    if (mode === 'presidio' && customerPiiModes().includes('presidio')) return 'presidio';
+    throw new BillingError('pii_mode_unavailable', 'That PII protection mode is not available; use "regex".', 400);
+  };
   app.get('/dashboard/me/keys', ...mine, async (req, res) => {
-    res.json({ keys: (await opts.keys.listForWorkspace(ws(req).id)).map(keyView) });
+    res.json({ keys: (await opts.keys.listForWorkspace(ws(req).id)).map(keyView), addons: { piiProtection: piiOffer() } });
   });
   app.post('/dashboard/me/keys', ...mine, async (req, res) => {
     try {
@@ -146,9 +158,11 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
       const active = (await opts.keys.listForWorkspace(ws(req).id)).filter((k) => !k.revokedAt);
       if (active.length >= MAX_KEYS) throw new BillingError('too_many_keys', `A workspace can have ${MAX_KEYS} active keys; revoke one first.`, 409);
       const name = String(req.body?.name ?? '').trim() || 'API key';
-      const { key, record } = await opts.keys.create({ name, caps: SELF_SERVE_KEY_CAPS, by: (req as CustomerRequest).customer!.email, workspaceId: ws(req).id });
-      await opts.billing!.store.audit({ type: 'api_key.created', workspaceId: ws(req).id, meta: { keyId: record.id } });
-      res.status(201).json({ key, record: { id: record.id, name: record.name, prefix: record.prefix, createdAt: record.createdAt } });
+      const pii = piiChoice(req.body?.piiProtection, req.body?.piiMode);
+      const caps: KeyCaps = { ...SELF_SERVE_KEY_CAPS, ...(pii !== 'off' ? { piiRedaction: pii } : {}) };
+      const { key, record } = await opts.keys.create({ name, caps, by: (req as CustomerRequest).customer!.email, workspaceId: ws(req).id });
+      await opts.billing!.store.audit({ type: 'api_key.created', workspaceId: ws(req).id, meta: { keyId: record.id, ...(pii !== 'off' ? { piiProtection: pii } : {}) } });
+      res.status(201).json({ key, record: { id: record.id, name: record.name, prefix: record.prefix, createdAt: record.createdAt, piiProtection: piiModeOf(record.caps) } });
     } catch (err) {
       errorOut(res, err);
     }
@@ -161,6 +175,26 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
     res.json({ ok: true });
   });
 
+  /**
+   * PII protection on one of your own keys: { enabled: boolean, mode?: 'regex' | 'presidio' }. Only the PII mode
+   * changes (the key's other caps, and any allowlist the owner set, stay). Another workspace's key is "not found".
+   */
+  app.put('/dashboard/me/keys/:id/pii', ...mine, async (req, res) => {
+    try {
+      const record = await opts.keys.get(String(req.params.id));
+      if (!record || record.workspaceId !== ws(req).id) return res.status(404).json({ error: { code: 'not_found', message: 'Key not found.' } });
+      if (ws(req).suspendedAt) throw new BillingError('workspace_suspended', 'This workspace is suspended.', 403);
+      if (record.revokedAt) throw new BillingError('key_revoked', 'This key is revoked.', 409);
+      if (typeof req.body?.enabled !== 'boolean') throw new BillingError('invalid_request', 'Send { "enabled": true } or { "enabled": false }.', 400);
+      const mode = piiChoice(req.body.enabled, req.body.mode);
+      const saved = await opts.keys.setCaps(record.id, { ...record.caps, piiRedaction: mode });
+      await opts.billing!.store.audit({ type: mode === 'off' ? 'api_key.pii_protection_off' : 'api_key.pii_protection_on', workspaceId: ws(req).id, meta: { keyId: record.id, mode } });
+      res.json({ id: saved.id, piiProtection: piiModeOf(saved.caps), addon: piiOffer() });
+    } catch (err) {
+      errorOut(res, err);
+    }
+  });
+
   app.get('/dashboard/me/usage', ...mine, async (req, res) => {
     const keys = await opts.keys.listForWorkspace(ws(req).id);
     const grant = await opts.billing!.store.grant(ws(req).id);
@@ -168,6 +202,7 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
       month: keys[0]?.usage.month ?? new Date().toISOString().slice(0, 7),
       keys: keys.map(keyView),
       free: grant ? { tokens: grant.tokens, usedTokens: grant.usedTokens, expiresAt: grant.expiresAt } : null,
+      addons: { piiProtection: piiOffer() },
     });
   });
 
@@ -322,6 +357,11 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
       res.status(500).json({ error: 'retry' });
     }
   });
+}
+
+/** A key's PII protection as customers see it: 'off', or the mode it runs in. */
+function piiModeOf(caps: KeyCaps): 'off' | 'regex' | 'presidio' {
+  return caps.piiRedaction === 'regex' || caps.piiRedaction === 'presidio' ? caps.piiRedaction : 'off';
 }
 
 function orderView(order: import('./billing').BillingOrder, approveUrl?: string) {

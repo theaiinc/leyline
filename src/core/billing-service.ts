@@ -29,6 +29,7 @@ import { captureFromEvent, PayPalError, type PayPalCapture, type PayPalClient } 
 import { getMode, type ProviderMode } from './provider-modes';
 import { INVOICE_LOOKUP_URL } from './einvoice-viettel';
 import type { FreeTierConfig } from './self-serve-workspaces';
+import { PII_ADDON_ID, PII_ADDON_NAME, piiFeeMicros, piiPricePerMTokens } from './addons';
 
 /** One email with attachments, as the Worker's Email Sending binding takes it. */
 export type BillingEmail = {
@@ -474,13 +475,17 @@ export class BillingService {
   /**
    * May this workspace make a request for `model` (already resolved from aliases; '' or 'auto' when the router
    * picks)? Free tokens cover the free-tier models while the grant lasts; everything else needs a balance above 0.
+   * A key with PII protection on always needs a balance above 0: free tokens never cover the add-on's fee.
    */
-  async admit(ws: WorkspaceRecord, model: string): Promise<Admission> {
+  async admit(ws: WorkspaceRecord, model: string, opts: { piiProtection?: boolean } = {}): Promise<Admission> {
     if (ws.deletedAt) return { refusal: { status: 401, code: 'key_revoked', message: 'This API key has been revoked.' } };
     if (ws.suspendedAt) return { refusal: { status: 403, code: 'workspace_or_key_suspended', message: 'This workspace or API key is suspended.' } };
     const now = this.now();
     const [balance, grant] = await Promise.all([this.store.balance(ws.id), this.store.grant(ws.id)]);
     const paid = balance.availableMicros > 0;
+    if (opts.piiProtection && !paid) {
+      return { refusal: { status: 402, code: 'insufficient_credit', message: `PII protection is on for this key and needs credit: its fee is charged from your balance (free tokens don't cover it), and your balance is $0.00. Add credit at ${ADD_CREDIT_URL}, or turn PII protection off for this key.` } };
+    }
     const routerPicks = !model || model === 'auto' || model === 'auto-vision';
     const freeLeft = grant && now < grant.expiresAt && grant.usedTokens < grant.tokens;
     if (freeLeft && (routerPicks || this.isFreeModel(model))) {
@@ -523,6 +528,20 @@ export class BillingService {
       return;
     }
     await this.store.chargeUsage(ws.id, Math.ceil(input.usd * payable * 1_000_000));
+  }
+
+  /**
+   * After a request on a key with PII protection on: its fee (input tokens x PII_PRICE_PER_M_TOKENS per 1M) from the
+   * balance, always (free tokens never cover it), as its own "PII protection" ledger line. Returns the US dollars
+   * charged (exactly the micros accrued), for the spend line.
+   */
+  async chargePiiProtection(ws: WorkspaceRecord, inputTokens: number): Promise<{ usd: number; micros: number; tokens: number; pricePerM: number }> {
+    const tokens = Math.max(0, Math.round(inputTokens));
+    const pricePerM = piiPricePerMTokens();
+    const micros = piiFeeMicros(tokens, pricePerM);
+    if (tokens > 0 && micros <= 0) throw new Error(`PII protection fee came to 0 for ${tokens} tokens at ${pricePerM} USD/1M`);
+    await this.store.chargeAddon(ws.id, PII_ADDON_ID, micros, PII_ADDON_NAME);
+    return { usd: micros / 1_000_000, micros, tokens, pricePerM };
   }
 
   /** What the Billing page shows. */

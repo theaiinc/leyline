@@ -4,6 +4,7 @@
 
 ### Added
 
+- PII protection add-on for self-serve customers: a switch per API key (and on the create-key form) masks emails, phone numbers, card numbers and API keys before the prompt leaves Valefront; charged $0.20 per 1M input tokens from credit (`PII_PRICE_PER_M_TOKENS`), never from free tokens, as its own ledger line and spend line (`Valefront/pii-protection`); published in `/v1/pricing` `addons`. D1 migration `0003_addon_accrual.sql`.
 - `POST /v1/embeddings` (OpenAI, Azure, Gemini, OpenRouter, the LLM API gateway when it lists the model, Workers AI bge), `POST /v1/audio/transcriptions` (OpenAI, Deepgram prerecorded, Workers AI Whisper) and `POST /v1/audio/speech` (OpenAI, Workers AI MeloTTS), behind the same keys, caps, budget and usage recording as chat.
 - Cloudflare Workers AI provider (chat with streaming, embeddings, audio) through the Worker's `AI` binding or the REST API; Deepgram provider with a dashboard/Arcana key slot.
 - Dashboard shows what each provider serves (chat, embeddings, speech-to-text, text-to-speech) and the Workers AI binding status.

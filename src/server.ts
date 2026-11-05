@@ -27,6 +27,7 @@ import {
   toPublicPricingModel,
 } from './core/pricing';
 import { generateInstanceId } from './core/instance-naming';
+import { publicAddons } from './core/addons';
 import {
   ApiKeyPersistenceMode,
   ApiKeySource,
@@ -490,6 +491,8 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
         models: config.freeTierModels.filter((id) => models.some((model) => model.id === id && Number.isFinite(model.input) && Number.isFinite(model.output))),
       },
       models,
+      // Paid add-ons, charged on top of model usage (src/core/addons.ts): PII protection per 1M input tokens.
+      addons: publicAddons(),
       exchange_rate: await vndRate(),
     };
   };

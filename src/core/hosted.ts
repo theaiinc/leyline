@@ -13,6 +13,7 @@ import type { WorkspaceRecord } from './billing-store';
 import type { AccessConfig } from './cloudflare-access';
 import type { BenchmarkSnapshot } from './benchmarks';
 import { RequestPiiRedactor } from './pii-redaction';
+import { ADDON_PROVIDER, PII_ADDON_ID } from './addons';
 import { RepriceRefused, repriceSpend } from './spend-reprice';
 import { accessAdminOf } from './admin-billing';
 
@@ -170,7 +171,7 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
         }
         let admission;
         try {
-          admission = await opts.billing.admit(ws, routerPicks ? requested : target);
+          admission = await opts.billing.admit(ws, routerPicks ? requested : target, { piiProtection: piiProtectionOn(key) });
         } catch (err) {
           console.error('[hosted] credit check failed', err);
           return fail(503, 'billing_unavailable', 'Valefront could not check your balance just now; try again.');
@@ -263,7 +264,22 @@ export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_
     const billing = opts.billing.charge(r.workspace, { model: used, tokens, usd: charged })
       .catch((err) => console.error('[hosted] usage charge failed', r.workspace?.id, err));
     opts.background?.(billing);
+    // PII protection (a paid add-on): its own fee on the input tokens, charged from credit even on free tokens, and
+    // its own spend line. Only when the request's messages were actually redacted (not, say, an embeddings call).
+    if (r.pii?.applied) {
+      const ws = r.workspace;
+      const inputTokens = counted.prompt_tokens ?? 0;
+      const addon = opts.billing.chargePiiProtection(ws, inputTokens)
+        .then((fee) => opts.keys.recordAddon(r.issuedKey ?? null, { id: PII_ADDON_ID, provider: ADDON_PROVIDER }, fee.tokens, fee.usd))
+        .catch((err) => console.error(JSON.stringify({ event: 'pii_fee_failed', workspaceId: ws.id, inputTokens, error: err instanceof Error ? err.message : String(err) })));
+      opts.background?.(addon);
+    }
   }
+}
+
+/** PII protection is on for this key (any mode but off). */
+export function piiProtectionOn(key: IssuedKey): boolean {
+  return (key.caps.piiRedaction ?? 'off') !== 'off';
 }
 
 /** A model's real price (set by hand, published by its provider, or Leyline's built-in list), or undefined. */
