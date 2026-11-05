@@ -117,7 +117,7 @@ import { mediaModels, parameterDefaults, mediaRunLabel, type MediaModel } from '
           </Card>
           <Card>
             <CardHeader><CardTitle>Use it in code</CardTitle><CardDescription>Equivalent API request for the selected model and current inputs.</CardDescription></CardHeader>
-            <CardContent><pre className="overflow-auto rounded-lg border bg-muted/40 p-3 text-xs">{selected ? mediaCurl(mode === 'chat' ? 'speech' : mode, selected.id, { input }) : 'Choose a model to see the request.'}</pre></CardContent>
+            <CardContent><pre className="overflow-auto rounded-lg border bg-muted/40 p-3 text-xs">{snippets?.curl ?? 'Choose a model to see the request.'}</pre></CardContent>
           </Card>
           <Card>
             <CardHeader><CardTitle>Output</CardTitle><CardDescription><span className="mr-2 rounded-full border px-2 py-0.5 text-xs">{status}</span>{elapsed ? `${elapsed}ms` : 'Ready'}</CardDescription></CardHeader>
