@@ -131,7 +131,7 @@ export function KeysPage({ d }: { d: Dashboard }) {
                   return (
                     <TableRow key={k.id} className={k.revokedAt ? 'opacity-60' : undefined}>
                       <TableCell className="pl-4">
-                        <div className="font-medium">{k.name}</div>
+                      <button type="button" className="text-left font-medium hover:underline" onClick={() => { window.location.hash = `#/spending?key=${encodeURIComponent(k.id)}`; }}>{k.name}</button>
                         <div className="text-xs text-muted-foreground">Created {new Date(k.createdAt).toLocaleDateString()}</div>
                       </TableCell>
                       <TableCell>

@@ -38,15 +38,26 @@ const share = (part: number, total: number) => {
 
 export function SpendingPage() {
   const [month, setMonth] = useState<string | null>(null);
+  const [keyId, setKeyId] = useState<string | null>(() => new URLSearchParams(window.location.hash.split('?')[1] ?? '').get('key'));
   const [data, setData] = useState<SpendResponse | null>(null);
   const [keys, setKeys] = useState<IssuedKey[]>([]);
   const [alertLog, setAlertLog] = useState<Alert[]>([]);
 
   useEffect(() => {
-    api<SpendResponse>(`/admin/api/spend${month ? `?month=${month}` : ''}`)
+    const onHashChange = () => setKeyId(new URLSearchParams(window.location.hash.split('?')[1] ?? '').get('key'));
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+  useEffect(() => {
+    const query = new URLSearchParams();
+    if (month) query.set('month', month);
+    if (keyId) query.set('key', keyId);
+    api<SpendResponse>(`/admin/api/spend${query.size ? `?${query}` : ''}`)
       .then(setData)
       .catch(error => toast.error(error instanceof Error ? error.message : 'Could not load spending'));
-  }, [month]);
+  }, [month, keyId]);
+  const selectedKey = keyId ? keys.find(k => k.id === keyId) : undefined;
+  const clearKey = () => { window.location.hash = '#/spending'; };
   useEffect(() => {
     api<{ keys: IssuedKey[] }>('/admin/api/keys').then(r => setKeys(r.keys)).catch(() => undefined);
   }, []);
@@ -78,6 +89,18 @@ export function SpendingPage() {
         ) : null}
       />
 
+      {selectedKey ? (
+        <div className="mb-4">
+          <button
+            type="button"
+            className="rounded-full border px-3 py-1 text-sm hover:bg-muted"
+            aria-label={`Clear key filter for ${selectedKey.name}`}
+            onClick={clearKey}
+          >
+            Key: {selectedKey.name} ×
+          </button>
+        </div>
+      ) : null}
       {urgent ? (
         <AlertBox variant={urgent.threshold >= 100 ? 'destructive' : 'default'} className="mb-4">
           <AlertTitle>{urgent.threshold >= 100 ? 'Monthly limit reached' : `${urgent.threshold}% of the monthly limit spent`}</AlertTitle>
@@ -217,7 +240,10 @@ export function SpendingPage() {
                       <TableBody>
                         {byKey.map(k => (
                           <TableRow key={k.id}>
-                            <TableCell className="pl-6"><div className="font-medium">{k.name}</div><code className="font-mono text-xs text-muted-foreground">{k.prefix}…</code></TableCell>
+                            <TableCell className="pl-6">
+                              <button type="button" className="text-left font-medium hover:underline" onClick={() => { window.location.hash = `#/spending?key=${encodeURIComponent(k.id)}`; }}>{k.name}</button>
+                              <code className="block font-mono text-xs text-muted-foreground">{k.prefix}…</code>
+                            </TableCell>
                             <TableCell className="text-right tabular-nums">
                               {money(k.usage?.usd ?? 0)}
                               {k.caps.usdPerMonth ? (

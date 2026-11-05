@@ -20,8 +20,6 @@ type Benchmark = {
   source?: string;
   asOf?: string;
   scores: Score[];
-  available?: boolean;
-  unavailableReason?: string;
 };
 
 type Response = { fetchedAt: number | null; benchmarks: Benchmark[] };
@@ -85,7 +83,7 @@ export function BenchmarksPage({ base }: { base: string }) {
                 const served = benchmark.scores.filter(row => row.leylineModel).sort((a, b) => b.score - a.score)[0];
                 return <button key={benchmark.id} type="button" className="block w-full text-left text-sm hover:underline" onClick={() => setSelected(benchmark.id)}>
                   <span className="font-medium">{benchmark.name}</span>
-                  <span className="ml-2 text-muted-foreground">{served ? `Best here: ${served.leylineModel}` : `None of this leaderboard's models are on Valefront (data from ${benchmark.asOf || data.fetchedAt ? new Date(benchmark.asOf || data.fetchedAt!).toLocaleDateString() : 'unknown date'})`}</span>
+                  <span className="ml-2 text-muted-foreground">{served ? `Best here: ${served.leylineModel}` : 'No served model in this snapshot'}</span>
                 </button>;
               })}
             </CardContent>
@@ -99,28 +97,22 @@ export function BenchmarksPage({ base }: { base: string }) {
             <CardDescription>{DETAILS[chosen.id]?.description ?? 'Benchmark results.'} {DETAILS[chosen.id]?.unit ?? 'Higher is better.'}</CardDescription>
             <div className="flex flex-wrap gap-2">
               {data.benchmarks.map(item => <Button key={item.id} variant={item.id === chosen.id ? 'default' : 'outline'} size="sm" onClick={() => setSelected(item.id)}>{item.name}</Button>)}
-              <div className="flex items-center gap-2" aria-label="Model filter">
-                <span className="text-xs text-muted-foreground">Models</span>
-                <Button variant={onlyServed ? 'default' : 'outline'} size="sm" onClick={() => setOnlyServed(value => !value)}>{onlyServed ? 'Valefront only' : 'All models'}</Button>
-              </div>
-              <div className="flex items-center gap-2" aria-label="Score sort order">
-                <span className="text-xs text-muted-foreground">Score</span>
-                <Button variant="outline" size="sm" onClick={() => setAscending(value => !value)}><ArrowUpDown />{ascending ? 'Ascending' : 'Descending'}</Button>
-              </div>
+              <Button variant="outline" size="sm" onClick={() => setOnlyServed(value => !value)}>{onlyServed ? 'Show all models' : 'Only Valefront models'}</Button>
+              <Button variant="outline" size="sm" onClick={() => setAscending(value => !value)}><ArrowUpDown />Sort {ascending ? 'ascending' : 'descending'}</Button>
             </div>
           </CardHeader>
           <CardContent>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
-                <thead><tr className="border-b"><th className="p-2">Model</th><th className="p-2">Score</th><th className="p-2">On Valefront as</th><th className="p-2">Date</th></tr></thead>
+                <thead><tr className="border-b"><th className="p-2">Model</th><th className="p-2">Score</th><th className="p-2">Valefront</th><th className="p-2">Date</th></tr></thead>
                 <tbody>{rows.map(row => <tr key={`${row.model}-${row.asOf}`} className="border-b last:border-0">
                   <td className="p-2 font-medium">{row.model}</td><td className="p-2 tabular-nums">{row.score}</td>
-                  <td className="p-2">{row.leylineModel ? <><span className="text-success">{row.leylineModel}</span>{row.aliases?.length ? <span className="ml-1 text-xs text-muted-foreground">({row.aliases.join(', ')})</span> : null}</> : 'Not available'}</td>
+                  <td className="p-2">{row.leylineModel ? <><span className="text-success">{row.leylineModel}</span>{row.aliases?.length ? <span className="ml-1 text-xs text-muted-foreground">({row.aliases.join(', ')})</span> : null}</> : '—'}</td>
                   <td className="p-2 text-muted-foreground">{row.asOf || chosen.asOf || '—'}</td>
                 </tr>)}</tbody>
               </table>
             </div>
-            {!rows.length ? <EmptyState title={chosen.available === false ? 'No data available' : 'No matching rows'}>{chosen.unavailableReason ?? 'No models match the current filter.'}</EmptyState> : null}
+            {!rows.length ? <EmptyState title="No matching rows">This benchmark is empty, failed at its source, or has no served model matching the filter.</EmptyState> : null}
             {chosen.source ? <a className="mt-4 inline-flex items-center gap-1 text-sm underline" href={chosen.source} target="_blank" rel="noreferrer">Source <ExternalLink className="size-3" /></a> : null}
           </CardContent>
         </Card>
