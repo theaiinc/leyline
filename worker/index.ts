@@ -10,6 +10,7 @@ import type { ProviderMode } from '../src/core/provider-modes';
 import { ViettelSInvoiceProvider } from '../src/core/einvoice-viettel';
 import { accessConfigFromEnv } from '../src/core/cloudflare-access';
 import { freeTierConfig, verifyTurnstile } from '../src/core/self-serve-workspaces';
+import { D1PartnerInquiryStore, PartnerInquiries } from '../src/core/partner-inquiries';
 // Bundled as data (wrangler.jsonc "rules"): the invoice/receipt font.
 import dejavuRegular from '../src/assets/fonts/DejaVuSans.ttf';
 import dejavuBold from '../src/assets/fonts/DejaVuSans-Bold.ttf';
@@ -51,6 +52,8 @@ interface Env {
   PII_PRICE_PER_M_TOKENS?: string;
   /** Billing email sender ("Valefront Billing <billing@valefront.com>"), on a domain onboarded to Email Sending. */
   BILLING_FROM?: string;
+  /** Where "Partner with Valefront" inquiries (valefront.com) are emailed; default info@valefront.com. */
+  PARTNER_INQUIRY_TO?: string;
   /** Turnstile: public site key (var) and Siteverify secret (secret). */
   TURNSTILE_SITE_KEY?: string;
   TURNSTILE_SECRET?: string;
@@ -251,6 +254,13 @@ function configureBilling(hosted: HostedOptions, env: Env): void {
     ? { siteKey: env.TURNSTILE_SITE_KEY, verify: (token, ip) => verifyTurnstile(token, env.TURNSTILE_SECRET, ip) }
     : null;
   hosted.adminHost = env.ADMIN_HOST || 'adm.valefront.com';
+  // Partner inquiries (src/core/partner-inquiries.ts): emailed from billing@valefront.com (allowed in the binding).
+  hosted.partners = new PartnerInquiries({
+    store: new D1PartnerInquiryStore(env.DB),
+    ...(mail ? { sendEmail: async (m) => { await (mail.send as unknown as (message: unknown) => Promise<unknown>)(m); } } : {}),
+    to: env.PARTNER_INQUIRY_TO,
+    adminUrl: `https://${hosted.adminHost}`,
+  });
   hosted.access = accessConfigFromEnv(vars);
   hosted.providerEnv = vars;
 }

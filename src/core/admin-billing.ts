@@ -22,6 +22,8 @@ import type { HostedOptions } from './hosted';
  *   POST /einvoices/:id/retry        retry a failed VAT e-invoice
  *   POST /einvoices/:id/cancel       cancel an issued e-invoice at Viettel (with the agreement's description)
  *   POST /einvoices/:id/replace      issue a replacement e-invoice with corrected buyer details
+ *
+ * Partner inquiries (the valefront.com form) are administered under /partners (partner-inquiries.ts).
  */
 type AdminRequest = Request & { billingAdmin?: string; accessAdmin?: string };
 
@@ -52,6 +54,12 @@ export function accessAdminOf(req: Request): string | null {
 }
 
 const esc = (t: unknown) => String(t ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+
+/** The admin host's server pages share this header: Billing · Partners (and the owner dashboard). */
+export function adminNav(current: 'billing' | 'partners'): string {
+  const link = (id: 'billing' | 'partners', href: string, label: string) => (id === current ? `<strong>${label}</strong>` : `<a href="${href}">${label}</a>`);
+  return `<nav class="adminnav">${link('billing', '/billing/', 'Billing')} · ${link('partners', '/partners/', 'Partners')} · <a href="/">Dashboard</a></nav>`;
+}
 
 export function isAdminHost(opts: HostedOptions, req: Request): boolean {
   const host = String(req.headers.host ?? '').toLowerCase().split(':')[0];
@@ -300,7 +308,8 @@ function adminPage(p: {
 table{width:100%;border-collapse:collapse;background:#fff}td,th{padding:6px;border-bottom:1px solid #e3e5ea;text-align:left;vertical-align:top}.n{text-align:right}
 form.settings{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:8px;background:#fff;padding:12px;border:1px solid #e3e5ea;border-radius:8px}
 label{display:flex;flex-direction:column;font-size:12px;color:#555}input,textarea{font:inherit;padding:5px;border:1px solid #ccd;border-radius:6px}button{font:inherit;padding:5px 10px;border-radius:6px;border:1px solid #889;background:#eef;cursor:pointer}
-.note{padding:8px 12px;background:#fff6d6;border:1px solid #e8d48a;border-radius:8px}.wrap{overflow-x:auto}</style></head><body><main>
+.note{padding:8px 12px;background:#fff6d6;border:1px solid #e8d48a;border-radius:8px}.wrap{overflow-x:auto}.adminnav{margin-bottom:8px}</style></head><body><main>
+${adminNav('billing')}
 <h1>Valefront billing admin</h1><p>Signed in through Cloudflare Access as <strong>${esc(p.who)}</strong>. WorldFirst bank transfer: <strong>${a ? 'configured' : 'not configured'}</strong> (no sandbox). Every payment gets a receipt; VAT e-invoices only for buyers in Vietnam who ask.</p>
 ${p.note ? `<p class="note">${esc(p.note)}</p>` : ''}
 <h2>Providers: sandbox or live</h2><p><small>Secrets are Worker secrets (wrangler secret put); this page shows only whether they're set. In sandbox, PayPal is offered to admin workspaces only, and its receipts are marked SANDBOX and numbered apart. A VAT invoice is issued only through S-Invoice in its payment's mode. Every switch is audit-logged with who made it.</small></p>

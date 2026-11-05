@@ -10,6 +10,7 @@ import type { HostedOptions } from '../../src/core/hosted';
 import type { BillingServiceOptions } from '../../src/core/billing-service';
 import type { CompletionRequest, CompletionResponse, Provider, StreamChunk } from '../../src/core/types';
 import { billingFixture } from './billing-fixture';
+import { D1PartnerInquiryStore, PartnerInquiries, type PartnerEmail } from '../../src/core/partner-inquiries';
 
 class Upstream implements Provider {
   name = 'Fake';
@@ -63,6 +64,8 @@ export function hostedBilling(over: { hosted?: Partial<HostedOptions>; billing?:
   const login = new AegisAuth({ issuer: 'https://id.example', clientId: 'c', clientSecret: 's', redirectUri: `${ORIGIN}/auth/callback`, sessionSecret: SESSION_SECRET });
   const turnstile = { tokens: new Set(['ok-token']), calls: 0 };
   const access = fakeAccess();
+  const partnerEmails: PartnerEmail[] = [];
+  const partners = new PartnerInquiries({ store: new D1PartnerInquiryStore(fx.db, () => fx.clock.now), sendEmail: async (m) => { partnerEmails.push(m); }, now: () => fx.clock.now });
   const hosted: HostedOptions = {
     keys,
     models: ['seed-2-0-lite-260428', 'gpt-5.5', 'unpriced-model'],
@@ -79,6 +82,7 @@ export function hostedBilling(over: { hosted?: Partial<HostedOptions>; billing?:
     turnstile: { siteKey: 'site-key', verify: async (token) => { turnstile.calls++; return turnstile.tokens.has(token); } },
     adminHost: 'adm.valefront.com',
     access: access.config,
+    partners,
     providerEnv: { PAYPAL_LIVE_CLIENT_ID: 'x', PAYPAL_LIVE_CLIENT_SECRET: 'super-secret-value', PAYPAL_LIVE_WEBHOOK_ID: 'wh' },
     background: (work) => { pending.push(work); },
     ...over.hosted,
@@ -86,5 +90,5 @@ export function hostedBilling(over: { hosted?: Partial<HostedOptions>; billing?:
   const pending: Promise<unknown>[] = [];
   const app = createServer(router, quotaManager, { hosted, enforceExternalSurface: false, apiKeyStore: new MemorySecretStore() });
   const settle = async () => { while (pending.length) await Promise.allSettled(pending.splice(0)); };
-  return { app, keys, upstream, hosted, turnstile, access, settle, ...fx };
+  return { app, keys, upstream, hosted, turnstile, access, settle, partners, partnerEmails, ...fx };
 }
