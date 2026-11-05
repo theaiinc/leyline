@@ -1,4 +1,4 @@
-import { Conflict, type DocStore } from './issued-keys';
+import { Conflict, type DocStore, type Increment } from './issued-keys';
 import type { LogEntry } from './logger';
 import { ArcanaCloudFallbackSecretStore, ArcanaCloudSecretStore, type ApiKeySource, type ArcanaCloudConfig, type SecretStore, type SecretStoreStatus } from './secret-store';
 
@@ -64,6 +64,18 @@ export class D1DocStore implements DocStore {
 
   async delete(key: string) {
     await this.primary.prepare('DELETE FROM docs WHERE key = ?').bind(key).run();
+  }
+
+  /**
+   * One UPDATE adds every number in place with SQLite's JSON functions, so parallel requests can't overwrite each
+   * other's counts (D1 runs each statement atomically). Missing objects on the way are created first, in the same
+   * json_set, shallowest first; each leaf is computed from the row as it was, and every leaf path appears once.
+   */
+  async increment(key: string, init: unknown, adds: Increment[], sets: Array<[string[], string]> = []) {
+    await this.primary.prepare('INSERT INTO docs (key, value, gen, updated) VALUES (?, ?, 1, ?) ON CONFLICT(key) DO NOTHING')
+      .bind(key, JSON.stringify(init), Date.now()).run();
+    const { sql, binds } = incrementSql(adds, sets);
+    await this.primary.prepare(`UPDATE docs SET value = ${sql}, gen = gen + 1, updated = ? WHERE key = ?`).bind(...binds, Date.now(), key).run();
   }
 
   /** Drop per-minute counters older than a day (they're only read during their minute). */
@@ -224,4 +236,25 @@ export class D1LogStore {
     const { results = [] } = await this.db.prepare('SELECT entry FROM logs ORDER BY at DESC LIMIT ?').bind(limit).all<{ entry: string }>();
     return results.map((r) => JSON.parse(r.entry) as LogEntry);
   }
+}
+
+/** A JSON path with every label quoted (provider and model names hold '/', '.' and '-'). */
+export function jsonPath(path: string[]): string {
+  return '$' + path.map((k) => `."${String(k).replace(/["\\]/g, '')}"`).join('');
+}
+
+/** The json_set expression for increment(): parents created where missing, then numbers added and strings set. */
+export function incrementSql(adds: Increment[], sets: Array<[string[], string]>): { sql: string; binds: unknown[] } {
+  const leafs = [...adds.map(([p]) => p), ...sets.map(([p]) => p)];
+  const parents = new Map<string, string[]>();
+  for (const p of leafs) for (let i = 1; i < p.length; i++) parents.set(jsonPath(p.slice(0, i)), p.slice(0, i));
+  const ordered = [...parents.values()].sort((a, b) => a.length - b.length);
+  const parts: string[] = []; const binds: unknown[] = [];
+  for (const p of ordered) { parts.push("?, json(COALESCE(json_extract(value, ?), '{}'))"); binds.push(jsonPath(p), jsonPath(p)); }
+  // Same leaf twice would make the second one win over the first: merge them.
+  const merged = new Map<string, number>();
+  for (const [p, n] of adds) merged.set(jsonPath(p), (merged.get(jsonPath(p)) ?? 0) + n);
+  for (const [path, n] of merged) { parts.push('?, COALESCE(json_extract(value, ?), 0) + ?'); binds.push(path, path, n); }
+  for (const [p, v] of sets) { parts.push('?, ?'); binds.push(jsonPath(p), v); }
+  return { sql: `json_set(value, ${parts.join(', ')})`, binds };
 }
