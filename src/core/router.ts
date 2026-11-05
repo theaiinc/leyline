@@ -461,18 +461,27 @@ export class Router {
     const chat = this.providers.filter(servesChat);
     if (!model || model === 'auto') return chat;
 
+    const pinned = this.modelPins.get(model);
     const matches: Provider[] = [];
     for (const provider of chat) {
       const enabled = this.enabledModelsFor(provider);
-      if (enabled?.includes(model) || await this.providerListsModel(provider, model)) {
-        matches.push(provider);
-      }
+      const listed = await this.providerListsModel(provider, model);
+      // An explicit model is independent of the AUTO pool. A configured pin or a
+      // provider's deployment default is enough to establish ownership even when
+      // that model is disabled for automatic selection.
+      const explicitlyConfigured = pinned === provider.name || provider.defaultModel === model;
+      // Some providers (for example BytePlus) serve model families without listing every
+      // concrete model id. Prefer that capability over blind fallback: providers that do
+      // not claim the model must never receive an unknown id, because gateways such as
+      // Azure may answer it using their configured deployment regardless of the requested id.
+      const served = provider.servesModel?.('chat', model) ?? false;
+      if (explicitlyConfigured || listed || served || enabled?.includes(model)) matches.push(provider);
     }
-    // Nobody lists it (a deployment name, a model a provider doesn't advertise): try them all, as before.
-    if (matches.length === 0) return chat;
-    if (matches.length > 1) {
-      const pinned = this.modelPins.get(model);
-      const pinnedIndex = pinned ? matches.findIndex(p => p.name === pinned) : -1;
+    // No provider lists or claims the model. Do not send it to a provider that may answer
+    // with a different model; the request path turns an empty candidate set into 404.
+    if (matches.length === 0) return [];
+    if (pinned) {
+      const pinnedIndex = matches.findIndex(p => p.name === pinned);
       if (pinnedIndex > 0) matches.unshift(matches.splice(pinnedIndex, 1)[0]);
     }
     // Only the providers that serve this model: falling through to the others would answer with a different
@@ -649,7 +658,11 @@ export class Router {
     const cannotRead: string[] = [];
     let attempted = false;
     const overBudget: string[] = [];
-    for (const provider of await this.candidateProviders(request.model)) {
+    const candidates = await this.candidateProviders(request.model);
+    if (candidates.length === 0 && request.model !== 'auto' && request.model !== 'auto-vision') {
+      throw new CapabilityError(404, 'model_not_found', `Model "${request.model}" is not served by any configured provider.`);
+    }
+    for (const provider of candidates) {
       if (opts?.excludeProviders?.includes(provider.name)) {
         overBudget.push(provider.name);
         continue;
@@ -825,7 +838,11 @@ export class Router {
     const cannotRead: string[] = [];
     let attempted = false;
     const overBudget: string[] = [];
-    for (const provider of await this.candidateProviders(request.model)) {
+    const candidates = await this.candidateProviders(request.model);
+    if (candidates.length === 0 && request.model !== 'auto' && request.model !== 'auto-vision') {
+      throw new CapabilityError(404, 'model_not_found', `Model "${request.model}" is not served by any configured provider.`);
+    }
+    for (const provider of candidates) {
       if (opts?.excludeProviders?.includes(provider.name)) {
         overBudget.push(provider.name);
         continue;

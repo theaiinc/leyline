@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { ChevronRight, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -52,6 +52,14 @@ export function RoutingPage({ d }: { d: Dashboard }) {
     void d.updateRouting({ modelPins: pins });
   }
 
+  const orderedProviders = useMemo(() => [...providers].sort((a, b) => {
+    const readiness = (provider: ProviderStats) => {
+      if (provider.apiKeyConfigurable && !provider.apiKeyConfigured) return 2;
+      if (provider.runtimeReady === false && provider.apiKeyConfigured) return 1;
+      return 0;
+    };
+    return readiness(a) - readiness(b) || a.name.localeCompare(b.name);
+  }), [providers]);
   const pinnedModels = providers.find(p => p.name === pinProvider)?.models ?? [];
 
   return (
@@ -98,8 +106,15 @@ export function RoutingPage({ d }: { d: Dashboard }) {
 
       <Card className="mt-6">
         <CardHeader>
+          <CardTitle>How auto routing chooses</CardTitle>
+          <CardDescription>Auto uses the enabled model pool in provider priority order. Each pool entry shows its provider, published input/output price per 1M tokens, and position. A per-model pin narrows that model to one provider; a global pin selects one provider and model for every request. The router tries eligible providers in order and falls back to the next only when the current provider fails. Providers that do not serve the requested model, exceed quota, or are skipped by a circuit breaker are excluded. Price, speed, and benchmarks are displayed for context and do not override the configured order.</CardDescription>
+        </CardHeader>
+      </Card>
+
+      <Card className="mt-6">
+        <CardHeader>
           <CardTitle>Providers and models</CardTitle>
-          <CardDescription>Switch a model on to put it in the auto-routing pool. A model several providers serve can be pinned to one of them.</CardDescription>
+          <CardDescription>Switch a model on to put it in the auto-routing pool. Ready providers and recently successful models appear first; unavailable entries are shown last with the reason they cannot be used.</CardDescription>
           <CardAction>
             <div className="relative">
               <Search className="absolute top-2.5 left-2.5 size-4 text-muted-foreground" />
@@ -119,7 +134,7 @@ export function RoutingPage({ d }: { d: Dashboard }) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {providers.map(p => <ProviderRow key={p.name} p={p} routing={routing} search={search} onToggle={toggle} onPin={pinInstance} />)}
+              {orderedProviders.map(p => <ProviderRow key={p.name} p={p} routing={routing} search={search} onToggle={toggle} onPin={pinInstance} />)}
             </TableBody>
           </Table>
         </CardContent>

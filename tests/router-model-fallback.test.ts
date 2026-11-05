@@ -4,12 +4,13 @@ import { ModelRegistry } from '../src/core/model-registry';
 import type { CompletionRequest, CompletionResponse, Provider, StreamChunk } from '../src/core/types';
 
 /** A provider that lists some models and either answers or fails. */
-function provider(name: string, models: string[], fails = false): Provider & { calls: string[] } {
+function provider(name: string, models: string[], fails = false, servesModel?: (model: string) => boolean): Provider & { calls: string[] } {
   const calls: string[] = [];
   return {
     name,
     defaultModel: models[0] ?? 'x',
     calls,
+    servesModel: servesModel ? (_capability, model) => servesModel(model) : undefined,
     async isAvailable() { return true; },
     async getModels() { return models.map((id) => ({ id })); },
     async complete(req: CompletionRequest): Promise<CompletionResponse> {
@@ -50,10 +51,28 @@ describe('a named model is only sent to providers that serve it', () => {
     expect(azure.calls).toEqual([]);
   });
 
-  it('a model nobody lists still tries every provider, as before', async () => {
+  it.each([
+    'doubao-seed-1-6-250615',
+    'seed-1-5',
+    'deepseek-v3',
+    'kimi-k2',
+  ])('routes an unlisted BytePlus-family model through servesModel before blind fallback: %s', async (model) => {
+    const quotaManager = new QuotaManager();
+    const router = new Router({ quotaManager, modelRegistry: new ModelRegistry() });
+    const bytePlus = provider('BytePlus', ['doubao-chat'], false, (candidate) => /^(doubao-|seed-|deepseek-|kimi-)/.test(candidate));
+    const azure = provider('Azure', ['gpt-5.6-luna']);
+    router.addProvider(azure);
+    router.addProvider(bytePlus);
+
+    const response = await router.route({ model, messages: [{ role: 'user', content: 'hi' }] });
+    expect(response.choices[0]?.message.content).toBe('BytePlus');
+    expect(bytePlus.calls).toEqual([model]);
+    expect(azure.calls).toEqual([]);
+  });
+
+  it('rejects a model nobody lists or serves without trying Azure', async () => {
     const { router, azure } = setup();
-    const res = await router.route({ model: 'some-deployment', messages: [{ role: 'user', content: 'hi' }] });
-    expect(res.choices[0].message.content).toBe('Azure');
-    expect(azure.calls).toEqual(['some-deployment']);
+    await expect(router.route({ model: 'unknown-model', messages: [{ role: 'user', content: 'hi' }] })).rejects.toThrow();
+    expect(azure.calls).toEqual([]);
   });
 });
