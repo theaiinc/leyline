@@ -148,7 +148,7 @@ export function CustomerApp({ dark, toggleTheme }: { dark: boolean; toggleTheme:
 }
 
 function Section({ title, description, children }: { title: string; description?: ReactNode; children: ReactNode }) {
-  return <Card className="mb-4 gap-4"><CardHeader><CardTitle>{title}</CardTitle>{description ? <CardDescription>{description}</CardDescription> : null}</CardHeader><CardContent>{children}</CardContent></Card>;
+  return <Card className="mb-4 min-w-0 gap-4"><CardHeader><CardTitle>{title}</CardTitle>{description ? <CardDescription>{description}</CardDescription> : null}</CardHeader><CardContent className="min-w-0">{children}</CardContent></Card>;
 }
 
 function failToast(err: unknown) {
@@ -156,7 +156,8 @@ function failToast(err: unknown) {
 }
 
 function Code({ children }: { children: string }) {
-  return <div className="relative"><pre className="overflow-x-auto rounded-md bg-muted p-3 pr-20 text-xs leading-relaxed">{children}</pre><div className="absolute top-2 right-2"><CopyButton value={children} /></div></div>;
+  // min-w-0 + max-w-full: a long line scrolls inside the box instead of widening the card (it spilled out, 2026-11-05).
+  return <div className="relative min-w-0 max-w-full"><pre className="max-w-full overflow-x-auto rounded-md bg-muted p-3 pr-20 text-xs leading-relaxed">{children}</pre><div className="absolute top-2 right-2"><CopyButton value={children} /></div></div>;
 }
 
 function Quickstart({ me, apiKey }: { me: Me; apiKey?: string | null }) {
@@ -164,7 +165,7 @@ function Quickstart({ me, apiKey }: { me: Me; apiKey?: string | null }) {
   const model = me.freeTier.models[0] ?? 'auto';
   return (
     <Section title="Make your first request" description={<>Base URL <code>{me.apiBaseUrl}/v1</code>. OpenAI- and Anthropic-compatible.</>}>
-      <div className="grid gap-3">
+      <div className="grid min-w-0 gap-3 [&>*]:min-w-0">
         <div className="text-sm font-medium">OpenAI format</div>
         <Code>{`curl ${me.apiBaseUrl}/v1/chat/completions \\
   -H "Authorization: Bearer ${key}" \\
