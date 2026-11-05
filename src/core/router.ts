@@ -459,7 +459,7 @@ export class Router {
   private async candidateProviders(model: string): Promise<Provider[]> {
     // Providers that only do embeddings or audio (Deepgram) never take chat.
     const chat = this.providers.filter(servesChat);
-    if (!model || model === 'auto') return chat;
+    if (!model || model === 'auto' || model === 'auto-vision') return chat;
 
     const pinned = this.modelPins.get(model);
     const matches: Provider[] = [];

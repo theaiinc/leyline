@@ -3,16 +3,13 @@ import { OpenAIProvider } from './openai';
 import { config } from '../config';
 import type { Capability, ModelDetail } from '../core/types';
 
-/**
- * OpenAI-compatible LLM API provider.
- *
- * This is separate from the direct OpenAI provider because its endpoint and
- * credential belong to the user's LLM API account (for example, Arion).
- */
+type CachedModels = { expiresAt: number; models: ModelDetail[] };
+const MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
+const modelCache = new Map<string, CachedModels>();
+
+/**\n * OpenAI-compatible LLM API provider.\n *\n * This is separate from the direct OpenAI provider because its endpoint and\n * credential belong to the user's LLM API account (for example, Arion).\n */
 export class LlmApiProvider extends OpenAIProvider {
   name = 'LLM API';
-  // A gateway: model support comes from its published model list; it never claims `auto`.
-  // The gateway may expose multimodal models; Router filters these against the listed model metadata.
   capabilities: Capability[] = ['chat', 'embeddings', 'vision', 'audio'];
 
   servesModel(): boolean {
@@ -20,23 +17,29 @@ export class LlmApiProvider extends OpenAIProvider {
   }
 
   servesListedModels(capability: Capability): boolean {
-    // Gateway chat models may advertise vision/audio per model in /models.
-    // Embeddings remain a listed-model capability as well.
     return capability === 'chat' || capability === 'embeddings' || capability === 'vision' || capability === 'audio';
   }
 
   async getModels(): Promise<ModelDetail[]> {
+    const cacheKey = this.baseUrl;
+    const cached = modelCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.models;
     try {
       const response = await axios.get(`${this.baseUrl}/models`, { headers: this.headers() });
-      return (response.data?.data ?? []).map((model: any) => ({
+      const models = (response.data?.data ?? []).map((model: any) => ({
         id: model.id,
         name: model.name,
         description: model.description,
         ...(Array.isArray(model.capabilities) ? { capabilities: model.capabilities } : {}),
+        ...(model.pricing !== undefined ? { pricing: model.pricing } : {}),
+        ...(model.input_price !== undefined ? { input_price: model.input_price } : {}),
+        ...(model.output_price !== undefined ? { output_price: model.output_price } : {}),
       }));
+      modelCache.set(cacheKey, { expiresAt: Date.now() + MODEL_CACHE_TTL_MS, models });
+      return models;
     } catch (error) {
       console.error('[LLM API] Failed to list models:', error);
-      return [];
+      return cached?.models ?? [];
     }
   }
 
