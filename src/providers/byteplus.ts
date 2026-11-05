@@ -4,7 +4,7 @@ import { config } from '../config';
 
 /**
  * BytePlus ModelArk's OpenAI-compatible provider for chat and embeddings.
- * Reasoning-only responses are promoted to content when the upstream omits content.
+ * ModelArk reasoning stays in `reasoning_content`; it is never promoted to the answer content.
  */
 const BYTEPLUS_PRICING_SOURCE = 'https://www.byteplus.com/en/product/modelark/pricing';
 
@@ -50,7 +50,7 @@ export class BytePlusProvider extends OpenAIProvider {
     return capability === 'chat' ? this.defaultModel : undefined;
   }
 
-  /** ModelArk reasoning is opt-in; keep private reasoning out of ordinary agent responses. */
+  /** ModelArk reasoning is opt-in; preserve private reasoning separately from ordinary agent responses. */
   protected upstreamBody(request: CompletionRequest, model: string, stream: boolean): Record<string, unknown> {
     const requested = request as CompletionRequest & {
       thinking?: unknown;
