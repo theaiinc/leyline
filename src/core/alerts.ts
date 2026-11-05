@@ -159,7 +159,7 @@ export class CostAlerts {
 
   private async deliver(month: string, alert: Alert, settings: AlertSettings, ctx: { to: string[]; publicUrl: string; adminUrl?: string }, channels: AlertChannels): Promise<Alert> {
     const subject = alert.kind === 'test' ? 'Valefront: test alert' : alert.threshold >= 100 ? `Valefront: ${alert.kind === 'key' ? `key "${alert.keyName}" ` : ''}limit reached` : `Valefront: ${alert.threshold}% of ${alert.kind === 'key' ? `key "${alert.keyName}"'s cap` : 'the monthly limit'} spent`;
-    const text = `${alert.message}\n\nSpending: ${ctx.adminUrl ?? `${ctx.publicUrl}/dashboard`}/#/spending`;
+    const text = `${alert.message}\n\nSpending: ${ctx.adminUrl ?? `${ctx.publicUrl}/dashboard`}/spending`;
     const delivery: { email?: string; webhook?: string } = {};
     const tasks: Promise<void>[] = [];
     if (!settings.email || !ctx.to.length) delivery.email = 'off';

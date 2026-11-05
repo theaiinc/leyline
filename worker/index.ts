@@ -20,7 +20,8 @@ import { logger } from '../src/core/logger';
 import { fetchBenchmarkSnapshot, mapBenchmarkSnapshot, refreshBenchmarks, type BenchmarkCache, type BenchmarkSnapshot } from '../src/core/benchmarks';
 import type { ModelListSnapshot } from '../src/core/router';
 import type { WorkersAiBinding } from '../src/providers/workers-ai';
-import { dashboardApiRequest, dashboardPageRedirect, dashboardRouteRedirect, legacyDashboardRedirect } from './host-routing';
+import { dashboardApiRequest, dashboardPageRedirect, dashboardRouteRedirect, isDashboardPageNavigation, legacyDashboardRedirect } from './host-routing';
+import { isDashboardPagePath } from '../src/dashboard-pages';
 
 /**
  * Hosted Valefront on Cloudflare Workers. The same Express app as the Node server (src/server.ts), in hosted keys
@@ -334,6 +335,12 @@ export default {
     if (dashboardRedirect) return dashboardRedirect;
 
     const asset = assetPath(url.pathname);
+    if (isDashboardPageNavigation(request)) {
+      const res = await env.ASSETS.fetch(new Request(new URL('/', url), request));
+      const page = new Response(res.body, res);
+      page.headers.set('Cache-Control', 'no-store');
+      return page;
+    }
     if (asset) {
       if (asset === '/') {
         // The page itself is for anyone signed in (customers get their workspace); its scripts and styles hold nothing private.

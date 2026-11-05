@@ -1,4 +1,5 @@
-import { dashboardApiRequest, dashboardPageRedirect, dashboardRouteRedirect, legacyDashboardRedirect } from '../worker/host-routing';
+import { DASHBOARD_PAGE_PATHS, isDashboardPagePath } from '../src/dashboard-pages';
+import { dashboardApiRequest, dashboardPageRedirect, dashboardRouteRedirect, isDashboardPageNavigation, legacyDashboardRedirect } from '../worker/host-routing';
 
 describe('legacy dashboard host routing', () => {
   test.each(['/', '/dashboard', '/dashboard/', '/auth/login', '/auth/callback'])(
@@ -46,16 +47,33 @@ describe('legacy dashboard host routing', () => {
   test.each(['llm.valefront.com', 'llm.theaiinc.com'])('does not rewrite API host %s', (hostname) => {
     expect(dashboardApiRequest(new Request(`https://${hostname}/session`))).toBeNull();
   });
+
+  test('known page paths are served only for HTML navigations', () => {
+    const navigation = new Request('https://dash.valefront.com/providers', {
+      headers: { accept: 'text/html', 'sec-fetch-mode': 'navigate' },
+    });
+    const fetchRequest = new Request('https://dash.valefront.com/providers', {
+      headers: { accept: 'application/json', 'sec-fetch-mode': 'cors' },
+    });
+    expect(isDashboardPageNavigation(navigation)).toBe(true);
+    expect(isDashboardPageNavigation(fetchRequest)).toBe(false);
+    expect(dashboardApiRequest(fetchRequest)?.url).toBe('https://dash.valefront.com/dashboard/providers');
+  });
+
+  test('shared dashboard page paths do not overlap API paths', () => {
+    for (const page of DASHBOARD_PAGE_PATHS) {
+      expect(isDashboardPagePath(`/dashboard/${page}`)).toBe(false);
+      expect(isDashboardPagePath(`/${page}`)).toBe(true);
+    }
+  });
 });
 describe('dashboard pages linked as paths', () => {
-  test('https://dash.valefront.com/billing (the 402 message, PayPal\'s return) opens the Billing page with its query', () => {
-    const response = dashboardRouteRedirect(new URL('https://dash.valefront.com/billing?paypal=return&order=ord_1'));
-    expect(response?.status).toBe(302);
-    expect(response?.headers.get('location')).toBe('https://dash.valefront.com/#/billing?paypal=return&order=ord_1');
+  test('real dashboard page paths are served directly, preserving the query', () => {
+    expect(dashboardRouteRedirect(new URL('https://dash.valefront.com/billing?paypal=return&order=ord_1'))).toBeNull();
   });
 
   test('old paths keep working; API hosts and API paths are left alone', () => {
-    expect(dashboardRouteRedirect(new URL('https://dash.valefront.com/usage'))?.headers.get('location')).toBe('https://dash.valefront.com/#/usage');
+    expect(dashboardRouteRedirect(new URL('https://dash.valefront.com/usage'))).toBeNull();
     expect(dashboardRouteRedirect(new URL('https://llm.valefront.com/billing'))).toBeNull();
     expect(dashboardRouteRedirect(new URL('https://dash.valefront.com/dashboard/me/billing'))).toBeNull();
   });

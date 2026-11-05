@@ -1,3 +1,5 @@
+import { isDashboardPagePath } from '../src/dashboard-pages';
+
 export function legacyDashboardRedirect(url: URL): Response | null {
   if (url.hostname !== 'llm.theaiinc.com') return null;
   if (url.pathname !== '/' && url.pathname !== '/dashboard' && url.pathname !== '/dashboard/' && !url.pathname.startsWith('/auth/')) {
@@ -18,12 +20,21 @@ export function dashboardPageRedirect(url: URL): Response | null {
   return Response.redirect(target.toString(), 301);
 }
 
-/** Dashboard pages linked as paths (https://dash.valefront.com/billing, PayPal's return address) -> the page's hash route. */
-const DASHBOARD_ROUTES = new Set(['/billing', '/keys', '/usage', '/spending', '/calculator', '/data', '/get-started']);
+/** Real dashboard page paths are handled by the worker's navigation fallback, not redirected to hash routes. */
 export function dashboardRouteRedirect(url: URL): Response | null {
   if (url.hostname === 'llm.valefront.com' || url.hostname === 'llm.theaiinc.com') return null;
-  if (!DASHBOARD_ROUTES.has(url.pathname)) return null;
-  return Response.redirect(new URL(`/#${url.pathname}${url.search}`, url.origin).toString(), 302);
+  return null;
+}
+
+/** True only for browser navigations to a known dashboard page, never API/fetch requests. */
+export function isDashboardPageNavigation(request: Request): boolean {
+  const url = new URL(request.url);
+  if (url.hostname !== 'dash.valefront.com' && url.hostname !== 'adm.valefront.com') return false;
+  if (request.method !== 'GET' && request.method !== 'HEAD') return false;
+  if (!isDashboardPagePath(url.pathname)) return false;
+  const accept = request.headers.get('accept') ?? '';
+  const fetchMode = request.headers.get('sec-fetch-mode');
+  return accept.includes('text/html') && (fetchMode === 'navigate' || fetchMode === null);
 }
 
 /** Rewrites browser-cached root API paths to the dashboard API namespace on dashboard hosts. */
