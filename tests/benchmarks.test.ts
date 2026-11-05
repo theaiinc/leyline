@@ -68,8 +68,10 @@ describe('benchmark matching and ranking', () => {
     expect(duplicateMapped[0]).toMatchObject({ model: 'gpt-5.5_xhigh', leylineModel: 'gpt-5.5', score: 92 });
   });
 
-  it('matches normalized provider prefixes, dates, latest aliases, and case exactly', () => {
+  it('matches normalized provider prefixes, dates, latest aliases, and BytePlus dated IDs exactly', () => {
     expect(matchBenchmarkModel('OpenAI/gpt-4o-2025-01-01', snapshot.benchmarks[0]!.scores)?.model).toBe('gpt-4o');
+    expect(matchBenchmarkModel('DeepSeek V4 Flash', [{ model: 'deepseek-v4-flash-ga-260731', score: 1, source: 'byteplus', asOf: '2026-11-05' }])).toBeUndefined();
+    expect(matchBenchmarkModel('deepseek-v4-flash', [{ model: 'deepseek-v4-flash-ga-260731', leylineModel: 'deepseek-v4-flash-ga-260731', score: 1, source: 'byteplus', asOf: '2026-11-05' }])?.model).toBe('deepseek-v4-flash-ga-260731');
     expect(matchBenchmarkModel('GPT-4O-latest', snapshot.benchmarks[0]!.scores)?.model).toBe('gpt-4o');
     expect(matchBenchmarkModel('gpt-4o-mini', snapshot.benchmarks[0]!.scores)).toBeUndefined();
   });
