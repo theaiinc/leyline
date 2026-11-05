@@ -88,7 +88,7 @@ export class CostAlerts {
    * After a request was counted: alert on any threshold newly crossed by the monthly total or by this key.
    * Cheap when nothing crossed (no extra reads beyond the spend it already has to look at).
    */
-  async check(settings: AlertSettings, budgetUsd: number | null, key: IssuedKey | null, ctx: { to: string[]; publicUrl: string }, channels: AlertChannels): Promise<Alert[]> {
+  async check(settings: AlertSettings, budgetUsd: number | null, key: IssuedKey | null, ctx: { to: string[]; publicUrl: string; adminUrl?: string }, channels: AlertChannels): Promise<Alert[]> {
     const month = monthOf(this.now());
     const due: Array<{ id: string; build: () => Alert }> = [];
     if (budgetUsd && settings.thresholds.length) {
@@ -133,7 +133,7 @@ export class CostAlerts {
   }
 
   /** A test alert through every channel, now. */
-  async test(settings: AlertSettings, ctx: { to: string[]; publicUrl: string }, channels: AlertChannels): Promise<Alert> {
+  async test(settings: AlertSettings, ctx: { to: string[]; publicUrl: string; adminUrl?: string }, channels: AlertChannels): Promise<Alert> {
     const month = monthOf(this.now());
     const alert: Alert = { id: `test:${this.now()}`, at: this.now(), kind: 'test', month, threshold: 0, usd: 0, limitUsd: 0, message: 'This is a test alert from Valefront. Cost alerts will arrive here.' };
     await update<AlertDoc>(this.store, `alerts/${month}`, (cur) => ({ sent: cur?.sent ?? {}, log: [alert, ...(cur?.log ?? [])].slice(0, 100) }));
@@ -157,9 +157,9 @@ export class CostAlerts {
     return alert;
   }
 
-  private async deliver(month: string, alert: Alert, settings: AlertSettings, ctx: { to: string[]; publicUrl: string }, channels: AlertChannels): Promise<Alert> {
+  private async deliver(month: string, alert: Alert, settings: AlertSettings, ctx: { to: string[]; publicUrl: string; adminUrl?: string }, channels: AlertChannels): Promise<Alert> {
     const subject = alert.kind === 'test' ? 'Valefront: test alert' : alert.threshold >= 100 ? `Valefront: ${alert.kind === 'key' ? `key "${alert.keyName}" ` : ''}limit reached` : `Valefront: ${alert.threshold}% of ${alert.kind === 'key' ? `key "${alert.keyName}"'s cap` : 'the monthly limit'} spent`;
-    const text = `${alert.message}\n\nSpending: ${ctx.publicUrl}/dashboard/#/spending`;
+    const text = `${alert.message}\n\nSpending: ${ctx.adminUrl ?? `${ctx.publicUrl}/dashboard`}/#/spending`;
     const delivery: { email?: string; webhook?: string } = {};
     const tasks: Promise<void>[] = [];
     if (!settings.email || !ctx.to.length) delivery.email = 'off';

@@ -41,4 +41,4 @@ export function dashboardApiRequest(request: Request): Request | null {
   return new Request(rewritten, request);
 }
 
-const DASHBOARD_API_EXCLUSIONS = ['/auth', '/v1', '/healthz', '/admin', '/mcp', '/readyz', '/webhooks'];
+const DASHBOARD_API_EXCLUSIONS = ['/auth', '/v1', '/healthz', '/admin', '/mcp', '/readyz', '/webhooks', '/billing'];

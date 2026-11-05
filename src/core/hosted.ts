@@ -14,6 +14,7 @@ import type { AccessConfig } from './cloudflare-access';
 import type { BenchmarkSnapshot } from './benchmarks';
 import { RequestPiiRedactor } from './pii-redaction';
 import { RepriceRefused, repriceSpend } from './spend-reprice';
+import { accessAdminOf } from './admin-billing';
 
 function capabilitiesForModel(modelId: string): string[] {
   const id = modelId.toLowerCase();
@@ -290,7 +291,7 @@ function alertsFor(opts: HostedOptions): CostAlerts {
 
 function alertContext(opts: HostedOptions) {
   const settings = opts.alerts ?? DEFAULT_ALERTS;
-  return { to: settings.emails.length ? settings.emails : opts.adminEmails, publicUrl: opts.publicUrl };
+  return { to: settings.emails.length ? settings.emails : opts.adminEmails, publicUrl: opts.publicUrl, adminUrl: opts.adminHost ? `https://${opts.adminHost}` : undefined };
 }
 
 /** After a request is counted: alert on thresholds newly crossed (never fails the request). */
@@ -360,6 +361,11 @@ export function adminOf(opts: HostedOptions, req: Request): string | null {
     const b = Buffer.from(opts.adminToken);
     if (a.length === b.length && timingSafeEqual(a, b)) return 'token';
   }
+  // With a platform admin host (adm.valefront.com), the owner manages Valefront only there, through Cloudflare
+  // Access: dash.valefront.com is the customers' dashboard, and an admin signed in there is a customer like anyone.
+  const viaAccess = accessAdminOf(req);
+  if (viaAccess) return viaAccess;
+  if (opts.adminHost) return null;
   const s = opts.login?.session(req.headers.cookie);
   return s && opts.adminEmails.includes(s.email.toLowerCase()) ? s.email : null;
 }
@@ -376,7 +382,7 @@ export function sameOrigin(opts: HostedOptions, req: Request): boolean {
     }
   };
 
-  const accepted = [opts.publicUrl, ...(opts.publicAliases ?? [])].map(normalizeOrigin);
+  const accepted = [opts.publicUrl, ...(opts.publicAliases ?? []), ...(opts.adminHost ? [`https://${opts.adminHost}`] : [])].map(normalizeOrigin);
   return accepted.includes(normalizeOrigin(origin));
 }
 
@@ -605,7 +611,7 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
   }
 
   // ── admin: the page and the key API ─────────────────────────────────────────────────────────────────
-  app.get('/admin', (_req, res) => res.redirect(302, '/dashboard/#/keys'));
+  app.get('/admin', (_req, res) => res.redirect(302, opts.adminHost ? `https://${opts.adminHost}/#/keys` : '/dashboard/#/keys'));
 
   const guard = (req: Request, res: Response, next: NextFunction) => {
     const who = adminOf(opts, req);

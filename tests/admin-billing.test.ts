@@ -2,7 +2,7 @@ import request from 'supertest';
 import { SETTINGS } from '../src/core/billing-service';
 import { getMode, providerStatus, secretsFor, setMode } from '../src/core/provider-modes';
 import { BUYER, WORLDFIRST, workspace } from './helpers/billing-fixture';
-import { hostedBilling } from './helpers/hosted-billing';
+import { cookieFor, hostedBilling } from './helpers/hosted-billing';
 
 const ADM = 'adm.valefront.com';
 
@@ -16,7 +16,7 @@ async function pendingOrder(h: ReturnType<typeof hostedBilling>) {
 describe('billing admin on adm.valefront.com (Cloudflare Access + the app\'s own check)', () => {
   it('needs a valid Access token for an admin email, for this application', async () => {
     const h = hostedBilling();
-    const get = (jwt?: string) => { const r = request(h.app).get('/').set('Host', ADM); return jwt ? r.set('Cf-Access-Jwt-Assertion', jwt) : r; };
+    const get = (jwt?: string) => { const r = request(h.app).get('/billing/').set('Host', ADM); return jwt ? r.set('Cf-Access-Jwt-Assertion', jwt) : r; };
     expect((await get()).status).toBe(403);
     expect((await get(h.access.token({ email: 'someone@example.com' }))).status).toBe(403);
     expect((await get(h.access.token({ email: 'owner@valefront.com', aud: ['other-app'] }))).status).toBe(403);
@@ -35,15 +35,15 @@ describe('billing admin on adm.valefront.com (Cloudflare Access + the app\'s own
 
   it('is not configured: nobody gets in', async () => {
     const h = hostedBilling({ hosted: { access: null } });
-    expect((await request(h.app).get('/').set('Host', ADM).set('Cf-Access-Jwt-Assertion', 'x')).status).toBe(503);
+    expect((await request(h.app).get('/billing/').set('Host', ADM).set('Cf-Access-Jwt-Assertion', 'x')).status).toBe(503);
   });
 
-  it('mark paid credits once; the admin host serves nothing else, and admin paths exist on no other host', async () => {
+  it('mark paid credits once; the admin host serves the owner dashboard only through Access, and billing admin paths exist on no other host', async () => {
     const h = hostedBilling();
     const { ws, order } = await pendingOrder(h);
     const jwt = h.access.token({ email: 'owner@valefront.com' });
     const mark = (origin?: string) => {
-      const r = request(h.app).post(`/orders/${order.id}/mark-paid`).set('Host', ADM).set('Cf-Access-Jwt-Assertion', jwt).type('form').send({ bankReference: 'WF-123', receivedUsd: '50.00' });
+      const r = request(h.app).post(`/billing/orders/${order.id}/mark-paid`).set('Host', ADM).set('Cf-Access-Jwt-Assertion', jwt).type('form').send({ bankReference: 'WF-123', receivedUsd: '50.00' });
       return origin ? r.set('Origin', origin) : r;
     };
     expect((await mark()).status).toBe(403);
@@ -56,14 +56,17 @@ describe('billing admin on adm.valefront.com (Cloudflare Access + the app\'s own
     expect((await h.store.balance(ws.id)).cents).toBe(5000);
     expect((await h.store.receiptForOrder(order.id))!.providerReference).toBe('WF-123');
     // Not on the API or dashboard hosts; and the admin host has no customer or API routes.
-    expect((await request(h.app).post(`/orders/${order.id}/mark-paid`).set('Host', 'llm.valefront.com').set('Cf-Access-Jwt-Assertion', jwt)).status).toBe(404);
-    expect((await request(h.app).get('/dashboard/me').set('Host', ADM).set('Cf-Access-Jwt-Assertion', jwt)).status).toBe(404);
+    expect((await request(h.app).post(`/billing/orders/${order.id}/mark-paid`).set('Host', 'llm.valefront.com').set('Cf-Access-Jwt-Assertion', jwt)).status).toBe(404);
+    // The admin host serves the owner's dashboard to an Access-verified admin (and only to them).
+    const session = await request(h.app).get('/dashboard/session').set('Host', ADM).set('Cf-Access-Jwt-Assertion', jwt);
+    expect(session.body).toMatchObject({ hosted: true, admin: true });
+    expect((await request(h.app).get('/dashboard/session').set('Host', ADM)).status).toBe(403);
   });
 
   it('a received amount that is not the order total is not marked paid', async () => {
     const h = hostedBilling();
     const { ws, order } = await pendingOrder(h);
-    const res = await request(h.app).post(`/orders/${order.id}/mark-paid`).set('Host', ADM).set('Origin', `https://${ADM}`)
+    const res = await request(h.app).post(`/billing/orders/${order.id}/mark-paid`).set('Host', ADM).set('Origin', `https://${ADM}`)
       .set('Cf-Access-Jwt-Assertion', h.access.token({ email: 'owner@valefront.com' })).type('form').send({ receivedUsd: '49.00' });
     expect(decodeURIComponent(res.headers.location)).toContain('Not marked paid');
     expect((await h.store.balance(ws.id)).cents).toBe(0);
@@ -71,7 +74,7 @@ describe('billing admin on adm.valefront.com (Cloudflare Access + the app\'s own
 
   it('settings: WorldFirst account, legal details, VAT rates', async () => {
     const h = hostedBilling();
-    const post = (path: string, body: Record<string, string>) => request(h.app).post(path).set('Host', ADM).set('Origin', `https://${ADM}`)
+    const post = (path: string, body: Record<string, string>) => request(h.app).post(`/billing${path}`).set('Host', ADM).set('Origin', `https://${ADM}`)
       .set('Cf-Access-Jwt-Assertion', h.access.token({ email: 'owner@valefront.com' })).type('form').send(body);
     await post('/settings/worldfirst', { accountName: 'THE AI', accountNumber: '123', bankName: 'CFSB', swiftCode: 'cmfgus33' });
     expect(await h.service.account()).toMatchObject({ swiftCode: 'CMFGUS33', currency: 'USD' });
@@ -83,11 +86,11 @@ describe('billing admin on adm.valefront.com (Cloudflare Access + the app\'s own
   it('provider modes: live only after typing LIVE, audit-logged; credentials shown as present or not, never their values', async () => {
     const h = hostedBilling();
     const jwt = h.access.token({ email: 'owner@valefront.com' });
-    const page = await request(h.app).get('/').set('Host', ADM).set('Cf-Access-Jwt-Assertion', jwt);
+    const page = await request(h.app).get('/billing/').set('Host', ADM).set('Cf-Access-Jwt-Assertion', jwt);
     expect(page.text).toContain('PAYPAL_LIVE_CLIENT_SECRET: set');
     expect(page.text).toContain('PAYPAL_SANDBOX_CLIENT_ID: missing');
     expect(page.text).not.toContain('super-secret-value');
-    const switchTo = (mode: string, confirm?: string) => request(h.app).post('/providers/paypal/mode').set('Host', ADM).set('Origin', `https://${ADM}`).set('Cf-Access-Jwt-Assertion', jwt).type('form').send({ mode, ...(confirm ? { confirm } : {}) });
+    const switchTo = (mode: string, confirm?: string) => request(h.app).post('/billing/providers/paypal/mode').set('Host', ADM).set('Origin', `https://${ADM}`).set('Cf-Access-Jwt-Assertion', jwt).type('form').send({ mode, ...(confirm ? { confirm } : {}) });
     expect(decodeURIComponent((await switchTo('live')).headers.location)).toContain('Type LIVE');
     expect(await getMode(h.store, 'paypal')).toBe('sandbox');
     await switchTo('live', 'LIVE');
@@ -117,5 +120,12 @@ describe('provider modes (reusable by Bookkeeper)', () => {
     const status = await providerStatus(s, env);
     expect(status.find((p) => p.id === 'paypal')).toMatchObject({ mode: 'sandbox', sandbox: { ready: true }, live: { ready: false } });
     expect(JSON.stringify(status)).not.toContain('"i"');
+  });
+
+  it('dash.valefront.com is for customers: an admin email signed in there is not the owner (Steve, 2026-11-05)', async () => {
+    const h = hostedBilling();
+    const res = await request(h.app).get('/dashboard/session').set('Host', 'dash.valefront.com').set('Cookie', cookieFor('owner-sub', 'owner@valefront.com'));
+    expect(res.body).toMatchObject({ hosted: true, email: 'owner@valefront.com', admin: false });
+    expect((await request(h.app).get('/dashboard/stats').set('Host', 'dash.valefront.com').set('Cookie', cookieFor('owner-sub', 'owner@valefront.com'))).status).toBe(401);
   });
 });
