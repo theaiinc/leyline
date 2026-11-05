@@ -55,6 +55,17 @@ import { mediaModels, defaultMediaParameters, type MediaKind, type MediaModel, t
     const [cost, setCost] = useState<number>();
     const [prices, setPrices] = useState<Record<string, ModelPrice>>({});
     const [history, setHistory] = useState<Run[]>([]);
+    useEffect(() => {
+      fetch(apiUrl('/v1/pricing'), { credentials: 'same-origin' }).then(async response => {
+        if (!response.ok) throw new Error('Could not load published pricing');
+        const data = await response.json() as import('@/api').PricingResponse;
+        const next: Record<string, ModelPrice> = {};
+        for (const item of data.models) {
+          next[item.id] = { model: item.id, input: item.input, output: item.output, cachedInput: item.cached_input };
+        }
+        setPrices(next);
+      }).catch(() => undefined);
+    }, []);
     const filtered = allModels.filter(model => `${model.name} ${model.id} ${model.provider}`.toLowerCase().includes(query.toLowerCase()));
     const mediaFiltered = mediaModels(mediaCatalog, query);
     const availableModes = selected ? modesForModel(selected) : [];
