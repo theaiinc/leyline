@@ -131,7 +131,14 @@ export function KeysPage({ d }: { d: Dashboard }) {
                   return (
                     <TableRow key={k.id} className={k.revokedAt ? 'opacity-60' : undefined}>
                       <TableCell className="pl-4">
-                      <button type="button" className="text-left font-medium hover:underline" onClick={() => { window.location.hash = `#/spending?key=${encodeURIComponent(k.id)}`; }}>{k.name}</button>
+                        <button
+                          type="button"
+                          className="text-left font-medium hover:underline"
+                          aria-label={`View spending for ${k.name}`}
+                          onClick={() => { window.location.hash = `#/spending?key=${encodeURIComponent(k.id)}`; }}
+                        >
+                          {k.name}
+                        </button>
                         <div className="text-xs text-muted-foreground">Created {new Date(k.createdAt).toLocaleDateString()}</div>
                       </TableCell>
                       <TableCell>

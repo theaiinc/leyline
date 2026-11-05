@@ -632,7 +632,12 @@ export class IssuedKeys {
     await this.touch(key, now);
   }
 
-"  /**\n   * Rebuild served usage from durable request-log rows. Dry-run is the default. A durable\n   * marker makes a completed run idempotent and prevents double counting.\n   */\n  async backfillServedUsage(rows: Array<{ keyId: string; timestamp: string; provider: string; model: string; promptTokens?: number; completionTokens?: number; cachedTokens?: number; usd: number }>, options: { month: string; dryRun?: boolean; sourceFrom?: string }): Promise<{ month: string; dryRun: boolean; keys: number; rows: number; sourceFrom?: string; alreadyApplied: boolean }> {\n    const month = options.month;\n    if (!/^\\d{4}-\\d{2}$/.test(month)) throw new Error('month must be YYYY-MM');\n    const inMonth = rows.filter((row) => row.timestamp.startsWith(`${month}-`));\n    const keyIds = [...new Set(inMonth.map((row) => row.keyId))];\n    if (options.dryRun !== false) return { month, dryRun: true, keys: keyIds.length, rows: inMonth.length, sourceFrom: options.sourceFrom, alreadyApplied: false };\n    const marker = `usage-backfill/${month}`;\n    const existing = await this.store.get<{ appliedAt: string }>(marker);\n    if (existing) return { month, dryRun: false, keys: keyIds.length, rows: inMonth.length, sourceFrom: options.sourceFrom, alreadyApplied: true };\n    for (const row of inMonth) {\n      const tokens = Math.max(0, Math.round((row.promptTokens ?? 0) + (row.completionTokens ?? 0)));\n      const servedId = `${row.provider}/${row.model}`;\n      const day = row.timestamp.slice(0, 10);\n      const line = (path: string[]): Increment[] => [[[...path, 'usd'], row.usd], [[...path, 'requests'], 1], [[...path, 'tokens'], tokens], ...(row.cachedTokens == null ? [] : [[[...path, 'cachedTokens'], row.cachedTokens]] as Increment[])];\n      const adds: Increment[] = [['usd'], ['requests'], ['promptTokens'], ['completionTokens']].map((field) => [[field], field === 'requests' ? 1 : field === 'promptTokens' ? row.promptTokens ?? 0 : field === 'completionTokens' ? row.com
+  /**
+   * Count a paid add-on's fee for a request already counted by record(): its own spend line (provider "Valefront",
+   * model = the add-on's id, e.g. "pii-protection", so Spending shows it apart from the models) and the key's
+   * usage.addons. The month's dollars include it; the month's requests and tokens don't (record() counted them).
+   */
+  async recordAddon(key: IssuedKey | null, addon: { id: string; provider: string }, inputTokens: number, usd: number): Promise<void> {
     const now = this.now();
     const month = monthOf(now);
     const day = dayOf(now);
@@ -669,17 +674,7 @@ export class IssuedKeys {
 }
 
 function emptyUsage(month: string): KeyUsage {
-  return {
-    month,
-    requests: 0,
-    promptTokens: 0,
-    completionTokens: 0,
-    days: {},
-    byModel: {},
-    byProvider: {},
-    byServed: {},
-    byDay: {},
-  };
+  return { month, requests: 0, promptTokens: 0, completionTokens: 0, days: {}, byModel: {} };
 }
 
 function positive(v: unknown): number | null {
