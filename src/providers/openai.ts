@@ -22,6 +22,7 @@ export class OpenAIProvider implements Provider {
   protected apiKey: string;
   protected baseUrl: string;
   private model: string;
+  private unavailableUntil = 0;
 
   constructor(
     apiKey: string = process.env.OPENAI_API_KEY || '',
@@ -35,7 +36,11 @@ export class OpenAIProvider implements Provider {
   }
 
   async isAvailable(): Promise<boolean> {
-    return Boolean(this.apiKey);
+    return Boolean(this.apiKey) && Date.now() >= this.unavailableUntil;
+  }
+
+  markUnavailable(_reason: string): void {
+    this.unavailableUntil = Date.now() + 15 * 60 * 1000;
   }
 
   setApiKey(apiKey: string): void {
