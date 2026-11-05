@@ -596,9 +596,11 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
         res.status(400).send(`Sign-in failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     });
+    // Clearing our cookies alone signed people straight back in: Aegis still had its session (Steve, 2026-11-05,
+    // "valefront dash can't logout"). The page goes on to Aegis's sign-out page, which ends that session too.
     app.post('/auth/logout', (_req, res) => {
       res.setHeader('Set-Cookie', [cookie('leyline_session', '', 0), cookie('leyline_refresh', '', 0)]);
-      res.status(204).end();
+      res.status(200).json({ next: login.endSessionUrl() });
     });
   }
 

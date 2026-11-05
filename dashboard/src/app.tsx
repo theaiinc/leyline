@@ -80,8 +80,10 @@ export function App() {
   const current = navIds(nav).includes(page) ? page : 'overview';
 
   async function signOut() {
-    await fetch(apiUrl('/auth/logout'), { method: 'POST', credentials: 'same-origin' });
-    window.location.href = '/auth/login?next=/';
+    const res = await fetch(apiUrl('/auth/logout'), { method: 'POST', credentials: 'same-origin' });
+    // Aegis's sign-out page ends the Aegis session too; without it the next sign-in skipped the login.
+    const next = res.ok ? ((await res.json().catch(() => null)) as { next?: string } | null)?.next : undefined;
+    window.location.href = next || '/auth/login?next=/';
   }
 
   return (

@@ -91,8 +91,10 @@ export function CustomerApp({ dark, toggleTheme }: { dark: boolean; toggleTheme:
   const current = ready && navIds(NAV).includes(wanted) ? wanted : 'get-started';
 
   async function signOut() {
-    await fetch(apiUrl('/auth/logout'), { method: 'POST', credentials: 'same-origin' });
-    window.location.href = '/auth/login?next=/';
+    const res = await fetch(apiUrl('/auth/logout'), { method: 'POST', credentials: 'same-origin' });
+    // Aegis's sign-out page ends the Aegis session too; without it the next sign-in skipped the login.
+    const next = res.ok ? ((await res.json().catch(() => null)) as { next?: string } | null)?.next : undefined;
+    window.location.href = next || '/auth/login?next=/';
   }
 
   return (
