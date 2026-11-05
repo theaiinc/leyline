@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Activity, Calculator, CreditCard, FlaskConical, KeyRound, LayoutDashboard, Layers, LogOut, Moon, RefreshCw, Route, Server, Sun, Wallet } from 'lucide-react';
+import { Activity, Calculator, FlaskConical, KeyRound, LayoutDashboard, Layers, LogOut, Moon, RefreshCw, Route, Server, Sun, Wallet } from 'lucide-react';
 import { SideNav, navIds, type NavEntry } from '@/components/side-nav';
 import { Card, CardContent } from '@/components/ui/card';
 import { PageHeader } from '@/components/common';
@@ -34,9 +34,9 @@ const NAV: Nav[] = [
   { id: 'playground', label: 'Playground', icon: FlaskConical },
   { id: 'activity', label: 'Activity', icon: Activity },
 ];
-/** Money in one place: billing (hosted), spending (hosted), the cost calculator. */
+/** Money in one place: spending (hosted) and the cost calculator. Customer billing is administered on
+ * adm.valefront.com (platform admins only, behind Cloudflare Access), never on this dashboard. */
 const BILLING: Nav[] = [
-  { id: 'billing', label: 'Billing', icon: CreditCard, hosted: true },
   { id: 'spending', label: 'Spending', icon: Wallet, hosted: true },
   { id: 'calculator', label: 'Cost calculator', icon: Calculator },
 ];
@@ -48,17 +48,6 @@ function navFor(hosted: boolean): NavEntry[] {
   const at = top.findIndex((n) => n.id === 'playground');
   const group: NavEntry = { group: 'Billing', icon: Wallet, items: BILLING.filter(shown) };
   return [...top.slice(0, at), group, ...top.slice(at)];
-}
-
-/** For the owner: customer billing is administered on its own host, behind Cloudflare Access. */
-function AdminBillingPage() {
-  return (<>
-    <PageHeader title="Billing" description="Customer orders, payments, receipts, VAT e-invoices and provider modes." />
-    <Card><CardContent className="grid gap-2 text-sm">
-      <p>Customer billing is administered at <a className="underline" href="https://adm.valefront.com/" target="_blank" rel="noreferrer">adm.valefront.com</a> (Cloudflare Access): mark bank transfers paid, resend receipts, issue and retry VAT e-invoices, switch PayPal and Viettel S-Invoice between sandbox and live.</p>
-      <p className="text-muted-foreground">Admin workspaces are never charged. This dashboard's Spending page shows what the providers cost.</p>
-    </CardContent></Card>
-  </>);
 }
 
 export function useTheme(): [boolean, () => void] {
@@ -134,7 +123,6 @@ export function App() {
               : current === 'routing' ? <RoutingPage d={d} />
                 : current === 'keys' ? <KeysPage d={d} />
                   : current === 'spending' ? <SpendingPage />
-                  : current === 'billing' ? <AdminBillingPage />
                   : current === 'offered' ? <OfferedPage d={d} />
                     : current === 'playground' ? <PlaygroundPage d={d} />
                       : current === 'calculator' ? <CalculatorPage />
