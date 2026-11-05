@@ -53,26 +53,35 @@ describe('BytePlusProvider', () => {
 
   it('supports OpenAI-format tool calls', async () => {
     const response = {
-      choices: [{
-        index: 0,
-        message: {
-          role: 'assistant',
-          content: null,
-          tool_calls: [{
-            id: 'call-1',
-            type: 'function',
-            function: { name: 'lookup', arguments: '{"q":"hello"}' },
-          }],
-        },
-        finish_reason: 'tool_calls',
-      }],
+      id: 'ark-tool',
+      choices: [{ message: { role: 'assistant', tool_calls: [{ id: 'call-1', type: 'function' }] } }],
     };
     const axios = await import('axios');
     jest.spyOn(axios.default, 'post').mockResolvedValue({ data: response });
-    const result = await new BytePlusProvider('test-key').complete({
-      ...request,
-      tools: [{ type: 'function', function: { name: 'lookup', description: 'Look up a value', parameters: { type: 'object' } } }],
-    });
+    const result = await new BytePlusProvider('test-key').complete(request);
     expect(result).toEqual(response);
+  });
+
+  it('generates a Seedream image', async () => {
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ url: 'https://cdn.example/seedream.png' }], model: 'seedream-4-0-250828' }), { status: 200 }),
+    );
+    const provider = new BytePlusProvider('test-key');
+    await expect(provider.generateImage({ model: 'seedream-4-0-250828', prompt: 'a test image' })).resolves.toEqual({
+      data: [{ url: 'https://cdn.example/seedream.png' }],
+      model: 'seedream-4-0-250828',
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://ark.ap-southeast.bytepluses.com/api/v3/images/generations',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('polls a Seedance task until completion', async () => {
+    jest.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 'task-1', status: 'running' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 'task-1', status: 'succeeded', output: { video_url: 'https://cdn.example/seedance.mp4' } }), { status: 200 }));
+    await expect(new BytePlusProvider('test-key').generateVideo({ model: 'seedance-1-0-pro-250528', prompt: 'a test video' }))
+      .resolves.toMatchObject({ id: 'task-1', status: 'succeeded', url: 'https://cdn.example/seedance.mp4' });
   });
 });

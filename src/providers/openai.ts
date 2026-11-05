@@ -19,7 +19,7 @@ export class OpenAIProvider implements Provider {
   name = 'OpenAI';
   capabilities: Capability[] = ['chat', 'embeddings', 'transcription', 'speech'];
   defaultModel: string;
-  private apiKey: string;
+  protected apiKey: string;
   protected baseUrl: string;
   private model: string;
 
