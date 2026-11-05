@@ -61,6 +61,7 @@ export function normalizeModelId(id: string): string {
     .replace(/\s*\((?:high|medium|low|max|thinking|reasoning|xhigh)\)\s*$/i, '')
     .replace(/[-_](?:xhigh|high|medium|low|unknown|max|thinking|reasoning)(?=$|[-_])/g, '')
     .replace(/[-_]\d{4}[-_]\d{2}[-_]\d{2}(?=$|[-_])/, '')
+    .replace(/[-_]ga-\d{6}(?=$|[-_])/, '')
     .replace(/[-_]\d{8}(?=$|[-_])/, '')
     .replace(/[-_](?:latest|preview|experimental)(?=$|[-_])/g, '')
     .replace(/\s+/g, '-')
@@ -201,8 +202,27 @@ import { unzipSync, strFromU8 } from 'fflate';
 export type BenchmarkSource = {
   name: string;
   attribution: string;
+  url: string;
   fetch(): Promise<BenchmarkSnapshot>;
 };
+
+function unavailableSourceReason(benchmark: Benchmark, date: string, sources: BenchmarkSource[], failedSources: string[]): string {
+  const links = sourceForBenchmark(benchmark, sources).map((source) => source.url).join(', ');
+  const sourceLinks = links || sources.map((source) => source.url).join(', ');
+  const failures = failedSources.length > 0 ? ` Failed sources: ${failedSources.join(', ')}.` : '';
+  const cause = benchmark.id === 'livecodebench'
+    ? ' The configured Epoch AI ZIP contains LiveBench data, not LiveCodeBench data.'
+    : '';
+  return `${benchmark.name} source has no data on ${date} (source: ${sourceLinks}).${cause}${failures}`;
+}
+
+function sourceForBenchmark(benchmark: Benchmark, sources: BenchmarkSource[]): BenchmarkSource[] {
+  if (benchmark.id === 'livecodebench') {
+    return sources.filter((source) => source.name === 'epoch');
+  }
+  const matching = sources.filter((source) => source.attribution === benchmark.source || source.name === benchmark.source);
+  return matching.length > 0 ? matching : sources;
+}
 
 type UnknownRecord = Record<string, unknown>;
 type BenchmarkRow = { model: string; score: number; benchmark: string; asOf?: string };
@@ -328,7 +348,7 @@ export async function fetchEpochSnapshot(url: string): Promise<BenchmarkSnapshot
     'swe_bench_verified.csv',
     'otis_mock_aime_2024_2025.csv',
     'hle_external.csv',
-    'live_bench_external.csv',
+    'livebench_external.csv',
     'terminalbench_external.csv',
   ]);
   const bytes = new Uint8Array(await response.arrayBuffer());
@@ -348,7 +368,7 @@ export async function fetchEpochSnapshot(url: string): Promise<BenchmarkSnapshot
       swe_bench_verified: { benchmark: 'swe-bench-verified', scoreColumn: 'mean_score' },
       otis_mock_aime_2024_2025: { benchmark: 'aime', scoreColumn: 'mean_score' },
       hle_external: { benchmark: 'hle', scoreColumn: 'Accuracy' },
-      live_bench_external: { benchmark: 'livebench', scoreColumn: 'Global average' },
+      livebench_external: { benchmark: 'livebench', scoreColumn: 'Global average' },
       terminalbench_external: { benchmark: 'terminal-bench', scoreColumn: 'Accuracy mean' },
     };
     const stem = file.replace(/\.csv$/, '').replace(/-/g, '_');
@@ -388,17 +408,20 @@ export function benchmarkSources(env: {
   sources.push({
     name: 'epoch',
     attribution: 'Epoch AI Benchmarking Hub',
+    url: epochUrl,
     fetch: () => fetchEpochSnapshot(epochUrl),
   });
   sources.push({
     name: 'lmarena',
     attribution: 'LMArena',
+    url: lmarenaUrl,
     fetch: () => fetchLMArena(lmarenaUrl),
   });
   if (env.artificialAnalysisApiKey && env.artificialAnalysisUrl) {
     sources.push({
       name: 'artificial-analysis',
       attribution: 'Artificial Analysis',
+      url: env.artificialAnalysisUrl,
       fetch: () => fetchJson(env.artificialAnalysisUrl!, { Authorization: `Bearer ${env.artificialAnalysisApiKey}` }).then((payload) => snapshotFromRows(rowsFromPayload(payload), 'Artificial Analysis', Date.now())),
     });
   }
@@ -413,26 +436,52 @@ export async function fetchBenchmarkSnapshot(env: {
 }): Promise<BenchmarkSnapshot> {
   const sources = benchmarkSources(env);
   const results = await Promise.allSettled(sources.map((source) => source.fetch()));
-  const snapshots = results.flatMap((result, index) => {
-    if (result.status === 'fulfilled') return [result.value];
-    const source = sources[index];
-    console.error(`[benchmarks] ${source?.name ?? 'unknown'} refresh failed`, result.reason instanceof Error ? result.reason.message : result.reason);
-    return [];
-  });
-  if (snapshots.length === 0) throw new Error('all benchmark sources failed');
-  const benchmarks = benchmarkCatalog().map(({ id, name }) => {
-    const scores = snapshots.flatMap((snapshot) => snapshot.benchmarks.find((benchmark) => benchmark.id === id)?.scores ?? []);
-    const best = new Map<string, BenchmarkScore>();
-    for (const score of scores) {
-      const key = normalizeModelId(score.model);
-      if (!best.has(key) || best.get(key)!.score < score.score) best.set(key, score);
+  const date = new Date().toISOString().slice(0, 10);
+  const failedSources: string[] = [];
+  const snapshots: BenchmarkSnapshot[] = [];
+  results.forEach((result, index) => {
+    const source = sources[index]!;
+    if (result.status === 'fulfilled' && result.value.benchmarks.length > 0) {
+      snapshots.push(result.value);
+      return;
     }
-    if (id === 'intelligence-index' && !env.artificialAnalysisApiKey) {
-      return unavailableBenchmark(id, 'An Artificial Analysis API key is needed to load Intelligence Index scores.');
-    }
-    return scores.length > 0
-      ? { id, name, scores: [...best.values()] }
-      : unavailableBenchmark(id, 'No rows were returned by the configured benchmark sources.');
+    failedSources.push(source.name);
   });
-  return { fetchedAt: Date.now(), benchmarks };
+
+  const byId = new Map<BenchmarkId, Benchmark>();
+  for (const snapshot of snapshots) {
+    for (const benchmark of snapshot.benchmarks) {
+      const existing = byId.get(benchmark.id);
+      if (!existing) {
+        byId.set(benchmark.id, {
+          ...benchmark,
+          scores: [...benchmark.scores],
+          available: benchmark.scores.length > 0,
+          unavailableReason: benchmark.scores.length > 0 ? undefined : unavailableSourceReason(benchmark, date, sources, failedSources),
+        });
+      } else {
+        existing.scores.push(...benchmark.scores);
+        existing.available = existing.scores.length > 0;
+        existing.unavailableReason = existing.available
+          ? undefined
+          : unavailableSourceReason(existing, date, sources, failedSources);
+      }
+    }
+  }
+
+  for (const id of Object.keys(BENCHMARK_NAMES) as BenchmarkId[]) {
+    if (!byId.has(id)) {
+      byId.set(id, {
+        id,
+        name: BENCHMARK_NAMES[id],
+        scores: [],
+        available: false,
+        source: sources.find((source) => source.name === 'epoch')?.url ?? sources.map((source) => source.url).join(', '),
+        asOf: date,
+        unavailableReason: unavailableSourceReason({ id, name: BENCHMARK_NAMES[id], source: 'Epoch AI Benchmarking Hub', scores: [] }, date, sources, failedSources),
+      });
+    }
+  }
+
+  return { fetchedAt: Date.now(), benchmarks: [...byId.values()] };
 }
