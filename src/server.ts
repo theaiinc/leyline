@@ -25,6 +25,7 @@ import {
   toPublicPricingModel,
 } from './core/pricing';
 import { generateInstanceId } from './core/instance-naming';
+import { calculateReprice, type KeySpend, type RepriceInput } from './core/spend-reprice';
 import {
   ApiKeyPersistenceMode,
   ApiKeySource,
