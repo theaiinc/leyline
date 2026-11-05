@@ -57,3 +57,59 @@ describe('a named model is only sent to providers that serve it', () => {
     expect(azure.calls).toEqual(['some-deployment']);
   });
 });
+
+describe('auto unavailable-model circuit breaker', () => {
+  function setup(fails = true) {
+    const calls: string[] = [];
+    const router = new Router({ quotaManager: new QuotaManager(), modelRegistry: new ModelRegistry() });
+    const modelProvider: Provider = {
+      name: 'OpenRouter',
+      defaultModel: 'stealth/ox-alpha',
+      async isAvailable() { return true; },
+      async getModels() { return [{ id: 'stealth/ox-alpha' }]; },
+      async complete(req) {
+        calls.push(req.model);
+        if (fails) throw new Error('OpenRouter reported unavailable');
+        return { id: 'ok', object: 'chat.completion', created: 1, model: req.model, choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }] };
+      },
+      async *completeStream() { yield* []; },
+    };
+    router.addProvider(modelProvider);
+    return { router, calls, setFails(value: boolean) { fails = value; } };
+  }
+
+  const request = { model: 'auto', messages: [{ role: 'user' as const, content: 'hi' }] };
+
+  it('opens after three unavailable failures and skips during cooldown', async () => {
+    const { router, calls } = setup();
+    await expect(router.route(request)).rejects.toThrow();
+    await expect(router.route(request)).rejects.toThrow();
+    await expect(router.route(request)).rejects.toThrow();
+    await expect(router.route(request)).rejects.toThrow();
+    expect(calls).toHaveLength(3);
+    expect(router.autoCircuitBreakers()).toEqual([expect.objectContaining({ provider: 'OpenRouter', model: 'stealth/ox-alpha', error: 'OpenRouter reported unavailable' })]);
+  });
+
+  it('probes after cooldown and closes on success', async () => {
+    const { router, calls, setFails } = setup();
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      for (let i = 0; i < 3; i += 1) await expect(router.route(request)).rejects.toThrow();
+      expect(calls).toHaveLength(3);
+      now.mockReturnValue(1_000_000 + 15 * 60 * 1000);
+      setFails(false);
+      await expect(router.route(request)).resolves.toMatchObject({ choices: [{ message: { content: 'ok' } }] });
+      expect(calls).toHaveLength(4);
+      expect(router.autoCircuitBreakers()).toEqual([]);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('does not circuit-break explicit requests', async () => {
+    const { router, calls } = setup();
+    for (let i = 0; i < 3; i += 1) await expect(router.route(request)).rejects.toThrow();
+    await expect(router.route({ ...request, model: 'stealth/ox-alpha' })).rejects.toThrow('OpenRouter reported unavailable');
+    expect(calls).toHaveLength(4);
+  });
+});

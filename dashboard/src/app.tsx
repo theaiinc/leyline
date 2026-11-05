@@ -9,6 +9,7 @@ import { useDashboard } from '@/hooks/use-dashboard';
 import { useHashRoute } from '@/hooks/use-hash-route';
 import { cn } from '@/lib/utils';
 import { ActivityPage } from '@/pages/activity';
+import { CalculatorPage } from '@/pages/calculator';
 import { BenchmarksPage } from '@/pages/benchmarks';
 import { KeysPage } from '@/pages/keys';
 import { OfferedPage } from '@/pages/offered';
@@ -28,16 +29,17 @@ const NAV: Nav[] = [
   { id: 'spending', label: 'Spending', icon: Wallet, hosted: true },
   { id: 'offered', label: 'Offered models', icon: Layers, hosted: true },
   { id: 'playground', label: 'Playground', icon: FlaskConical },
+  { id: 'calculator', label: 'Cost calculator', icon: Wallet },
   { id: 'activity', label: 'Activity', icon: Activity },
 ];
 
 function useTheme(): [boolean, () => void] {
   const media = window.matchMedia('(prefers-color-scheme: dark)');
-  const stored = (() => { try { return window.localStorage.getItem('leyline.theme'); } catch { return null; } })();
+  const stored = (() => { try { return window.localStorage.getItem('valefront.theme'); } catch { return null; } })();
   const [dark, setDark] = useState(stored ? stored === 'dark' : media.matches);
   useEffect(() => { document.documentElement.classList.toggle('dark', dark); }, [dark]);
   return [dark, () => setDark(v => {
-    try { window.localStorage.setItem('leyline.theme', v ? 'light' : 'dark'); } catch { /* per-browser preference only */ }
+    try { window.localStorage.setItem('valefront.theme', v ? 'light' : 'dark'); } catch { /* per-browser preference only */ }
     return !v;
   })];
 }
@@ -52,7 +54,7 @@ export function App() {
 
   async function signOut() {
     await fetch(apiUrl('/auth/logout'), { method: 'POST', credentials: 'same-origin' });
-    window.location.href = '/auth/login?next=/dashboard/';
+    window.location.href = '/auth/login?next=/';
   }
 
   return (
@@ -110,6 +112,7 @@ export function App() {
                   : current === 'spending' ? <SpendingPage />
                   : current === 'offered' ? <OfferedPage d={d} />
                     : current === 'playground' ? <PlaygroundPage d={d} />
+                      : current === 'calculator' ? <CalculatorPage />
                       : <ActivityPage d={d} />}
         </div>
       </main>

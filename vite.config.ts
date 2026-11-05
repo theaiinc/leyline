@@ -4,7 +4,7 @@ import path from 'path';
 
 export default defineConfig({
   root: 'dashboard',
-  base: process.env.VITE_TAURI === 'true' ? '/' : '/dashboard/',
+  base: '/',
   publicDir: path.resolve(__dirname, 'dashboard/public'),
   plugins: [tailwindcss()],
   resolve: {

@@ -141,6 +141,18 @@ export interface SingleModelRouterConfig {
 // ── Service type detection ─────────────────────────────────────────
 
 const MODEL_ID_CACHE_TTL_MS = 3600 * 1000;
+const AUTO_BREAKER_THRESHOLD = 3;
+const AUTO_BREAKER_WINDOW_MS = 5 * 60 * 1000;
+const AUTO_BREAKER_BASE_COOLDOWN_MS = 15 * 60 * 1000;
+const AUTO_BREAKER_MAX_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+type AutoBreaker = {
+  failures: number;
+  firstFailureAt: number;
+  openedAt?: number;
+  cooldownMs: number;
+  lastError: string;
+};
 
 /** Model lists by provider name, as shared between instances. */
 export type ModelListSnapshot = Record<string, { ids: string[]; timestamp: number; prices?: Record<string, { input: number; output: number }> }>;
@@ -212,6 +224,7 @@ export class Router {
   private enabledModels?: Record<string, string[]>;
   private providerModelIds = new Map<string, { ids: Set<string>; timestamp: number; prices?: Map<string, { input: number; output: number }> }>();
   private modelPins = new Map<string, string>();
+  private autoBreakers = new Map<string, AutoBreaker>();
 
   constructor(quotaManagerOrOptions?: QuotaManager | RouterOptions) {
     // Backward-compatible constructor: accept QuotaManager directly or RouterOptions
@@ -286,6 +299,57 @@ export class Router {
     return [];
   }
 
+  /** Whether an error means the provider cannot serve this model right now. */
+  private isUnavailableModelError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return /unavailable|not[ -]?found|does not support|unknown model|no such model/i.test(message);
+  }
+
+  private breakerKey(provider: Provider, model: string): string {
+    return `${provider.name}\0${model}`;
+  }
+
+  private autoModelAvailable(provider: Provider, model: string, now = Date.now()): boolean {
+    const breaker = this.autoBreakers.get(this.breakerKey(provider, model));
+    if (!breaker?.openedAt) return true;
+    return now >= breaker.openedAt + breaker.cooldownMs;
+  }
+
+  /** Record an unavailable/not-found failure from an auto request. */
+  recordAutoFailure(provider: Provider, model: string, error: unknown, now = Date.now()): void {
+    if (!this.isUnavailableModelError(error)) return;
+    const key = this.breakerKey(provider, model);
+    const message = error instanceof Error ? error.message : String(error);
+    const previous = this.autoBreakers.get(key);
+    const inWindow = previous && now - previous.firstFailureAt <= AUTO_BREAKER_WINDOW_MS;
+    const failures = inWindow ? previous.failures + 1 : 1;
+    const cooldownMs = previous?.openedAt && !inWindow
+      ? Math.min(previous.cooldownMs * 2, AUTO_BREAKER_MAX_COOLDOWN_MS)
+      : previous?.cooldownMs ?? AUTO_BREAKER_BASE_COOLDOWN_MS;
+    this.autoBreakers.set(key, {
+      failures,
+      firstFailureAt: inWindow ? previous!.firstFailureAt : now,
+      openedAt: failures >= AUTO_BREAKER_THRESHOLD ? now : undefined,
+      cooldownMs,
+      lastError: message,
+    });
+  }
+
+  /** A successful auto probe closes the breaker and resets its backoff. */
+  recordAutoSuccess(provider: Provider, model: string): void {
+    this.autoBreakers.delete(this.breakerKey(provider, model));
+  }
+
+  /** Entries currently skipped by auto, for the routing status/dashboard. */
+  autoCircuitBreakers(now = Date.now()): Array<{ provider: string; model: string; until: number; error: string }> {
+    return [...this.autoBreakers.entries()]
+      .filter(([, breaker]) => breaker.openedAt !== undefined && now < breaker.openedAt + breaker.cooldownMs)
+      .map(([key, breaker]) => {
+        const separator = key.indexOf('\0');
+        return { provider: key.slice(0, separator), model: key.slice(separator + 1), until: breaker.openedAt! + breaker.cooldownMs, error: breaker.lastError };
+      });
+  }
+
   /**
    * Pick the model a provider should serve for an 'auto' request, or null
    * when the provider has no enabled models and must be skipped.
@@ -317,8 +381,12 @@ export class Router {
       }
     }
 
-    if (!enabled) return provider.defaultModel;
-    return enabled.includes(provider.defaultModel) ? provider.defaultModel : enabled[0];
+    const preferred = !enabled
+      ? provider.defaultModel
+      : enabled.includes(provider.defaultModel) ? provider.defaultModel : enabled[0];
+    if (preferred && this.autoModelAvailable(provider, preferred)) return preferred;
+    const alternatives = enabled?.filter(model => this.autoModelAvailable(provider, model)) ?? [];
+    return alternatives[0] ?? null;
   }
 
   private async providerListsModel(provider: Provider, model: string): Promise<boolean> {
@@ -668,16 +736,19 @@ export class Router {
 
       console.log(`[Router] Attempting to route to ${provider.name}...`);
       let effectiveModel = request.model;
+      var lastError: Error | undefined;
       try {
         effectiveModel = (request.model === 'auto' || request.model === 'auto-vision') ? autoModel! : request.model;
         const isAvailable = await provider.isAvailable();
         if (!isAvailable) {
+            const unavailableError = new Error(`${provider.name} reported unavailable`);
+            if (request.model === 'auto' || request.model === 'auto-vision') this.recordAutoFailure(provider, effectiveModel, unavailableError);
             logger.log({
                 requestId,
                 provider: provider.name,
                 model: effectiveModel,
                 status: 'error',
-                error: `${provider.name} reported unavailable`,
+                error: unavailableError.message,
                 duration: Date.now() - start,
             });
             console.warn(`[Router] ${provider.name} reported unavailable.`);
@@ -724,6 +795,7 @@ export class Router {
             }
           : response;
         opts?.onServed?.(provider.name, effectiveModel);
+        if (request.model === 'auto' || request.model === 'auto-vision') this.recordAutoSuccess(provider, effectiveModel);
         this.quotaManager.incrementUsage(provider.name);
         logger.log({
             requestId,
@@ -736,12 +808,15 @@ export class Router {
         console.log(`[Router] Successfully routed to ${provider.name}.`);
         return normalizedResponse;
       } catch (error: any) {
+        lastError = error;
+        if (request.model === 'auto' || request.model === 'auto-vision') this.recordAutoFailure(provider, effectiveModel, error);
         logger.log({ requestId, provider: provider.name, model: effectiveModel, status: 'error', error: error.message, duration: Date.now() - start });
         console.error(`[Router] Error with ${provider.name}:`, error.message);
       }
     }
     if (!attempted && cannotRead.length) throw unsupportedContent(cannotRead, request.model);
     if (!attempted && overBudget.length) throw this.budgetRefusal(overBudget);
+    if (lastError && request.model !== 'auto' && request.model !== 'auto-vision') throw lastError;
     throw new Error('All providers failed or are rate-limited.');
   }
 

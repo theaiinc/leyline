@@ -4,6 +4,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { CodeBlock, EmptyState, PageHeader, ProviderDot, SecretValue } from '@/components/common';
 import { apiUrl } from '@/api';
+import { fetchBenchmarks } from '@/lib/benchmarks';
 import type { Dashboard } from '@/hooks/use-dashboard';
 import { providerTone, type LogEntry, type ProviderStats } from '@/normalization';
 
@@ -67,7 +68,7 @@ function BenchmarkLeaders({ base }: { base: string }) {
 
   useEffect(() => {
     let alive = true;
-    fetch(`${base}/v1/benchmarks`, { credentials: 'include' })
+    fetchBenchmarks()
       .then(async response => {
         if (!response.ok) throw new Error(`Benchmark service returned ${response.status}`);
         return response.json() as Promise<BenchmarkResponse>;

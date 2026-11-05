@@ -96,6 +96,23 @@ export function RoutingPage({ d }: { d: Dashboard }) {
         </Card>
       </div>
 
+      {routing?.autoCircuitBreakers?.length ? (
+        <Card className="mt-6 border-warning">
+          <CardHeader>
+            <CardTitle>Temporarily skipped by auto</CardTitle>
+            <CardDescription>Unavailable models are retried after their cooldown. Explicit requests are still sent to them.</CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-2">
+            {routing.autoCircuitBreakers.map(breaker => (
+              <div key={`${breaker.provider}/${breaker.model}`} className="rounded-md border px-3 py-2 text-sm">
+                <div className="font-medium">{breaker.provider} / {breaker.model}</div>
+                <div className="text-muted-foreground">skipped by auto until {new Date(breaker.until).toLocaleString()}: {breaker.error}</div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
+
       <Card className="mt-6">
         <CardHeader>
           <CardTitle>Providers and models</CardTitle>

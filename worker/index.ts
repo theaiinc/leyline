@@ -9,7 +9,7 @@ import { logger } from '../src/core/logger';
 import { fetchBenchmarkSnapshot, mapBenchmarkSnapshot, refreshBenchmarks, type BenchmarkCache, type BenchmarkSnapshot } from '../src/core/benchmarks';
 import type { ModelListSnapshot } from '../src/core/router';
 import type { WorkersAiBinding } from '../src/providers/workers-ai';
-import { legacyDashboardRedirect } from './host-routing';
+import { dashboardApiRequest, dashboardPageRedirect, legacyDashboardRedirect } from './host-routing';
 
 /**
  * Hosted Valefront on Cloudflare Workers. The same Express app as the Node server (src/server.ts), in hosted keys
@@ -217,6 +217,9 @@ const DASHBOARD_FILES = new Set(['/logo.png', '/icon.svg', '/favicon-32.png', '/
 
 /** The dashboard's own files (built into public/ by vite, base /dashboard/). */
 function assetPath(path: string): string | null {
+  if (path === '/' || path === '/index.html') return '/';
+  if (path.startsWith('/assets/') || DASHBOARD_FILES.has(path)) return path;
+  // Keep the old dashboard path working while callers move to the dashboard host root.
   if (path === '/dashboard' || path === '/dashboard/' || path === '/dashboard/index.html') return '/';
   if (path.startsWith('/dashboard/assets/') || DASHBOARD_FILES.has(path.slice('/dashboard'.length))) return path.slice('/dashboard'.length);
   // Browsers and agents ask the site root for these.
@@ -233,7 +236,11 @@ export default {
     // but send dashboard and authentication traffic to Valefront's canonical dashboard host.
     const legacyRedirect = legacyDashboardRedirect(url);
     if (legacyRedirect) return legacyRedirect;
-    if (url.pathname === '/') return Response.redirect(new URL('/dashboard/', url).toString(), 302);
+    if (url.pathname === '/' && url.hostname === 'llm.valefront.com') {
+      return Response.redirect(new URL('https://dash.valefront.com/').toString(), 301);
+    }
+    const dashboardRedirect = dashboardPageRedirect(url);
+    if (dashboardRedirect) return dashboardRedirect;
 
     const asset = assetPath(url.pathname);
     if (asset) {
@@ -243,10 +250,10 @@ export default {
         const req = { headers: { cookie: request.headers.get('cookie') ?? undefined, authorization: request.headers.get('authorization') ?? undefined } };
         if (!adminOf(b.hosted, req as never)) {
           return b.hosted.login
-            ? Response.redirect(new URL('/auth/login?next=/dashboard/', url).toString(), 302)
+            ? Response.redirect(new URL('/auth/login?next=/', url).toString(), 302)
             : new Response('Sign-in is not configured.', { status: 503 });
         }
-        if (url.pathname === '/dashboard') return Response.redirect(new URL('/dashboard/', url).toString(), 302);
+        if (url.pathname === '/dashboard') return Response.redirect(new URL('/', url).toString(), 301);
       }
       const res = await env.ASSETS.fetch(new Request(new URL(asset, url), request));
       if (asset !== '/') return res;
@@ -259,6 +266,7 @@ export default {
       return Response.json({ status: 'ok', service: 'leyline', ...(env.GIT_SHA ? { commit: env.GIT_SHA } : {}) });
     }
 
+    const routedRequest = dashboardApiRequest(request) ?? request;
     const t0 = Date.now();
     const b = await current(env);
     if (url.pathname === '/v1/benchmarks/refresh' && request.method === 'POST') {
@@ -279,7 +287,7 @@ export default {
       }
     }
     const appMs = Date.now() - t0;
-    const res = await handleAsNodeRequest(b.port, request, env, ctx as never);
+    const res = await handleAsNodeRequest(b.port, routedRequest, env, ctx as never);
     // Where a request's time to its first byte goes: getting the app (a cold build), then the app itself.
     if (url.pathname.startsWith('/v1/')) console.log(JSON.stringify({ event: 'leyline_request', path: url.pathname, appMs, headersMs: Date.now() - t0 }));
     // Server-Timing for the caller too: getting the app (with its build stages when this request built it), the
