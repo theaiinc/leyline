@@ -1,4 +1,4 @@
-import { dashboardPageRedirect, legacyDashboardRedirect } from '../worker/host-routing';
+import { dashboardApiRequest, dashboardPageRedirect, legacyDashboardRedirect } from '../worker/host-routing';
 
 describe('legacy dashboard host routing', () => {
   test.each(['/', '/dashboard', '/dashboard/', '/auth/login', '/auth/callback'])(
@@ -33,5 +33,13 @@ describe('legacy dashboard host routing', () => {
     const response = dashboardPageRedirect(new URL('https://llm.valefront.com/dashboard/'));
     expect(response?.status).toBe(301);
     expect(response?.headers.get('location')).toBe('https://dash.valefront.com/');
+  });
+
+  test.each(['/mcp', '/readyz'])('does not rewrite dashboard host infrastructure path %s', (path) => {
+    expect(dashboardApiRequest(new Request(`https://dash.valefront.com${path}`))).toBeNull();
+  });
+
+  test.each(['llm.valefront.com', 'llm.theaiinc.com'])('does not rewrite API host %s', (hostname) => {
+    expect(dashboardApiRequest(new Request(`https://${hostname}/session`))).toBeNull();
   });
 });
