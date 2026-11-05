@@ -391,18 +391,25 @@ export class BillingService {
   }
 
   /**
-   * SePay's webhook: `Authorization: Apikey <key>` (constant-time), then the transaction is applied. Every payload we
+   * SePay's webhook: `Authorization: Apikey <key>` (constant-time), or no key and the transaction confirmed by SePay's API, then it is applied. Every payload we
    * recognise gets 200 {success:true}, so SePay doesn't retry; a wrong key is 401; a failure on our side is 500 (SePay
    * retries, and the transaction id keeps a retry from counting twice).
    */
   async handleSepayWebhook(headers: Record<string, string | string[] | undefined>, body: unknown): Promise<{ status: number; body: unknown }> {
     const sepay = this.opts.sepay;
     if (!sepay) return { status: 404, body: { success: false, error: 'sepay_not_configured' } };
+    const parsed = transactionFromWebhook(body);
+    let tx: SePayTransaction | null = parsed;
     if (!sepay.verifyWebhook(headers.authorization)) {
-      console.log(JSON.stringify({ event: 'sepay_webhook_rejected' }));
-      return { status: 401, body: { success: false, error: 'invalid_api_key' } };
+      // Without our key the body is only a hint: the transaction is read back from SePay's API by its id (needs the
+      // API token), and only SePay's own record is applied. Unknown to SePay: rejected, nothing recorded.
+      const id = body && typeof body === 'object' ? (body as Record<string, unknown>).id : undefined;
+      tx = sepay.status.apiToken && (typeof id === 'string' || typeof id === 'number') ? await sepay.transaction(String(id)) : null;
+      if (!tx) {
+        console.log(JSON.stringify({ event: 'sepay_webhook_rejected' }));
+        return { status: 401, body: { success: false, error: 'invalid_api_key' } };
+      }
     }
-    const tx = transactionFromWebhook(body);
     if (!tx) {
       console.log(JSON.stringify({ event: 'sepay_webhook_unrecognised' }));
       return { status: 400, body: { success: false, error: 'not_a_transaction' } };

@@ -230,6 +230,23 @@ export class SePayClient {
   }
 
   /**
+   * One transaction looked up by its SePay id (GET /transactions/details/{id}); null when SePay doesn't know it. A
+   * webhook without our key is trusted only through this: what SePay's API says, never what the body says.
+   */
+  async transaction(id: string): Promise<SePayTransaction | null> {
+    if (!/^[0-9A-Za-z_-]{1,64}$/.test(id)) return null;
+    let body: Record<string, unknown>;
+    try {
+      body = await this.get(`/transactions/details/${encodeURIComponent(id)}`);
+    } catch (err) {
+      if (err instanceof SePayError && /\((404|400)\)/.test(err.message)) return null;
+      throw err;
+    }
+    const tx = transactionFromApi(body.transaction);
+    return tx && tx.id === id ? tx : null;
+  }
+
+  /**
    * The latest transactions on our account (newest first). Shared by every caller for a few seconds, so many
    * customers pressing "check now" make one SePay call (its API allows about 2 a second).
    */

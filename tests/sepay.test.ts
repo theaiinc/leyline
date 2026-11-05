@@ -17,6 +17,11 @@ function fakeSepay(over: Partial<SePayConfig> = {}) {
     if (url.pathname === '/userapi/bankaccounts/list') {
       return new Response(JSON.stringify({ status: 200, bankaccounts: [{ id: '1', account_holder_name: 'CONG TY TNHH CONG NGHE THE AI', account_number: ACCOUNT, bank_short_name: 'Vietcombank', bank_code: 'VCB', bank_bin: '970436' }] }));
     }
+    const detail = /^\/userapi\/transactions\/details\/(.+)$/.exec(url.pathname);
+    if (detail) {
+      const row = api.transactions.find((t) => String(t.id) === detail[1]);
+      return row ? new Response(JSON.stringify({ status: 200, error: null, messages: { success: true }, transaction: row })) : new Response('{"status":404}', { status: 404 });
+    }
     if (url.pathname === '/userapi/transactions/list') return new Response(JSON.stringify({ status: 200, error: null, messages: { success: true }, transactions: api.transactions }));
     return new Response('{}', { status: 404 });
   }) as typeof fetch;
@@ -145,8 +150,25 @@ describe('SePay webhook', () => {
     await h.service.saveProfile(ws, BUYER);
     const { order } = await h.service.createOrder(ws, { amountCents: 2500, method: 'sepay', idempotencyKey: 'sepay-wh-001' });
     const post = (body: unknown, key = 'wh-key-123') => request(h.app).post('/webhooks/sepay').set('Authorization', `Apikey ${key}`).send(body as object);
-    return { ...h, ws, order, post };
+    return { ...h, api: s.api, ws, order, post };
   }
+
+  it('without the key, a transaction SePay confirms is applied as SePay records it, not as the body says', async () => {
+    const h = await http();
+    const body = webhookBody(h.order.quote!.transferContent, 659_625);
+    // SePay's own record: the real amount and content.
+    h.api.transactions.push({ id: String(body.id), account_number: ACCOUNT, amount_in: '659625.00', amount_out: '0.00', transaction_content: body.content, reference_number: body.referenceCode, transaction_date: body.transactionDate, bank_brand_name: 'Vietcombank' });
+    // A forged body claiming more for an id SePay doesn't know: rejected, nothing recorded.
+    const forged = webhookBody(h.order.quote!.transferContent, 9_999_999);
+    expect((await request(h.app).post('/webhooks/sepay').send(forged)).status).toBe(401);
+    expect(await h.store.sepayTransaction(String(forged.id))).toBeNull();
+    // The real id, with the body's amount inflated: credited at SePay's amount (exactly the quote, so no overpayment note).
+    const res = await request(h.app).post('/webhooks/sepay').send({ ...body, transferAmount: 9_999_999 });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ success: true, outcome: 'credited', credited: true });
+    expect(await h.store.sepayTransaction(String(body.id))).toBeTruthy();
+    expect((await h.store.order(h.order.id))!.paymentNote ?? '').not.toMatch(/overpaid/);
+  });
 
   it('a wrong or missing key is 401 and changes nothing', async () => {
     const h = await http();
