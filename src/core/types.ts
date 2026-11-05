@@ -156,6 +156,8 @@ export interface Provider {
   label?: string;
   defaultModel: string;
   isAvailable(): Promise<boolean>;
+  /** Mark this provider unavailable after an account-credit failure, when supported. */
+  markUnavailable?(reason?: string): void;
   getModels(): Promise<ModelDetail[]>;
   complete(request: CompletionRequest): Promise<CompletionResponse>;
   completeStream(request: CompletionRequest): AsyncGenerator<StreamChunk, void, unknown>;
