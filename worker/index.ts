@@ -22,6 +22,7 @@ import { fetchBenchmarkSnapshot, mapBenchmarkSnapshot, refreshBenchmarks, type B
 import type { ModelListSnapshot } from '../src/core/router';
 import type { WorkersAiBinding } from '../src/providers/workers-ai';
 import { dashboardApiRequest, dashboardPageRedirect, dashboardRouteRedirect, legacyDashboardRedirect } from './host-routing';
+import { isDashboardPagePath } from '../src/dashboard-pages';
 
 /**
  * Hosted Valefront on Cloudflare Workers. The same Express app as the Node server (src/server.ts), in hosted keys
@@ -298,7 +299,7 @@ const DASHBOARD_FILES = new Set(['/logo.png', '/icon.svg', '/favicon-32.png', '/
 
 /** The dashboard's own files (built into public/ by vite, base /dashboard/). */
 function assetPath(path: string): string | null {
-  if (path === '/' || path === '/index.html') return '/';
+  if (path === '/' || path === '/index.html' || isDashboardPagePath(path)) return '/';
   if (path.startsWith('/assets/') || DASHBOARD_FILES.has(path)) return path;
   // Keep the old dashboard path working while callers move to the dashboard host root.
   if (path === '/dashboard' || path === '/dashboard/' || path === '/dashboard/index.html') return '/';
