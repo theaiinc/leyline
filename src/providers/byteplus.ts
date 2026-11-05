@@ -76,9 +76,7 @@ export class BytePlusProvider extends OpenAIProvider {
    */
   async getModels(): Promise<ModelDetail[]> {
     await this.discoverMediaModels();
-    return BYTEPLUS_CATALOG
-      .filter((model) => !/seedream|seedance/i.test(model.id) || this.mediaModels.image.has(model.id) || this.mediaModels.video.has(model.id))
-      .map(({ pricing, ...model }) => ({ ...model, pricing }));
+    return BYTEPLUS_CATALOG.map(({ pricing, ...model }) => ({ ...model, pricing }));
   }
 
   async complete(request: Parameters<OpenAIProvider['complete']>[0]) {
