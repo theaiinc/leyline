@@ -7,7 +7,7 @@ import { AnthropicStream, anthropicError, anthropicToOpenAI, estimateTokens, ope
 import { builtinPrice } from './pricing';
 import { errorStatus } from './media';
 import { estimateBodyTokens } from './content';
-import { DEFAULT_PRICE, IssuedKeys, costUsd, modelAllowed, priceOf, type HostedSettings, type IssuedKey, type KeyCaps, type Price } from './issued-keys';
+import { DEFAULT_PRICE, IssuedKeys, costUsd, manualPriceOf, modelAllowed, priceOf, type HostedSettings, type IssuedKey, type KeyCaps, type Price } from './issued-keys';
 import type { BenchmarkSnapshot } from './benchmarks';
 import { RequestPiiRedactor } from './pii-redaction';
 
@@ -196,12 +196,15 @@ export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_
     : undefined;
   const price = priceOf({ prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE }, used, published);
   const cost = usd ?? costUsd(price, counted);
-  const pricedField: 'set' | 'published' | 'default' | undefined = usd ? undefined : price.source;
+  const pricedField: 'set' | 'published' | 'default' | undefined = usd
+    ? undefined
+    : manualPriceOf(opts.prices ?? {}, used)
+      ? 'set'
+      : published
+        ? 'published'
+        : 'default';
   const work = opts.keys.record(r.issuedKey ?? null, model, counted, cost, { provider: r.served?.provider ?? 'unknown', model: used, priced: pricedField })
     .then(() => {
-      if (pricedField === 'default') {
-        checkDefaultPriceAlert(opts, used, r.served?.provider ?? 'unknown');
-      }
       return checkAlerts(opts, r.issuedKey ?? null);
     })
     .catch((err) => console.error('[hosted] usage record failed', err));
