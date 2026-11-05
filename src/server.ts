@@ -11,6 +11,7 @@ import { QuotaManager } from './core/quota-manager';
 import { config } from './config';
 import { requireClientApiKey } from './core/client-auth';
 import { adminHostGate, mountAdminBilling } from './core/admin-billing';
+import { mountAdminPartners, mountPartnerInquiryApi } from './core/partner-inquiries';
 import { mountCustomerRoutes } from './core/customer-routes';
 import { adminOf, sessionOf, mountHosted, providersOverBudget, resumeAdminSession, recordUsage, servedBy, requireIssuedKey, resolveModel, sameOrigin, type HostedOptions } from './core/hosted';
 import { createRequireAegisToken, AegisTenant } from './core/aegis-auth';
@@ -251,6 +252,8 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     }
   };
 
+  // The valefront.com "Partner with Valefront" form: its own CORS (valefront.com only), so before the open one.
+  if (hosted) mountPartnerInquiryApi(app, hosted);
   app.use(cors({ exposedHeaders: ['Mcp-Session-Id'] }));
   // The PayPal webhook's signature is checked over the body exactly as it arrived.
   app.use(express.json({ limit: config.bodyLimit, verify: (req, _res, buf) => { if ((req as Request).url?.startsWith('/webhooks/')) (req as Request & { rawBody?: Buffer }).rawBody = Buffer.from(buf); } }));
@@ -259,6 +262,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   if (hosted?.adminHost) {
     app.use(adminHostGate(hosted));
     mountAdminBilling(app, hosted);
+    mountAdminPartners(app, hosted);
   }
   // An admin whose session ran out keeps going on Aegis's refresh token (hosted.ts).
   if (hosted?.login) app.use(resumeAdminSession(hosted));

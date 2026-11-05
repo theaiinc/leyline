@@ -39,6 +39,10 @@ describe('legacy dashboard host routing', () => {
     expect(dashboardApiRequest(new Request(`https://dash.valefront.com${path}`))).toBeNull();
   });
 
+  test.each(['/partners/', '/partners/abc/status', '/billing/'])('does not rewrite the admin host\'s server page %s', (path) => {
+    expect(dashboardApiRequest(new Request(`https://adm.valefront.com${path}`))).toBeNull();
+  });
+
   test.each(['llm.valefront.com', 'llm.theaiinc.com'])('does not rewrite API host %s', (hostname) => {
     expect(dashboardApiRequest(new Request(`https://${hostname}/session`))).toBeNull();
   });

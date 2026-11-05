@@ -11,6 +11,7 @@ import { DEFAULT_PRICE, IssuedKeys, costUsd, manualPriceOf, modelAllowed, priceO
 import type { BillingService } from './billing-service';
 import type { WorkspaceRecord } from './billing-store';
 import type { AccessConfig } from './cloudflare-access';
+import type { PartnerInquiries } from './partner-inquiries';
 import type { BenchmarkSnapshot } from './benchmarks';
 import { RequestPiiRedactor } from './pii-redaction';
 import { ADDON_PROVIDER, PII_ADDON_ID } from './addons';
@@ -86,6 +87,8 @@ export type HostedOptions = {
   billing?: BillingService | null;
   /** Cloudflare Turnstile: the public site key, and Siteverify with the TURNSTILE_SECRET secret. */
   turnstile?: { siteKey: string; verify: (token: string, ip: string) => Promise<boolean> } | null;
+  /** "Partner with Valefront" inquiries (D1; the valefront.com form, admin under /partners); unset: refused with 503. */
+  partners?: PartnerInquiries | null;
   /** The admin host (adm.valefront.com), behind Cloudflare Access: billing admin is served there only. */
   adminHost?: string;
   access?: AccessConfig | null;

@@ -58,7 +58,8 @@
     // adm.valefront.com, not here.
     "BILLING_FROM": "Valefront Billing <billing@valefront.com>",
     "ADMIN_HOST": "adm.valefront.com",
-    // Turnstile widget "Valefront sign-up" (its secret is the TURNSTILE_SECRET Worker secret).
+    // Turnstile widget "Valefront sign-up" (its secret is the TURNSTILE_SECRET Worker secret); the valefront.com
+    // partner form uses it too.
     "TURNSTILE_SITE_KEY": "0x4AAAAAAF0as-gnh67yvrdS",
     // Access application "Valefront billing admin" on adm.valefront.com (allow: LEYLINE_ADMIN_EMAILS).
     "CF_ACCESS_TEAM_DOMAIN": "https://rough-cell-0ce1.cloudflareaccess.com",
@@ -67,7 +68,9 @@
     // most 250k a day per workspace (so the 5M can be used within the 30 days); 20M a day across all (the default).
     "FREE_TIER_MODELS": "deepseek-v4-flash-ga-260731",
     "FREE_TIER_TOKENS_PER_DAY": "250000"
-    // Optional vars: CF_ACCESS_SERVICE_TOKEN_IDS, FREE_TIER_GLOBAL_TOKENS_PER_DAY.
+    // Optional vars: CF_ACCESS_SERVICE_TOKEN_IDS, FREE_TIER_GLOBAL_TOKENS_PER_DAY, PARTNER_INQUIRY_TO (where the
+    // valefront.com "Partner with Valefront" inquiries are emailed, from billing@valefront.com; default
+    // info@valefront.com; src/core/partner-inquiries.ts, migration 0004_partner_inquiries.sql).
   }
   // Secrets (wrangler secret put): LEYLINE_STORE_KEY (32 random bytes, base64), LEYLINE_SESSION_SECRET,
   // LEYLINE_LOGIN_CLIENT_SECRET, LLM_API_KEY, LEYLINE_ARCANA_CLOUD_CLIENT_SECRET,

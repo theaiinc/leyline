@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Activity, Calculator, CreditCard, FlaskConical, KeyRound, LayoutDashboard, Layers, LogOut, Moon, RefreshCw, Route, Server, Sun, Wallet } from 'lucide-react';
+import { Activity, Calculator, CreditCard, FlaskConical, Handshake, KeyRound, LayoutDashboard, Layers, LogOut, Moon, RefreshCw, Route, Server, Sun, Wallet } from 'lucide-react';
 import { SideNav, navIds, type NavEntry } from '@/components/side-nav';
 import { Card, CardContent } from '@/components/ui/card';
 import { PageHeader } from '@/components/common';
@@ -37,9 +37,13 @@ const NAV: Nav[] = [
 /** Money in one place: spending (hosted), customer billing (hosted: its own pages under /billing on the platform
  * admin host) and the cost calculator. */
 const CUSTOMER_BILLING = 'customer-billing';
+/** Partner inquiries (the valefront.com form) are server pages under /partners on the admin host too. */
+const PARTNER_INQUIRIES = 'partner-inquiries';
+const SERVER_PAGES: Record<string, string> = { [CUSTOMER_BILLING]: '/billing/', [PARTNER_INQUIRIES]: '/partners/' };
 const BILLING: Nav[] = [
   { id: 'spending', label: 'Spending', icon: Wallet, hosted: true },
   { id: CUSTOMER_BILLING, label: 'Customer billing', icon: CreditCard, hosted: true },
+  { id: PARTNER_INQUIRIES, label: 'Partner inquiries', icon: Handshake, hosted: true },
   { id: 'calculator', label: 'Cost calculator', icon: Calculator },
 ];
 
@@ -81,8 +85,8 @@ export function App() {
   const nav = navFor(hosted);
   const current = navIds(nav).includes(page) ? page : 'overview';
 
-  // Customer billing is a set of server pages on the admin host, not a page of this app.
-  const goTo = (id: string) => { if (id === CUSTOMER_BILLING) window.location.href = '/billing/'; else go(id); };
+  // Customer billing and partner inquiries are server pages on the admin host, not pages of this app.
+  const goTo = (id: string) => { if (SERVER_PAGES[id]) window.location.href = SERVER_PAGES[id]; else go(id); };
 
   async function signOut() {
     // Hosted, this dashboard is only on the platform admin host, signed in through Cloudflare Access.
