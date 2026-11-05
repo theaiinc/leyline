@@ -103,6 +103,33 @@ export interface DocStore {
   list(prefix: string): Promise<string[]>;
   /** Remove a document (account deletion); stores without it keep the data. */
   delete?(key: string): Promise<void>;
+  /**
+   * Add numbers into a document in one atomic step (creating it from `init`, and any missing objects on the way, as
+   * needed), and set strings. For counters many requests update at once: a read-modify-write lost most of them
+   * under parallel load (100 parallel requests, 37 counted; 2026-11-05). Stores without it fall back to update().
+   */
+  increment?(key: string, init: unknown, adds: Increment[], sets?: Array<[string[], string]>): Promise<void>;
+}
+
+/** A path into a JSON document and the number to add there. */
+export type Increment = [path: string[], add: number];
+
+/** Applies increments to a parsed document in memory (stores without an atomic increment, and tests). */
+export function applyIncrements(doc: Record<string, unknown>, adds: Increment[], sets: Array<[string[], string]> = []): Record<string, unknown> {
+  const parent = (path: string[]) => {
+    let o = doc;
+    for (const k of path.slice(0, -1)) {
+      if (typeof o[k] !== 'object' || o[k] === null) o[k] = {};
+      o = o[k] as Record<string, unknown>;
+    }
+    return o;
+  };
+  for (const [path, add] of adds) {
+    const o = parent(path); const k = path[path.length - 1];
+    o[k] = (typeof o[k] === 'number' ? (o[k] as number) : 0) + add;
+  }
+  for (const [path, value] of sets) parent(path)[path[path.length - 1]] = value;
+  return doc;
 }
 
 export class Conflict extends Error {}
@@ -126,6 +153,11 @@ export class MemoryDocStore implements DocStore {
   }
   async delete(key: string) {
     this.docs.delete(key);
+  }
+  async increment(key: string, init: unknown, adds: Increment[], sets?: Array<[string[], string]>) {
+    const cur = this.docs.get(key);
+    const doc = applyIncrements(cur ? JSON.parse(cur.value) : structuredClone(init), adds, sets);
+    this.docs.set(key, { value: JSON.stringify(doc), gen: ++this.seq });
   }
 }
 
@@ -555,41 +587,35 @@ export class IssuedKeys {
     const completion = Math.max(0, Math.round(usage?.completion_tokens ?? 0));
     const cached = Math.min(prompt, Math.max(0, Math.round(usage?.cached_tokens ?? 0)));
     const tokens = prompt + completion;
-    const add = (line: SpendLine | undefined): SpendLine => ({
-      usd: (line?.usd ?? 0) + usd,
-      requests: (line?.requests ?? 0) + 1,
-      tokens: (line?.tokens ?? 0) + tokens,
-      ...(cached || line?.cachedTokens ? { cachedTokens: (line?.cachedTokens ?? 0) + cached } : {}),
-    });
-    await update<MonthSpend>(this.store, `spend/${month}`, (cur) => {
-      const s = cur ?? { month, usd: 0, requests: 0 };
-      const byProvider = { ...(s.byProvider ?? {}) };
-      byProvider[served.provider] = add(byProvider[served.provider]);
-      const byModel = { ...(s.byModel ?? {}) };
-      const id = `${served.provider}/${served.model || 'unknown'}`;
-      byModel[id] = { ...add(byModel[id]), provider: served.provider, model: served.model || 'unknown' };
-      const byDay = { ...(s.byDay ?? {}) };
-      const day = dayOf(now);
-      byDay[day] = { ...(byDay[day] ?? {}) };
-      byDay[day][id] = add(byDay[day][id]);
+    const id = `${served.provider}/${served.model || 'unknown'}`;
+    const day = dayOf(now);
+    const line = (path: string[]): Increment[] => [
+      [[...path, 'usd'], usd], [[...path, 'requests'], 1], [[...path, 'tokens'], tokens],
+      ...(cached ? [[[...path, 'cachedTokens'], cached] as Increment] : []),
+    ];
+    const spendAdds: Increment[] = [
+      [['usd'], usd], [['requests'], 1], [['tokens'], tokens],
+      ...line(['byProvider', served.provider]), ...line(['byModel', id]), ...line(['byDay', day, id]),
+    ];
+    const spendSets: Array<[string[], string]> = [[['byModel', id, 'provider'], served.provider], [['byModel', id, 'model'], served.model || 'unknown']];
+    const spendInit: MonthSpend = { month, usd: 0, requests: 0 };
+    if (this.store.increment) {
+      await this.store.increment(`spend/${month}`, spendInit, spendAdds, spendSets);
+    } else {
       // Spread first: fields this doesn't count (adjustments) stay.
-      return { ...s, month, usd: s.usd + usd, requests: s.requests + 1, tokens: (s.tokens ?? 0) + tokens, byProvider, byModel, byDay };
-    });
+      await update<MonthSpend>(this.store, `spend/${month}`, (cur) => applyIncrements(structuredClone(cur ?? spendInit) as Record<string, unknown>, spendAdds, spendSets) as MonthSpend);
+    }
     if (!key) return;
-    await update<KeyUsage>(this.store, `usage/${key.id}/${month}`, (cur) => {
-      const u = cur ?? emptyUsage(month);
-      u.requests++;
-      u.promptTokens += prompt;
-      u.completionTokens += completion;
-      u.usd = (u.usd ?? 0) + usd;
-      const d = dayOf(now);
-      u.days[d] = (u.days[d] ?? 0) + 1;
-      const m = (u.byModel[model || 'unknown'] ??= { requests: 0, tokens: 0 });
-      m.requests++;
-      m.tokens += prompt + completion;
-      m.usd = (m.usd ?? 0) + usd;
-      return u;
-    });
+    const model_ = model || 'unknown';
+    const usageAdds: Increment[] = [
+      [['requests'], 1], [['promptTokens'], prompt], [['completionTokens'], completion], [['usd'], usd], [['days', day], 1],
+      [['byModel', model_, 'requests'], 1], [['byModel', model_, 'tokens'], prompt + completion], [['byModel', model_, 'usd'], usd],
+    ];
+    if (this.store.increment) {
+      await this.store.increment(`usage/${key.id}/${month}`, emptyUsage(month), usageAdds);
+    } else {
+      await update<KeyUsage>(this.store, `usage/${key.id}/${month}`, (cur) => applyIncrements(structuredClone(cur ?? emptyUsage(month)) as Record<string, unknown>, usageAdds) as KeyUsage);
+    }
     // Last used: at most once a minute per key, to keep writes down.
     if (!key.lastUsedAt || now - key.lastUsedAt > 60_000) {
       key.lastUsedAt = now;
