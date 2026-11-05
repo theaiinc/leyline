@@ -4,6 +4,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { CodeBlock, EmptyState, PageHeader, ProviderDot, SecretValue } from '@/components/common';
 import { apiUrl } from '@/api';
+import { fetchBenchmarks } from '@/lib/benchmarks';
 import type { Dashboard } from '@/hooks/use-dashboard';
 import { providerTone, type LogEntry, type ProviderStats } from '@/normalization';
 
@@ -67,7 +68,7 @@ function BenchmarkLeaders({ base }: { base: string }) {
 
   useEffect(() => {
     let alive = true;
-    fetch(`${base}/v1/benchmarks`, { credentials: 'include' })
+    fetchBenchmarks()
       .then(async response => {
         if (!response.ok) throw new Error(`Benchmark service returned ${response.status}`);
         return response.json() as Promise<BenchmarkResponse>;
@@ -86,7 +87,7 @@ function BenchmarkLeaders({ base }: { base: string }) {
   return <Card>
     <CardHeader>
       <CardTitle className="text-base">Model benchmarks</CardTitle>
-      <CardDescription>Rankings for models Leyline offers; unbenchmarked models are shown without borrowed scores.</CardDescription>
+      <CardDescription>Rankings for models Valefront offers; unbenchmarked models are shown without borrowed scores.</CardDescription>
       <div className="flex flex-wrap gap-2 pt-2" role="tablist" aria-label="Benchmarks">
         {data.benchmarks.map((item, index) => <button key={item.id} type="button" role="tab" aria-selected={index === selected} onClick={() => setSelected(index)} className={`rounded-md px-2 py-1 text-xs ${index === selected ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}>{item.name}</button>)}
       </div>
@@ -112,7 +113,7 @@ export function OverviewPage({ d, go }: { d: Dashboard; go: (page: string) => vo
 
   return (
     <>
-      <PageHeader title="Overview" description="Provider health, traffic, and how clients connect to this Leyline." />
+      <PageHeader title="Overview" description="Provider health, traffic, and how clients connect to Valefront." />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Stat icon={Server} label="Providers ready" value={`${readyCount} / ${providers.length}`} hint="Keys and runtime settings in place" />
@@ -122,10 +123,10 @@ export function OverviewPage({ d, go }: { d: Dashboard; go: (page: string) => vo
       </div>
 
       {tunnel?.enabled && tunnel.state === 'starting' ? (
-        <Alert className="mt-6"><AlertTitle>Starting Cloudflare tunnel…</AlertTitle><AlertDescription>Leyline is publishing a public URL via cloudflared so cloud clients can reach it.</AlertDescription></Alert>
+        <Alert className="mt-6"><AlertTitle>Starting Cloudflare tunnel…</AlertTitle><AlertDescription>Valefront is publishing a public URL via cloudflared so cloud clients can reach it.</AlertDescription></Alert>
       ) : null}
       {tunnel?.enabled && tunnel.state === 'error' ? (
-        <Alert variant="destructive" className="mt-6"><AlertTitle>Cloudflare tunnel unavailable</AlertTitle><AlertDescription>{tunnel.error || 'Install cloudflared or set LEYLINE_TUNNEL_ENABLED=false.'}</AlertDescription></Alert>
+        <Alert variant="destructive" className="mt-6"><AlertTitle>Cloudflare tunnel unavailable</AlertTitle><AlertDescription>{tunnel.error || 'Install cloudflared or set the tunnel setting to disabled.'}</AlertDescription></Alert>
       ) : null}
 
       <Card className="mt-6">
@@ -148,7 +149,7 @@ export function OverviewPage({ d, go }: { d: Dashboard; go: (page: string) => vo
             <>
               <SecretValue label="OpenAI base URL" value={tunnel?.publicBaseUrl || `${base}/v1`} />
               <SecretValue label="API key" value={stats.clientAuth?.apiKey} secret />
-              {stats.clientAuth?.generated ? <p className="text-xs text-muted-foreground">Generated for this server session; restarting Leyline rotates it.</p> : null}
+              {stats.clientAuth?.generated ? <p className="text-xs text-muted-foreground">Generated for this server session; restarting Valefront rotates it.</p> : null}
             </>
           )}
         </CardContent>

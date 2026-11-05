@@ -5,6 +5,7 @@ import { QuotaManager } from '../src/core/quota-manager';
 import { ModelRegistry } from '../src/core/model-registry';
 import type { ModelVariant } from '../src/core/types';
 import { LEYLINE_CLIENT_AUTH_HEADER } from './client-auth-header';
+import { config } from '../src/config';
 
 const TEST_VARIANTS: ModelVariant[] = [
   {
@@ -126,5 +127,67 @@ describe('POST /v1/route', () => {
       selectedModel: 'mid-model',
       selectedProvider: 'openai',
     });
+  });
+
+  it('advertises only free-tier models that are offered with published prices', async () => {
+    const quotaManager = new QuotaManager();
+    const router = new Router({ quotaManager, modelRegistry: new ModelRegistry() });
+    const verifiedModels = [
+      'seed-2-0-lite-260428',
+      'seed-2-0-mini-260428',
+      'deepseek-v4-1-flash-261017',
+      'deepseek-v4-flash-ga-260731',
+      'glm-5-3-flash-260828',
+    ];
+    let getModelsCalls = 0;
+    router.addProvider({
+      name: 'BytePlus',
+      defaultModel: verifiedModels[0],
+      getModels: async () => {
+        getModelsCalls += 1;
+        return verifiedModels.map((id) => ({
+        id,
+        name: id,
+        pricing: { input: 0.2, output: 1.2 },
+        }));
+      },
+      isAvailable: async () => true,
+      complete: async () => { throw new Error('not used'); },
+      completeStream: async function* () { throw new Error('not used'); },
+    });
+    await router.reindexProvider(router.getProviders()[0]);
+    // The pricing endpoint reads the provider's live model list directly.
+
+    const previousFreeTierModels = config.freeTierModels;
+    config.freeTierModels = verifiedModels;
+    try {
+      const app = createServer(router, quotaManager);
+      await app.locals.ready;
+      // Reindexing probes the provider once; count only pricing endpoint calls.
+      getModelsCalls = 0;
+      const response = await request(app).get('/v1/pricing');
+
+    expect(response.status).toBe(200);
+    expect(response.body.free_tier.models).toEqual(verifiedModels);
+    const offered = new Map<string, { id: string; input: number; output: number }>(
+      response.body.models.map((model: { id: string; input: number; output: number }) => [model.id, model]),
+    );
+    expect(response.body.free_tier.models.length).toBeGreaterThan(0);
+    for (const id of response.body.free_tier.models) {
+      const model = offered.get(id);
+      expect(model).toBeDefined();
+      if (!model) continue;
+      expect(Number.isFinite(model.input)).toBe(true);
+      expect(Number.isFinite(model.output)).toBe(true);
+    }
+      expect(response.body.models).toHaveLength(verifiedModels.length);
+
+      const secondResponse = await request(app).get('/v1/pricing');
+      expect(secondResponse.status).toBe(200);
+      expect(secondResponse.body).toEqual(response.body);
+      expect(getModelsCalls).toBe(1);
+    } finally {
+      config.freeTierModels = previousFreeTierModels;
+    }
   });
 });

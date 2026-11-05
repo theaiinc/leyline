@@ -9,6 +9,7 @@ import { useDashboard } from '@/hooks/use-dashboard';
 import { useHashRoute } from '@/hooks/use-hash-route';
 import { cn } from '@/lib/utils';
 import { ActivityPage } from '@/pages/activity';
+import { CalculatorPage } from '@/pages/calculator';
 import { BenchmarksPage } from '@/pages/benchmarks';
 import { KeysPage } from '@/pages/keys';
 import { OfferedPage } from '@/pages/offered';
@@ -28,16 +29,17 @@ const NAV: Nav[] = [
   { id: 'spending', label: 'Spending', icon: Wallet, hosted: true },
   { id: 'offered', label: 'Offered models', icon: Layers, hosted: true },
   { id: 'playground', label: 'Playground', icon: FlaskConical },
+  { id: 'calculator', label: 'Cost calculator', icon: Wallet },
   { id: 'activity', label: 'Activity', icon: Activity },
 ];
 
 function useTheme(): [boolean, () => void] {
   const media = window.matchMedia('(prefers-color-scheme: dark)');
-  const stored = (() => { try { return window.localStorage.getItem('leyline.theme'); } catch { return null; } })();
+  const stored = (() => { try { return window.localStorage.getItem('valefront.theme'); } catch { return null; } })();
   const [dark, setDark] = useState(stored ? stored === 'dark' : media.matches);
   useEffect(() => { document.documentElement.classList.toggle('dark', dark); }, [dark]);
   return [dark, () => setDark(v => {
-    try { window.localStorage.setItem('leyline.theme', v ? 'light' : 'dark'); } catch { /* per-browser preference only */ }
+    try { window.localStorage.setItem('valefront.theme', v ? 'light' : 'dark'); } catch { /* per-browser preference only */ }
     return !v;
   })];
 }
@@ -52,7 +54,7 @@ export function App() {
 
   async function signOut() {
     await fetch(apiUrl('/auth/logout'), { method: 'POST', credentials: 'same-origin' });
-    window.location.href = '/auth/login?next=/dashboard/';
+    window.location.href = '/auth/login?next=/';
   }
 
   return (
@@ -61,7 +63,7 @@ export function App() {
         <div className="flex items-center gap-2 px-4 py-3 md:py-5">
           <img src={`${import.meta.env.BASE_URL}icon.svg`} alt="" className="size-8" />
           <div className="leading-tight">
-            <div className="font-semibold">Leyline</div>
+            <div className="font-semibold">Valefront</div>
             <div className="text-xs text-muted-foreground">{hosted ? 'Cloud' : 'Local router'}</div>
           </div>
           <div className="ml-auto flex md:hidden">
@@ -99,7 +101,7 @@ export function App() {
 
       <main className="min-w-0 px-4 py-6 md:px-8 md:py-8">
         <div className="mx-auto max-w-6xl">
-          {d.waiting ? <div className="mb-4"><ToneBadge tone="warning">Waiting for the Leyline API…</ToneBadge></div> : null}
+          {d.waiting ? <div className="mb-4"><ToneBadge tone="warning">Waiting for the Valefront API…</ToneBadge></div> : null}
           {current === 'benchmarks' ? <BenchmarksPage base={d.session?.hosted ? (d.session.publicUrl || window.location.origin) : d.stats.tunnel?.publicBaseUrl?.replace(/\/v1$/, '') || apiUrl('')} /> : null}
           {!d.status ? (
             <div className="grid gap-4"><Skeleton className="h-8 w-48" /><Skeleton className="h-28" /><Skeleton className="h-64" /></div>
@@ -110,6 +112,7 @@ export function App() {
                   : current === 'spending' ? <SpendingPage />
                   : current === 'offered' ? <OfferedPage d={d} />
                     : current === 'playground' ? <PlaygroundPage d={d} />
+                      : current === 'calculator' ? <CalculatorPage />
                       : <ActivityPage d={d} />}
         </div>
       </main>

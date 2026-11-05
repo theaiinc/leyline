@@ -37,11 +37,11 @@ jobs:
             | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).value")
           echo -n "$JWT" > /tmp/oidc-jwt.txt
 
-      - name: Publish @theaiinc/leyline
+      - name: Publish @valefront/valefront
         run: |
           JWT=$(cat /tmp/oidc-jwt.txt)
           TOKEN=$(curl -sS -X POST \
-            "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/@theaiinc%2fleyline" \
+            "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/@valefront%2fvalefront" \
             -H "Authorization: Bearer $JWT" \
             | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).token")
           echo "//registry.npmjs.org/:_authToken=$TOKEN" > ~/.npmrc
@@ -71,10 +71,10 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/theaiinc/leyline:${{ github.event.release.tag_name }}
-            ghcr.io/theaiinc/leyline:latest
-            theaiinc/leyline:${{ github.event.release.tag_name }}
-            theaiinc/leyline:latest
+            ghcr.io/valefront/valefront:${{ github.event.release.tag_name }}
+            ghcr.io/valefront/valefront:latest
+            valefront/valefront:${{ github.event.release.tag_name }}
+            valefront/valefront:latest
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ github.event.release.tag_name }}
@@ -85,6 +85,6 @@ jobs:
         with:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
-          repository: theaiinc/leyline
+          repository: valefront/valefront
           short-description: The ultimate cost-optimizing LLM load balancer & gateway
           readme-filepath: ./README.md

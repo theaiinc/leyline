@@ -101,8 +101,8 @@ export class CostAlerts {
           build: () => ({
             id: `budget:${t}`, at: this.now(), kind: 'budget', month, threshold: t, usd: spend.usd, limitUsd: budgetUsd,
             message: t >= 100
-              ? `Leyline has reached its ${money(budgetUsd)} monthly limit (${money(spend.usd)} spent in ${month}). Requests are refused until the 1st (UTC) or until you raise the limit.`
-              : `Leyline has spent ${money(spend.usd)} of its ${money(budgetUsd)} monthly limit in ${month} (${t}%).`,
+              ? `Valefront has reached its ${money(budgetUsd)} monthly limit (${money(spend.usd)} spent in ${month}). Requests are refused until the 1st (UTC) or until you raise the limit.`
+              : `Valefront has spent ${money(spend.usd)} of its ${money(budgetUsd)} monthly limit in ${month} (${t}%).`,
           }),
         });
       }
@@ -135,7 +135,7 @@ export class CostAlerts {
   /** A test alert through every channel, now. */
   async test(settings: AlertSettings, ctx: { to: string[]; publicUrl: string }, channels: AlertChannels): Promise<Alert> {
     const month = monthOf(this.now());
-    const alert: Alert = { id: `test:${this.now()}`, at: this.now(), kind: 'test', month, threshold: 0, usd: 0, limitUsd: 0, message: 'This is a test alert from Leyline. Cost alerts will arrive here.' };
+    const alert: Alert = { id: `test:${this.now()}`, at: this.now(), kind: 'test', month, threshold: 0, usd: 0, limitUsd: 0, message: 'This is a test alert from Valefront. Cost alerts will arrive here.' };
     await update<AlertDoc>(this.store, `alerts/${month}`, (cur) => ({ sent: cur?.sent ?? {}, log: [alert, ...(cur?.log ?? [])].slice(0, 100) }));
     return this.deliver(month, alert, settings, ctx, channels);
   }
@@ -158,7 +158,7 @@ export class CostAlerts {
   }
 
   private async deliver(month: string, alert: Alert, settings: AlertSettings, ctx: { to: string[]; publicUrl: string }, channels: AlertChannels): Promise<Alert> {
-    const subject = alert.kind === 'test' ? 'Leyline: test alert' : alert.threshold >= 100 ? `Leyline: ${alert.kind === 'key' ? `key "${alert.keyName}" ` : ''}limit reached` : `Leyline: ${alert.threshold}% of ${alert.kind === 'key' ? `key "${alert.keyName}"'s cap` : 'the monthly limit'} spent`;
+    const subject = alert.kind === 'test' ? 'Valefront: test alert' : alert.threshold >= 100 ? `Valefront: ${alert.kind === 'key' ? `key "${alert.keyName}" ` : ''}limit reached` : `Valefront: ${alert.threshold}% of ${alert.kind === 'key' ? `key "${alert.keyName}"'s cap` : 'the monthly limit'} spent`;
     const text = `${alert.message}\n\nSpending: ${ctx.publicUrl}/dashboard/#/spending`;
     const delivery: { email?: string; webhook?: string } = {};
     const tasks: Promise<void>[] = [];

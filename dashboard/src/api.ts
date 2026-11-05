@@ -4,7 +4,7 @@ export function apiUrl(path: string): string {
   return `${API_BASE}${path}`;
 }
 
-/** JSON request to Leyline; throws an Error with the server's message when it isn't OK. */
+/** JSON request to Valefront; throws an Error with the server's message when it isn't OK. */
 export async function api<T = unknown>(path: string, init: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<T> {
   const response = await fetch(apiUrl(path), {
     method: init.method ?? 'GET',
