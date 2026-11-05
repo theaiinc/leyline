@@ -349,11 +349,13 @@ export ANTHROPIC_AUTH_TOKEN=ll_...
 
 ## 💳 Self-serve sign-up and billing (hosted Valefront)
 
-On the Worker (D1, migration `0002_workspaces_billing.sql`), anyone can sign up and pay for what they use. Code: `src/core/self-serve-workspaces.ts`, `billing*.ts`, `customer-routes.ts`, `admin-billing.ts`, `paypal.ts`, `einvoice-viettel.ts`, `provider-modes.ts`; dashboard: `dashboard/src/customer/`.
+On the Worker (D1, migrations `0002_workspaces_billing.sql` and `0003_addon_accrual.sql`), anyone can sign up and pay for what they use. Code: `src/core/self-serve-workspaces.ts`, `billing*.ts`, `addons.ts`, `customer-routes.ts`, `admin-billing.ts`, `paypal.ts`, `einvoice-viettel.ts`, `provider-modes.ts`; dashboard: `dashboard/src/customer/`.
 
 **Sign-up** (`dash.valefront.com`, any Aegis account): accept the Terms (version `2026-11-03`), a verified email (Aegis `email_verified`; disposable domains refused), at most 3 sign-ups a day per IP, a Turnstile check -> a workspace and its first API key, shown once. The first workspace for an email and Aegis account gets the free grant: 1,000,000 tokens, plus `FREE_TIER_BONUS_TOKENS` (4,000,000) unlocked by the first paid top-up (the grant then runs at least 30 more days), on `FREE_TIER_MODELS` (the `free_tier` block of `/v1/pricing`), at most `FREE_TIER_TOKENS_PER_DAY` (250,000 on hosted Valefront) a day per workspace and `FREE_TIER_GLOBAL_TOKENS_PER_DAY` (20,000,000) across all. New keys need another Turnstile check; self-serve keys allow 60 requests a minute.
 
 **Credit.** Prepaid US dollars; the ledger (integer cents) is the balance. Every customer request is charged at the model's real price (set by hand or published by its provider); a model without one is refused with `403 model_not_priced`, never charged the default price. Free tokens are used first on free-tier models. With no credit and no free tokens left: `402 insufficient_credit`, "Add credit at https://dash.valefront.com/billing". Keys with no workspace (made by the owner) and workspaces of `LEYLINE_ADMIN_EMAILS` are never gated or charged.
+
+**PII protection (paid add-on).** Turn it on per API key on the dashboard's API keys page (a switch on each key, and an option when you create one; `PUT /dashboard/me/keys/:id/pii` with `{ "enabled": true }`). Before the prompt leaves Valefront, emails, phone numbers, card numbers (Luhn-checked) and API keys/secrets in the messages are replaced with placeholders (`VF_EMAIL_1X`); the reply, streamed or not, gets the real values back, so your app sees no difference. Where the server has a Presidio analyzer (`PRESIDIO_ANALYZER_URL`), customers can also choose a thorough mode that finds names, addresses and IDs; without one it is never offered. It adds a few milliseconds a request (regex mode). Price: **$0.20 per 1M input (prompt) tokens** of each protected request, on top of the model's price (`PII_PRICE_PER_M_TOKENS`, a Worker variable; default in `src/core/addons.ts`; published in `/v1/pricing` `addons`). It is charged from credit even when the model runs on free tokens (free tokens never cover it): a protected key with no credit gets `402 insufficient_credit` ("PII protection … needs credit"). The fee is accrued exactly (millionths of a dollar, `addon_accrual`, migration `0003_addon_accrual.sql`) and moved to the ledger in whole cents as its own line, "PII protection"; the customer's Spending page shows it under Add-ons, and admin Spending as provider `Valefront`, model `pii-protection`. Keys with no workspace and admin workspaces are never charged it.
 
 **Add credit** (at least $10; VAT 0% outside Vietnam, 10% in Vietnam unless the admin sets another rate):
 - *PayPal* (PayPal balance or card): Orders API v2, create -> approve -> capture; the `PAYMENT.CAPTURE.COMPLETED` webhook at `https://llm.valefront.com/webhooks/paypal` is checked with PayPal's verify-webhook-signature. Credited once per order and capture id.
@@ -376,6 +378,8 @@ On the Worker (D1, migration `0002_workspaces_billing.sql`), anyone can sign up 
 | `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD` | `https://<team>.cloudflareaccess.com` and the admin Access application's AUD tag |
 | `CF_ACCESS_SERVICE_TOKEN_IDS` | Optional: Access service-token client ids allowed on the admin host |
 | `FREE_TIER_TOKENS_PER_DAY`, `FREE_TIER_GLOBAL_TOKENS_PER_DAY` | Optional free-tier abuse limits |
+| `PII_PRICE_PER_M_TOKENS` | Optional: PII protection add-on price, US dollars per 1M input tokens (default `0.20`; zero, negative or malformed values fall back to the default) |
+| `PRESIDIO_ANALYZER_URL` | Optional: a Presidio analyzer; when set, customers may choose PII protection's thorough mode |
 
 | Worker secret (`wrangler secret put`) | Meaning |
 | --- | --- |
