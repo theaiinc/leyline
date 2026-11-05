@@ -41,7 +41,7 @@ export interface CompletionResponse {
   model: string;
   choices: Array<{
     index: number;
-    message: { role: string; content: string; tool_calls?: Array<{ id?: string; type?: string; function?: { name?: string; arguments?: string } }> };
+    message: { role: string; content: string; reasoning_content?: string; tool_calls?: Array<{ id?: string; type?: string; function?: { name?: string; arguments?: string } }> };
     finish_reason: string;
   }>;
   usage?: {
@@ -61,7 +61,7 @@ export interface StreamChunk {
   model: string;
   choices: Array<{
     index: number;
-    delta: { role?: string; content?: string };
+    delta: { role?: string; content?: string; reasoning_content?: string };
     finish_reason: string | null;
   }>;
   usage?: {

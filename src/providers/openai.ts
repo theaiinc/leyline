@@ -69,7 +69,7 @@ export class OpenAIProvider implements Provider {
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
     const response = await axios.post(
       `${this.baseUrl}/chat/completions`,
-      upstreamBody(request, request.model || this.model, false),
+      this.upstreamBody(request, request.model || this.model, false),
       {
         headers: this.headers(),
         timeout: 300000,
@@ -89,7 +89,7 @@ export class OpenAIProvider implements Provider {
         method: 'POST',
         headers: this.headers(),
         // Ask for the token usage at the end of the stream (per-key metering needs it).
-        body: JSON.stringify({ ...upstreamBody(request, request.model || this.model, true), stream_options: { include_usage: true } }),
+        body: JSON.stringify({ ...this.upstreamBody(request, request.model || this.model, true), stream_options: { include_usage: true } }),
         signal: controller.signal,
       });
       if (!response.ok || !response.body) {
@@ -212,6 +212,11 @@ export class OpenAIProvider implements Provider {
     };
   }
 
+  /** Build the upstream request body. Providers may override this for provider-specific fields. */
+  protected upstreamBody(request: CompletionRequest, model: string, stream: boolean): Record<string, unknown> {
+    return upstreamBody(request, model, stream);
+  }
+
   protected headers(): Record<string, string> {
     return {
       'Authorization': `Bearer ${this.apiKey}`,
@@ -223,7 +228,7 @@ export class OpenAIProvider implements Provider {
 /** Fields of an OpenAI chat request passed through upstream as the client sent them. */
 const PASSTHROUGH = [
   'tools', 'tool_choice', 'parallel_tool_calls', 'temperature', 'top_p', 'max_tokens', 'max_completion_tokens',
-  'presence_penalty', 'frequency_penalty', 'response_format', 'seed', 'stop', 'user', 'reasoning_effort', 'n',
+  'presence_penalty', 'frequency_penalty', 'response_format', 'seed', 'stop', 'user', 'n',
 ] as const;
 
 /**

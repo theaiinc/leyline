@@ -1,4 +1,5 @@
-import { OpenAIProvider } from './openai';
+import { OpenAIProvider, upstreamBody } from './openai';
+import { CompletionRequest } from '../core/types';
 import { config } from '../config';
 
 /**
@@ -25,5 +26,24 @@ export class BytePlusProvider extends OpenAIProvider {
 
   defaultModelFor(capability: 'chat' | 'embeddings' | 'transcription' | 'speech'): string | undefined {
     return capability === 'chat' ? this.defaultModel : undefined;
+  }
+
+  /** ModelArk reasoning is opt-in; keep private reasoning out of ordinary agent responses. */
+  protected upstreamBody(request: CompletionRequest, model: string, stream: boolean): Record<string, unknown> {
+    const requested = request as CompletionRequest & {
+      thinking?: unknown;
+      reasoning?: unknown;
+      reasoning_effort?: 'low' | 'medium' | 'high' | string;
+    };
+    const thinkingModel = /-thinking$/i.test(model);
+    const upstreamModel = model.replace(/-thinking$/i, '');
+    const explicitlyRequested = requested.thinking !== undefined
+      || requested.reasoning !== undefined
+      || requested.reasoning_effort !== undefined;
+    const enabled = thinkingModel || explicitlyRequested;
+    const body = upstreamBody(request, upstreamModel, stream);
+    body.thinking = { type: enabled ? 'enabled' : 'disabled' };
+    delete body.reasoning;
+    return body;
   }
 }

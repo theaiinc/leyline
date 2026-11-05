@@ -22,7 +22,7 @@ describe('BytePlusProvider', () => {
     expect(provider.servesModel('embeddings', 'seed-1-6-250915')).toBe(false);
   });
 
-  it('supports normal OpenAI-compatible replies', async () => {
+  it('disables ModelArk thinking by default and enables it with reasoning_effort', async () => {
     const response = {
       id: 'ark-1',
       object: 'chat.completion',
@@ -30,25 +30,53 @@ describe('BytePlusProvider', () => {
     };
     const axios = await import('axios');
     const postMock = jest.spyOn(axios.default, 'post').mockResolvedValue({ data: response });
-    const result = await new BytePlusProvider('test-key').complete(request);
-    expect(result).toEqual(response);
-    expect(postMock).toHaveBeenCalledWith(
-      'https://ark.ap-southeast.bytepluses.com/api/v3/chat/completions',
-      expect.objectContaining({ model: request.model, messages: request.messages, stream: false }),
-      expect.objectContaining({
-        headers: expect.objectContaining({ Authorization: 'Bearer test-key' }),
-      }),
-    );
+    const provider = new BytePlusProvider('test-key');
+
+    await provider.complete({ ...request, model: 'deepseek-v4-flash-ga-260731' });
+    expect(postMock.mock.calls[0][1]).toEqual(expect.objectContaining({
+      model: 'deepseek-v4-flash-ga-260731',
+      thinking: { type: 'disabled' },
+    }));
+
+    await provider.complete({
+      ...request,
+      model: 'deepseek-v4-flash-ga-260731',
+      reasoning_effort: 'medium',
+    });
+    expect(postMock.mock.calls[1][1]).toEqual(expect.objectContaining({
+      model: 'deepseek-v4-flash-ga-260731',
+      thinking: { type: 'enabled' },
+    }));
   });
 
-  it('supports streamed replies', async () => {
-    const stream = 'data: {"choices":[{"delta":{"content":"hello"}}]}\n\ndata: [DONE]\n\n';
+  it('preserves reasoning_content instead of promoting it to content', async () => {
+    const response = {
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: '',
+          reasoning_content: 'private reasoning',
+        },
+        finish_reason: 'length',
+      }],
+    };
+    const axios = await import('axios');
+    jest.spyOn(axios.default, 'post').mockResolvedValue({ data: response });
+    const result = await new BytePlusProvider('test-key').complete(request);
+    expect(result).toEqual(response);
+    expect(result.choices[0].message.content).toBe('');
+    expect(result.choices[0].message.reasoning_content).toBe('private reasoning');
+  });
+
+  it('preserves reasoning_content in streamed deltas', async () => {
+    const stream = 'data: {"choices":[{"delta":{"reasoning_content":"private reasoning","content":""},"finish_reason":"length"}]}\n\ndata: [DONE]\n\n';
     jest.spyOn(global, 'fetch').mockResolvedValue(
       new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
     );
-    const chunks = [];
+    const chunks: unknown[] = [];
     for await (const chunk of new BytePlusProvider('test-key').completeStream(request)) chunks.push(chunk);
-    expect(chunks).toEqual([{ choices: [{ delta: { content: 'hello' } }] }]);
+    expect(chunks).toEqual([{ choices: [{ delta: { reasoning_content: 'private reasoning', content: '' }, finish_reason: 'length' }] }]);
   });
 
   it('supports OpenAI-format tool calls', async () => {
