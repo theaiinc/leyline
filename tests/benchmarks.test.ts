@@ -74,6 +74,17 @@ describe('benchmark matching and ranking', () => {
     expect(matchBenchmarkModel('gpt-4o-mini', snapshot.benchmarks[0]!.scores)).toBeUndefined();
   });
 
+  it('matches DeepSeek V4 Flash leaderboard names to the BytePlus dated model alias', () => {
+    const scores = [{
+      model: 'deepseek-v4-flash-ga-260731',
+      score: 91,
+      source: 'leaderboard',
+      asOf: '2026-11-05',
+      aliases: ['deepseek-v4-flash'],
+    }];
+    expect(matchBenchmarkModel('DeepSeek V4 Flash', scores)?.model).toBe('deepseek-v4-flash-ga-260731');
+  });
+
   it('ranks scored models first and keeps missing scores unbenchmarked', () => {
     const ranked = rankBenchmarks(['gpt-4o-mini', 'gpt-4o', 'claude-opus-5-5'], snapshot);
     expect(ranked.map((row) => row.id)).toEqual(['claude-opus-5-5', 'gpt-4o', 'gpt-4o-mini']);

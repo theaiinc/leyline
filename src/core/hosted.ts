@@ -194,9 +194,16 @@ export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_
   const published = usePublished
     ? (r.served ? opts.publishedPrice?.(r.served.provider, used) : undefined) ?? opts.anyPublishedPrice?.(used) ?? builtinPrice(used)
     : undefined;
-  const cost = usd ?? costUsd(priceOf({ prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE }, used, published), counted);
-  const work = opts.keys.record(r.issuedKey ?? null, model, counted, cost, { provider: r.served?.provider ?? 'unknown', model: used })
-    .then(() => checkAlerts(opts, r.issuedKey ?? null))
+  const price = priceOf({ prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE }, used, published);
+  const cost = usd ?? costUsd(price, counted);
+  const pricedField: 'set' | 'published' | 'default' | undefined = usd ? undefined : price.source;
+  const work = opts.keys.record(r.issuedKey ?? null, model, counted, cost, { provider: r.served?.provider ?? 'unknown', model: used, priced: pricedField })
+    .then(() => {
+      if (pricedField === 'default') {
+        checkDefaultPriceAlert(opts, used, r.served?.provider ?? 'unknown');
+      }
+      return checkAlerts(opts, r.issuedKey ?? null);
+    })
     .catch((err) => console.error('[hosted] usage record failed', err));
   opts.background?.(work);
 }

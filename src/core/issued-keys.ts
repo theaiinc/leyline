@@ -56,7 +56,7 @@ export type KeyUsage = {
 };
 
 /** Spend, requests and tokens for one provider or model. */
-export type SpendLine = { usd: number; requests: number; tokens: number; cachedTokens?: number };
+export type SpendLine = { usd: number; requests: number; tokens: number; cachedTokens?: number; priced?: 'set' | 'published' | 'default' };
 
 /** Everything spent this month, across keys (and the owner's playground), by provider and by model. */
 export type MonthSpend = {
@@ -479,7 +479,7 @@ export class IssuedKeys {
     model: string,
     usage?: { prompt_tokens?: number; completion_tokens?: number; cached_tokens?: number },
     usd = 0,
-    served: { provider: string; model: string } = { provider: 'unknown', model },
+    served: { provider: string; model: string; priced?: 'set' | 'published' | 'default' } = { provider: 'unknown', model },
   ): Promise<void> {
     const now = this.now();
     const month = monthOf(now);
@@ -487,12 +487,21 @@ export class IssuedKeys {
     const completion = Math.max(0, Math.round(usage?.completion_tokens ?? 0));
     const cached = Math.min(prompt, Math.max(0, Math.round(usage?.cached_tokens ?? 0)));
     const tokens = prompt + completion;
-    const add = (line: SpendLine | undefined): SpendLine => ({
-      usd: (line?.usd ?? 0) + usd,
-      requests: (line?.requests ?? 0) + 1,
-      tokens: (line?.tokens ?? 0) + tokens,
-      ...(cached || line?.cachedTokens ? { cachedTokens: (line?.cachedTokens ?? 0) + cached } : {}),
-    });
+    const add = (line: SpendLine | undefined): SpendLine => {
+      const base: SpendLine = {
+        usd: (line?.usd ?? 0) + usd,
+        requests: (line?.requests ?? 0) + 1,
+        tokens: (line?.tokens ?? 0) + tokens,
+        ...(cached || line?.cachedTokens ? { cachedTokens: (line?.cachedTokens ?? 0) + cached } : {}),
+      };
+      if (served.priced) {
+        return { ...base, priced: served.priced };
+      }
+      if (line?.priced) {
+        return { ...base, priced: line.priced };
+      }
+      return base;
+    };
     await update<MonthSpend>(this.store, `spend/${month}`, (cur) => {
       const s = cur ?? { month, usd: 0, requests: 0 };
       const byProvider = { ...(s.byProvider ?? {}) };
