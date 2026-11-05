@@ -1,10 +1,14 @@
 import { useEffect, useState } from 'react';
-import { Activity, FlaskConical, KeyRound, LayoutDashboard, Layers, LogOut, Moon, RefreshCw, Route, Server, Sun, Wallet } from 'lucide-react';
+import { Activity, Calculator, CreditCard, FlaskConical, KeyRound, LayoutDashboard, Layers, LogOut, Moon, RefreshCw, Route, Server, Sun, Wallet } from 'lucide-react';
+import { SideNav, navIds, type NavEntry } from '@/components/side-nav';
+import { Card, CardContent } from '@/components/ui/card';
+import { PageHeader } from '@/components/common';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ToneBadge } from '@/components/common';
-import { apiUrl } from '@/api';
+import { apiUrl, fetchSession, type Session } from '@/api';
+import { CustomerApp } from '@/customer/customer-app';
 import { useDashboard } from '@/hooks/use-dashboard';
 import { useHashRoute } from '@/hooks/use-hash-route';
 import { cn } from '@/lib/utils';
@@ -26,14 +30,38 @@ const NAV: Nav[] = [
   { id: 'providers', label: 'Providers', icon: Server },
   { id: 'routing', label: 'Routing', icon: Route },
   { id: 'keys', label: 'Access keys', icon: KeyRound, hosted: true },
-  { id: 'spending', label: 'Spending', icon: Wallet, hosted: true },
   { id: 'offered', label: 'Offered models', icon: Layers, hosted: true },
   { id: 'playground', label: 'Playground', icon: FlaskConical },
-  { id: 'calculator', label: 'Cost calculator', icon: Wallet },
   { id: 'activity', label: 'Activity', icon: Activity },
 ];
+/** Money in one place: billing (hosted), spending (hosted), the cost calculator. */
+const BILLING: Nav[] = [
+  { id: 'billing', label: 'Billing', icon: CreditCard, hosted: true },
+  { id: 'spending', label: 'Spending', icon: Wallet, hosted: true },
+  { id: 'calculator', label: 'Cost calculator', icon: Calculator },
+];
 
-function useTheme(): [boolean, () => void] {
+function navFor(hosted: boolean): NavEntry[] {
+  const shown = (n: Nav) => !n.hosted || hosted;
+  const top = NAV.filter(shown);
+  // The Billing group sits after Offered models (before the playground), where Spending used to be.
+  const at = top.findIndex((n) => n.id === 'playground');
+  const group: NavEntry = { group: 'Billing', icon: Wallet, items: BILLING.filter(shown) };
+  return [...top.slice(0, at), group, ...top.slice(at)];
+}
+
+/** For the owner: customer billing is administered on its own host, behind Cloudflare Access. */
+function AdminBillingPage() {
+  return (<>
+    <PageHeader title="Billing" description="Customer orders, payments, receipts, VAT e-invoices and provider modes." />
+    <Card><CardContent className="grid gap-2 text-sm">
+      <p>Customer billing is administered at <a className="underline" href="https://adm.valefront.com/" target="_blank" rel="noreferrer">adm.valefront.com</a> (Cloudflare Access): mark bank transfers paid, resend receipts, issue and retry VAT e-invoices, switch PayPal and Viettel S-Invoice between sandbox and live.</p>
+      <p className="text-muted-foreground">Admin workspaces are never charged. This dashboard's Spending page shows what the providers cost.</p>
+    </CardContent></Card>
+  </>);
+}
+
+export function useTheme(): [boolean, () => void] {
   const media = window.matchMedia('(prefers-color-scheme: dark)');
   const stored = (() => { try { return window.localStorage.getItem('valefront.theme'); } catch { return null; } })();
   const [dark, setDark] = useState(stored ? stored === 'dark' : media.matches);
@@ -44,13 +72,23 @@ function useTheme(): [boolean, () => void] {
   })];
 }
 
+/** Hosted: a customer (not an admin) gets their own workspace's dashboard; the owner gets the full one. */
+export function Root() {
+  const [session, setSession] = useState<Session | null>(null);
+  const [dark, toggleTheme] = useTheme();
+  useEffect(() => { void fetchSession().then(setSession); }, []);
+  if (!session) return null;
+  if (session.hosted && !session.admin) return <CustomerApp dark={dark} toggleTheme={toggleTheme} />;
+  return <App />;
+}
+
 export function App() {
   const d = useDashboard();
   const [page, go] = useHashRoute('overview');
   const [dark, toggleTheme] = useTheme();
   const hosted = Boolean(d.session?.hosted);
-  const nav = NAV.filter(n => !n.hosted || hosted);
-  const current = nav.find(n => n.id === page)?.id ?? 'overview';
+  const nav = navFor(hosted);
+  const current = navIds(nav).includes(page) ? page : 'overview';
 
   async function signOut() {
     await fetch(apiUrl('/auth/logout'), { method: 'POST', credentials: 'same-origin' });
@@ -64,28 +102,14 @@ export function App() {
           <img src={`${import.meta.env.BASE_URL}icon.svg`} alt="" className="size-8" />
           <div className="leading-tight">
             <div className="font-semibold">Valefront</div>
-            <div className="text-xs text-muted-foreground">{hosted ? 'Cloud' : 'Local router'}</div>
+            <div className="text-xs text-muted-foreground">{hosted ? 'Admin' : 'Local router'}</div>
           </div>
           <div className="ml-auto flex md:hidden">
             <Button variant="ghost" size="icon" onClick={toggleTheme} aria-label="Toggle theme">{dark ? <Sun /> : <Moon />}</Button>
             {hosted && d.session?.signIn && d.session.email !== 'token' ? <Button variant="ghost" size="icon" onClick={signOut} aria-label="Sign out"><LogOut /></Button> : null}
           </div>
         </div>
-        <nav className="flex gap-1 overflow-x-auto px-2 pb-2 md:flex-col md:overflow-visible md:pb-0">
-          {nav.map(item => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => go(item.id)}
-              className={cn(
-                'flex shrink-0 items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors hover:bg-accent',
-                current === item.id ? 'bg-accent font-medium text-accent-foreground' : 'text-muted-foreground',
-              )}
-            >
-              <item.icon className="size-4" />{item.label}
-            </button>
-          ))}
-        </nav>
+        <SideNav entries={nav} current={current} go={go} />
         <div className="mt-auto hidden p-3 md:block">
           <Separator className="mb-3" />
           {hosted ? (
@@ -110,6 +134,7 @@ export function App() {
               : current === 'routing' ? <RoutingPage d={d} />
                 : current === 'keys' ? <KeysPage d={d} />
                   : current === 'spending' ? <SpendingPage />
+                  : current === 'billing' ? <AdminBillingPage />
                   : current === 'offered' ? <OfferedPage d={d} />
                     : current === 'playground' ? <PlaygroundPage d={d} />
                       : current === 'calculator' ? <CalculatorPage />

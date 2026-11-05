@@ -62,6 +62,10 @@ export class D1DocStore implements DocStore {
     return results.map((r) => r.key);
   }
 
+  async delete(key: string) {
+    await this.primary.prepare('DELETE FROM docs WHERE key = ?').bind(key).run();
+  }
+
   /** Drop per-minute counters older than a day (they're only read during their minute). */
   async prune(now = Date.now()): Promise<number> {
     const r = await this.primary.prepare("DELETE FROM docs WHERE key LIKE 'rpm/%' AND updated < ?").bind(now - 86_400_000).run();

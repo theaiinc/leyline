@@ -3,7 +3,7 @@ import { createCipheriv, createDecipheriv, createHash, createHmac, createPublicK
 type JsonWebKey = { kid?: string; alg?: string; kty?: string; [k: string]: unknown };
 
 /** A signed-in person. */
-export type AdminUser = { sub: string; email: string; name?: string };
+export type AdminUser = { sub: string; email: string; name?: string; /** Aegis's email_verified claim. */ emailVerified?: boolean };
 
 /**
  * Sign-in with Aegis (OpenID Connect, authorization code + PKCE) for Leyline's admin page, then a signed
@@ -121,18 +121,19 @@ export class AegisAuth {
   /** Where to send the browser, and the cookie that remembers this attempt. switchAccount: ask Aegis to sign in again. */
   async start(next: string, opts: { switchAccount?: boolean; redirectUri?: string } = {}): Promise<{ url: string; cookie: string }> {
     const d = await this.discover();
+    const redirectUri = opts.redirectUri ?? this.cfg.redirectUri;
     const pending: PendingLogin = {
       state: b64u(randomBytes(16)),
       verifier: b64u(randomBytes(32)),
       nonce: b64u(randomBytes(16)),
       next: next.startsWith('/') && !next.startsWith('//') ? next : '/',
-      redirectUri: opts.redirectUri ?? this.cfg.redirectUri,
+      redirectUri,
       exp: Math.floor(Date.now() / 1000) + 600,
     };
     const url = new URL(d.authorization_endpoint);
     url.search = new URLSearchParams({
       client_id: this.cfg.clientId,
-      redirect_uri: pending.redirectUri,
+      redirect_uri: redirectUri,
       response_type: 'code',
       // offline_access: a refresh token, so the page stays signed in while it's used (see resume).
       scope: 'openid email profile offline_access',
@@ -228,6 +229,7 @@ export class AegisAuth {
     return {
       sub: String(claims['sub']),
       email: String(claims['email']).toLowerCase(),
+      emailVerified: claims['email_verified'] === true || claims['email_verified'] === 'true',
       ...(nameFrom(claims) ? { name: nameFrom(claims)! } : {}),
       exp: Math.floor(Date.now() / 1000) + (this.cfg.sessionHours ?? 12) * 3600,
     };
