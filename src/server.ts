@@ -458,8 +458,10 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       currency: 'USD',
       unit: 'per 1M tokens',
       free_tier: {
-        tokens: DEFAULT_FREE_TIER_TOKENS,
-        expires_after_days: DEFAULT_FREE_TIER_EXPIRES_AFTER_DAYS,
+        tokens: hosted?.billing?.opts.free?.tokens ?? DEFAULT_FREE_TIER_TOKENS,
+        expires_after_days: hosted?.billing?.opts.free?.expiresAfterDays ?? DEFAULT_FREE_TIER_EXPIRES_AFTER_DAYS,
+        // Each workspace may use at most this many free tokens a day (the cost calculator needs it).
+        ...(hosted?.billing?.opts.free?.tokensPerDay ? { tokens_per_day: hosted.billing.opts.free.tokensPerDay } : {}),
         models: config.freeTierModels.filter((id) => models.some((model) => model.id === id && Number.isFinite(model.input) && Number.isFinite(model.output))),
       },
       models,
