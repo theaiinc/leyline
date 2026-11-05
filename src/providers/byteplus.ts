@@ -12,6 +12,7 @@ import { config } from '../config';
  * BytePlus ModelArk's OpenAI-compatible provider for chat and embeddings.
  * Reasoning-only responses are promoted to content when the upstream omits content.
  */
+// Official ModelArk pricing source; media requests must use an explicit entry and never fall back to a default price.
 const BYTEPLUS_PRICING_SOURCE = 'https://www.byteplus.com/en/product/modelark/pricing';
 
 const BYTEPLUS_CATALOG: Array<ModelDetail & { pricing: { input: number; output: number } }> = [
