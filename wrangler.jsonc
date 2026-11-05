@@ -57,9 +57,13 @@
     // Billing (README "Self-serve sign-up and billing"). Sandbox | Live for PayPal and Viettel S-Invoice is switched on
     // adm.valefront.com, not here.
     "BILLING_FROM": "Valefront Billing <billing@valefront.com>",
-    "ADMIN_HOST": "adm.valefront.com"
-    // Still to set (vars): TURNSTILE_SITE_KEY, CF_ACCESS_TEAM_DOMAIN, CF_ACCESS_AUD, optionally
-    // CF_ACCESS_SERVICE_TOKEN_IDS, FREE_TIER_TOKENS_PER_DAY, FREE_TIER_GLOBAL_TOKENS_PER_DAY.
+    "ADMIN_HOST": "adm.valefront.com",
+    // Turnstile widget "Valefront sign-up" (its secret is the TURNSTILE_SECRET Worker secret).
+    "TURNSTILE_SITE_KEY": "0x4AAAAAAF0as-gnh67yvrdS",
+    // Access application "Valefront billing admin" on adm.valefront.com (allow: LEYLINE_ADMIN_EMAILS).
+    "CF_ACCESS_TEAM_DOMAIN": "https://rough-cell-0ce1.cloudflareaccess.com",
+    "CF_ACCESS_AUD": "f370c1fed138edae3fed542b2ffa0e862cb36fccc881a2c226dea61e0c4785df"
+    // Optional vars: CF_ACCESS_SERVICE_TOKEN_IDS, FREE_TIER_TOKENS_PER_DAY, FREE_TIER_GLOBAL_TOKENS_PER_DAY.
   }
   // Secrets (wrangler secret put): LEYLINE_STORE_KEY (32 random bytes, base64), LEYLINE_SESSION_SECRET,
   // LEYLINE_LOGIN_CLIENT_SECRET, LLM_API_KEY, LEYLINE_ARCANA_CLOUD_CLIENT_SECRET,
