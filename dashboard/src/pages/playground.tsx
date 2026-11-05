@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Send } from 'lucide-react';
+import { Image as ImageIcon, Send, Video } from 'lucide-react';
 import { costForTokens, displayUsage, formatUsd, type DisplayUsage, type ModelPrice } from '@/lib/cost';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -10,13 +10,16 @@ import { Textarea } from '@/components/ui/textarea';
 import { PageHeader } from '@/components/common';
 import { apiUrl } from '@/api';
 import type { Dashboard } from '@/hooks/use-dashboard';
+import type { Capability } from '@/normalization';
 
 export function PlaygroundPage({ d }: { d: Dashboard }) {
   const providers = d.stats.providers;
+  const [mode, setMode] = useState<'chat' | 'image' | 'video'>('chat');
   const [providerName, setProviderName] = useState('');
   const [modelId, setModelId] = useState('');
   const [prompt, setPrompt] = useState('Say hello in one sentence.');
   const [answer, setAnswer] = useState('');
+  const [mediaUrl, setMediaUrl] = useState('');
   const [error, setError] = useState('');
   const [latency, setLatency] = useState<number | null>(null);
   const [sending, setSending] = useState(false);
@@ -25,12 +28,16 @@ export function PlaygroundPage({ d }: { d: Dashboard }) {
   const [usage, setUsage] = useState<DisplayUsage | null>(null);
   const [sessionTotal, setSessionTotal] = useState(0);
   const provider = providers.find(p => p.name === providerName) ?? providers[0];
-  const models = provider?.models ?? [];
+  const capability: Capability = mode === 'chat' ? 'chat' : mode;
+  const availableProviders = providers.filter(p => p.capabilities.includes(capability));
+  const activeProvider = availableProviders.find(p => p.name === providerName) ?? availableProviders[0];
+  const models = activeProvider?.models ?? [];
 
   useEffect(() => {
-    if (!provider) return;
-    if (!models.some(m => m.id === modelId)) setModelId(models[0]?.id || provider.defaultModel || '');
-  }, [provider?.name, models.length]);
+    if (!activeProvider) return;
+    if (activeProvider.name !== providerName) setProviderName(activeProvider.name);
+    if (!models.some(m => m.id === modelId)) setModelId(models[0]?.id || activeProvider.defaultModel || '');
+  }, [mode, activeProvider?.name, models.length]);
 
   useEffect(() => {
     fetch(apiUrl('/v1/pricing'), { credentials: 'same-origin' }).then(response => response.json()).then(data => {
@@ -48,14 +55,19 @@ export function PlaygroundPage({ d }: { d: Dashboard }) {
 
   async function send(event: FormEvent) {
     event.preventDefault();
-    if (!provider || !modelId || !prompt.trim()) return;
+    if (!activeProvider || !modelId || !prompt.trim()) return;
     setSending(true);
     setError('');
     setAnswer('');
+    setMediaUrl('');
+    setUsage(null);
     const started = performance.now();
     try {
-      // Hosted: the signed-in owner's session is enough (no access key, not counted). Local: the client key.
-      const res = await fetch(apiUrl('/v1/chat/completions'), {
+      const endpoint = mode === 'chat' ? '/v1/chat/completions' : mode === 'image' ? '/v1/images/generations' : '/v1/videos';
+      const body = mode === 'chat'
+        ? { model: modelId, messages: [{ role: 'user', content: prompt }] }
+        : { model: modelId, prompt };
+      const res = await fetch(apiUrl(endpoint), {
         method: 'POST',
         credentials: 'same-origin',
         headers: {
@@ -63,17 +75,26 @@ export function PlaygroundPage({ d }: { d: Dashboard }) {
           ...(d.session?.hosted ? {} : { Authorization: `Bearer ${d.stats.clientAuth?.apiKey || ''}` }),
           'X-Leyline-Force-Provider': provider.name,
         },
-        body: JSON.stringify({ model: modelId, messages: [{ role: 'user', content: prompt }] }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       setLatency(Math.round(performance.now() - started));
       if (!res.ok) return setError(data?.error?.message || 'Request failed');
-      setAnswer(data.choices?.[0]?.message?.content || '(empty response)');
-      const runUsage = displayUsage(data, modelId, prices, price);
-      setUsage(runUsage);
-      const chargedCost = runUsage.cost;
-      if (chargedCost !== undefined) {
-        setSessionTotal(total => total + chargedCost);
+      if (mode === 'chat') {
+        setAnswer(data.choices?.[0]?.message?.content || '(empty response)');
+        const runUsage = displayUsage(data, modelId, prices, price);
+        setUsage(runUsage);
+        const runCost = runUsage.cost;
+        if (runCost !== undefined) setSessionTotal(total => total + runCost);
+      } else {
+        const media = data.data?.[0] ?? data;
+        const url = media.url || media.output?.url || media.video_url;
+        if (typeof url === 'string') setMediaUrl(url);
+        const cost = typeof data.cost === 'number' ? data.cost : typeof media.cost === 'number' ? media.cost : undefined;
+        if (cost !== undefined) {
+          setUsage({ servedModel: modelId, input: 0, output: 0, cached: 0, cost });
+          setSessionTotal(total => total + cost);
+        }
       }
     } catch (err) {
       setLatency(Math.round(performance.now() - started));
@@ -89,20 +110,31 @@ export function PlaygroundPage({ d }: { d: Dashboard }) {
       <Card>
         <CardHeader>
           <CardTitle>Test a provider and model</CardTitle>
-          <CardDescription>Goes through <code className="font-mono text-xs">/v1/chat/completions</code>.</CardDescription>
+          <CardDescription>Choose a capability, then run an account-available model directly through its provider.</CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={send} className="grid gap-4">
-            <div className="flex flex-wrap gap-2">
-              <Select value={provider?.name || ''} onValueChange={setProviderName}>
-                <SelectTrigger className="w-52" aria-label="Provider"><SelectValue placeholder="Provider" /></SelectTrigger>
-                <SelectContent>{providers.map(p => <SelectItem key={p.name} value={p.name}>{p.label || p.name}</SelectItem>)}</SelectContent>
-              </Select>
-              <Select value={modelId} onValueChange={setModelId}>
-                <SelectTrigger className="min-w-52 flex-1" aria-label="Model"><SelectValue placeholder="Model" /></SelectTrigger>
-                <SelectContent>{models.map(m => <SelectItem key={m.id} value={m.id}>{m.name || m.id}</SelectItem>)}</SelectContent>
-              </Select>
+          <div className="mb-4 flex flex-wrap gap-2" role="tablist" aria-label="Playground mode">
+            {([
+              ['chat', 'Chat', Send],
+              ['image', 'Image', ImageIcon],
+              ['video', 'Video', Video],
+            ] as const).map(([value, label, Icon]) => (
+              <Button key={value} type="button" variant={mode === value ? 'default' : 'outline'} onClick={() => setMode(value)} role="tab" aria-selected={mode === value}>
+                <Icon /> {label}
+              </Button>
+            ))}
             </div>
+            <form onSubmit={send} className="grid gap-4">
+              <div className="flex flex-wrap gap-2">
+                <Select value={activeProvider?.name || ''} onValueChange={setProviderName}>
+                  <SelectTrigger className="w-52" aria-label="Provider"><SelectValue placeholder="Provider" /></SelectTrigger>
+                  <SelectContent>{availableProviders.map(p => <SelectItem key={p.name} value={p.name}>{p.label || p.name}</SelectItem>)}</SelectContent>
+                </Select>
+                <Select value={modelId} onValueChange={setModelId}>
+                  <SelectTrigger className="min-w-52 flex-1" aria-label="Model"><SelectValue placeholder="Model" /></SelectTrigger>
+                  <SelectContent>{models.map(m => <SelectItem key={m.id} value={m.id}>{m.name || m.id} · {prices[m.id] ? formatUsd(prices[m.id].output) : 'Price unavailable'}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
             <div className="grid gap-1.5">
               <Label htmlFor="prompt">Prompt</Label>
               <Textarea id="prompt" rows={4} value={prompt} onChange={e => setPrompt(e.target.value)} />

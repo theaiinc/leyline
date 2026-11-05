@@ -8,7 +8,7 @@ export type RuntimeConfig = {
 };
 
 /** What a provider serves: chat, embeddings, transcription (speech-to-text), speech (text-to-speech). */
-export type Capability = 'chat' | 'embeddings' | 'transcription' | 'speech';
+export type Capability = 'chat' | 'embeddings' | 'transcription' | 'speech' | 'image' | 'video';
 
 export type PersistenceMode = 'keychain' | 'localStorage' | 'memory' | 'arcana';
 export type ApiKeySource = PersistenceMode | 'arcana' | 'env' | 'none';
@@ -189,7 +189,7 @@ function normalizeRuntimeConfig(value: unknown): RuntimeConfig | undefined {
   };
 }
 
-const CAPABILITIES: Capability[] = ['chat', 'embeddings', 'transcription', 'speech'];
+const CAPABILITIES: Capability[] = ['chat', 'embeddings', 'transcription', 'speech', 'image', 'video'];
 
 /** Older servers don't say: every provider served chat only. */
 function normalizeCapabilities(value: unknown): Capability[] {
@@ -203,6 +203,8 @@ export const CAPABILITY_LABELS: Record<Capability, string> = {
   embeddings: 'Embeddings',
   transcription: 'Speech-to-text',
   speech: 'Text-to-speech',
+  image: 'Image generation',
+  video: 'Video generation',
 };
 
 function normalizePersistenceMode(value: unknown, defaultAvailable = false): { available: boolean; warning?: string; service?: string } {
