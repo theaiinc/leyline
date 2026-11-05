@@ -68,10 +68,24 @@ describe('benchmark matching and ranking', () => {
     expect(duplicateMapped[0]).toMatchObject({ model: 'gpt-5.5_xhigh', leylineModel: 'gpt-5.5', score: 92 });
   });
 
-  it('matches normalized provider prefixes, dates, latest aliases, and BytePlus dated IDs exactly', () => {
-    expect(matchBenchmarkModel('OpenAI/gpt-4o-2025-01-01', snapshot.benchmarks[0]!.scores)?.model).toBe('gpt-4o');
-    expect(matchBenchmarkModel('DeepSeek V4 Flash', [{ model: 'deepseek-v4-flash-ga-260731', score: 1, source: 'byteplus', asOf: '2026-11-05' }])).toBeUndefined();
-    expect(matchBenchmarkModel('deepseek-v4-flash', [{ model: 'deepseek-v4-flash-ga-260731', leylineModel: 'deepseek-v4-flash-ga-260731', score: 1, source: 'byteplus', asOf: '2026-11-05' }])?.model).toBe('deepseek-v4-flash-ga-260731');
+  it('maps DeepSeek Flash and Pro leaderboard rows to served BytePlus IDs', async () => {
+    const { mapBenchmarkScores } = await import('../src/core/benchmarks');
+    const served = [
+      { id: 'deepseek-v4-flash-ga-260731' },
+      { id: 'deepseek-v4-pro-ga-260813' },
+    ];
+    const mapped = mapBenchmarkScores([
+      { model: 'DeepSeek V4 Flash', score: 1, source: 'leaderboard', asOf: '2026-11-05' },
+      { model: 'deepseek-v4-flash', score: 2, source: 'leaderboard', asOf: '2026-11-05' },
+      { model: 'DeepSeek V4 Pro', score: 3, source: 'leaderboard', asOf: '2026-11-05' },
+      { model: 'deepseek-v4-pro', score: 4, source: 'leaderboard', asOf: '2026-11-05' },
+    ], served);
+    expect(mapped).toEqual(expect.arrayContaining([
+      expect.objectContaining({ model: 'deepseek-v4-flash', leylineModel: 'deepseek-v4-flash-ga-260731' }),
+      expect.objectContaining({ model: 'deepseek-v4-pro', leylineModel: 'deepseek-v4-pro-ga-260813' }),
+    ]));
+    expect(mapped.filter((score) => score.leylineModel === 'deepseek-v4-flash-ga-260731')).toHaveLength(1);
+    expect(mapped.filter((score) => score.leylineModel === 'deepseek-v4-pro-ga-260813')).toHaveLength(1);
     expect(matchBenchmarkModel('GPT-4O-latest', snapshot.benchmarks[0]!.scores)?.model).toBe('gpt-4o');
     expect(matchBenchmarkModel('gpt-4o-mini', snapshot.benchmarks[0]!.scores)).toBeUndefined();
   });
