@@ -53,7 +53,7 @@ export function BenchmarksPage({ base }: { base: string }) {
         return response.json() as Promise<Response>;
       })
       .then(value => { if (alive) { setData(value); setSelected(value.benchmarks[0]?.id ?? null); } })
-      .catch(reason => { if (alive) setError(reason instanceof Error ? reason.message : 'Unable to load benchmarks'); });
+      .catch(() => { if (alive) setData({ fetchedAt: null, benchmarks: [] }); });
     return () => { alive = false; };
   }, []);
 

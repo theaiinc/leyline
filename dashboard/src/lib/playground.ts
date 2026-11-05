@@ -1,4 +1,4 @@
-export type PlaygroundMode = 'chat' | 'speech' | 'transcription' | 'embeddings';
+export type PlaygroundMode = 'chat' | 'speech' | 'transcription' | 'embeddings' | 'image' | 'video';
 
 export type PlaygroundCapabilities = {
     chat?: boolean;
@@ -26,11 +26,13 @@ export function modesForModel(model: PlaygroundModel): PlaygroundMode[] {
     if (capabilities.speech) modes.push('speech');
     if (capabilities.transcription) modes.push('transcription');
     if (capabilities.embeddings) modes.push('embeddings');
+    if (capabilities.image) modes.push('image');
+    if (capabilities.video) modes.push('video');
     return modes;
   }
 
 export function modeLabel(mode: PlaygroundMode): string {
-    return ({ chat: 'Chat', speech: 'Speech', transcription: 'Transcription', embeddings: 'Embeddings' })[mode];
+    return ({ chat: 'Chat', speech: 'Speech', transcription: 'Transcription', embeddings: 'Embeddings', image: 'Image', video: 'Video' })[mode];
   }
 
 export function maskedCodeSnippets(mode: PlaygroundMode, model: string, input: string): { curl: string; python: string; javascript: string } {
@@ -56,6 +58,15 @@ export function maskedCodeSnippets(mode: PlaygroundMode, model: string, input: s
         curl: `curl https://llm.valefront.com/v1/embeddings -H "Authorization: Bearer $VALEFRONT_API_KEY" -H "Content-Type: application/json" -d '${body}'`,
         python: `from openai import OpenAI\nclient = OpenAI(api_key="$VALEFRONT_API_KEY", base_url="https://llm.valefront.com/v1")\nprint(client.embeddings.create(model="${model}", input="${escaped}").data[0].embedding[:8])`,
         javascript: `await fetch("https://llm.valefront.com/v1/embeddings", { method: "POST", headers: { Authorization: "Bearer $VALEFRONT_API_KEY", "Content-Type": "application/json" }, body: JSON.stringify(${body}) });`,
+      };
+    }
+    if (mode === 'image' || mode === 'video') {
+      const endpoint = mode === 'image' ? '/v1/images/generations' : '/v1/videos/generations';
+      const body = `{"model":"${model}","prompt":"${escaped}"}`;
+      return {
+        curl: `curl https://llm.valefront.com${endpoint} -H "Authorization: Bearer $VALEFRONT_API_KEY" -H "Content-Type: application/json" -d '${body}'`,
+        python: `import requests\nresponse = requests.post("https://llm.valefront.com${endpoint}", headers={"Authorization": "Bearer $VALEFRONT_API_KEY"}, json=${body})\nresponse.raise_for_status()\nprint(response.json())`,
+        javascript: `await fetch("https://llm.valefront.com${endpoint}", { method: "POST", headers: { Authorization: "Bearer $VALEFRONT_API_KEY", "Content-Type": "application/json" }, body: JSON.stringify(${body}) });`,
       };
     }
     const body = `{"model":"${model}","messages":[{"role":"user","content":"${escaped}"}]}`;

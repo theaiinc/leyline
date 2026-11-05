@@ -9,17 +9,34 @@ import { useMemo, useState } from 'react';
   import { apiUrl } from '@/api';
   import { costForTokens, formatUsd, type ModelPrice } from '@/lib/cost';
   import { formatRunCost, modeLabel, modesForModel, maskedCodeSnippets, type PlaygroundMode, type PlaygroundModel } from '@/lib/playground';
+import { mediaModels, parameterDefaults, mediaRunLabel, type MediaModel } from '@/lib/media-playground';
   import type { Dashboard } from '@/hooks/use-dashboard';
 
   type Run = { mode: PlaygroundMode; model: string; input: string; output: string; cost?: number; elapsed: number };
 
   export function ModelPlaygroundPage({ d }: { d: Dashboard }) {
-    const allModels = useMemo<PlaygroundModel[]>(() => d.stats.providers.flatMap(provider => provider.models.map(model => ({
-      id: model.id,
-      name: model.name,
-      provider: provider.name,
-      capabilities: (model as typeof model & { capabilities?: PlaygroundModel['capabilities'] }).capabilities,
-    }))), [d.stats.providers]);
+    const allModels = useMemo<PlaygroundModel[]>(() => d.stats.providers.flatMap(provider => provider.models.map(model => {
+      const capabilities = provider.capabilities.reduce<NonNullable<PlaygroundModel['capabilities']>>((result, capability) => {
+        result[capability] = true;
+        return result;
+      }, {});
+      const modelCapabilities = (model as typeof model & { capabilities?: PlaygroundModel['capabilities'] }).capabilities;
+      return { id: model.id, name: model.name, provider: provider.name, capabilities: { ...capabilities, ...modelCapabilities } };
+    })), [d.stats.providers]);
+    const mediaCatalog = useMemo<MediaModel[]>(() => d.stats.providers.flatMap(provider => provider.models.flatMap(model => {
+      const capabilities = provider.capabilities;
+      const id = `${model.id} ${model.name}`.toLowerCase();
+      const kind = capabilities.includes('speech') || capabilities.includes('transcription') || /\b(tts|stt|speech|transcri)/i.test(id) ? 'audio' : /image|diffusion|flux|qwen-image|gpt-image/i.test(id) ? 'image' : /video|veo|kling|seedance|sora|wan2/i.test(id) ? 'video' : null;
+      if (!kind) return [];
+      // The current API exposes speech, transcription, and embeddings routes. Image/video
+      // generation is intentionally surfaced as unavailable until those routes exist.
+      const capability = kind === 'audio'
+        ? (capabilities.includes('speech') || capabilities.includes('transcription'))
+        : kind === 'image' || kind === 'video'
+          ? false
+          : capabilities.includes(kind);
+      return [{ id: model.id, name: model.name, provider: provider.name, kind, served: capability, comingSoon: !capability, parameters: parameterDefaults(kind), price: undefined }];
+    })), [d.stats.providers]);
     const [query, setQuery] = useState('');
     const [selected, setSelected] = useState<PlaygroundModel | undefined>(allModels[0]);
     const [mode, setMode] = useState<PlaygroundMode>('chat');
@@ -31,6 +48,7 @@ import { useMemo, useState } from 'react';
     const [prices, setPrices] = useState<Record<string, ModelPrice>>({});
     const [history, setHistory] = useState<Run[]>([]);
     const filtered = allModels.filter(model => `${model.name} ${model.id} ${model.provider}`.toLowerCase().includes(query.toLowerCase()));
+    const mediaFiltered = mediaModels(mediaCatalog, query);
     const availableModes = selected ? modesForModel(selected) : [];
     const price = selected ? prices[selected.id] : undefined;
     const estimatedTokens = Math.ceil(input.length / 4);
@@ -83,20 +101,30 @@ import { useMemo, useState } from 'react';
             <CardHeader><CardTitle>Model and input</CardTitle><CardDescription>Only capabilities reported by the model are offered.</CardDescription></CardHeader>
             <CardContent className="grid gap-4">
               <div className="relative"><Search className="absolute left-3 top-3 size-4 text-muted-foreground" /><Input className="pl-9" placeholder="Search served models" value={query} onChange={event => setQuery(event.target.value)} /></div>
-              <div className="max-h-44 overflow-auto rounded border">{filtered.map(model => <button type="button" key={`${model.provider}:${model.id}`} className={`block w-full px-3 py-2 text-left text-sm ${selected?.id === model.id ? 'bg-accent' : ''}`} onClick={() => { setSelected(model); setMode(modesForModel(model)[0] || 'chat'); }}>{model.name || model.id}<span className="ml-2 text-muted-foreground">{model.provider}</span></button>)}</div>
+              <div className="max-h-56 overflow-auto rounded border">
+                <div className="border-b px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Chat and tools</div>
+                {filtered.map(model => <button type="button" key={`${model.provider}:${model.id}`} className={`block w-full px-3 py-2 text-left text-sm ${selected?.id === model.id ? 'bg-accent' : ''}`} onClick={() => { setSelected(model); setMode(modesForModel(model)[0] || 'chat'); }}>{model.name || model.id}<span className="ml-2 text-muted-foreground">{model.provider}</span></button>)}
+                <div className="border-y px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Media</div>
+                {mediaFiltered.map(model => <button type="button" key={`media:${model.provider}:${model.id}`} disabled={!model.served} className={`block w-full px-3 py-2 text-left text-sm ${!model.served ? 'cursor-not-allowed opacity-50' : 'hover:bg-accent'}`} onClick={() => { if (model.served) { setSelected({ id: model.id, name: model.name, provider: model.provider, capabilities: { [model.kind === 'audio' ? 'speech' : model.kind]: true } }); setMode(model.kind === 'audio' ? 'speech' : model.kind); } }}>{model.name || model.id}<span className="ml-2 text-muted-foreground">{model.provider} · {model.served ? 'available' : 'Coming soon'}</span></button>)}
+              </div>
               {selected ? <div className="flex flex-wrap gap-2">{availableModes.map(item => <Button key={item} type="button" variant={mode === item ? 'default' : 'outline'} size="sm" onClick={() => setMode(item)}>{modeLabel(item)}</Button>)}</div> : null}
-              <div className="grid gap-2"><Label htmlFor="model-input">{mode === 'transcription' ? 'Audio file' : mode === 'speech' ? 'Text to speak' : mode === 'embeddings' ? 'Text to embed' : 'Prompt'}</Label>{mode === 'transcription' ? <Input id="model-input" type="file" accept="audio/*" /> : <Textarea id="model-input" rows={7} value={input} onChange={event => setInput(event.target.value)} />}</div>
-              <Button onClick={() => void run()} disabled={status === 'Running' || !selected}><Play />{status === 'Running' ? 'Running…' : `Run ${estimate === undefined ? '' : formatUsd(estimate)}`}</Button>
-              <p className="text-xs text-muted-foreground">Estimated from the current input; the API remains the source of the charged cost.</p>
+              {mode === 'transcription' ? <div className="grid gap-2"><Label htmlFor="model-input">Audio file or recording *</Label><Input id="model-input" type="file" accept="audio/*" /><p className="text-xs text-muted-foreground">Upload an audio file. The file is sent as multipart data and is never placed in a URL.</p></div> : <div className="grid gap-4">{Object.entries(selected?.parameters ?? {}).map(([name, schema]) => <div className="grid gap-2" key={name}><Label htmlFor={`parameter-${name}`}>{schema.title ?? name}{schema.required ? ' *' : ''}</Label>{schema.enum?.length ? <div className="flex flex-wrap gap-2">{schema.enum.map(option => <Button key={option} type="button" size="sm" variant={String((name === 'input' || name === 'prompt') ? input : '') === option ? 'default' : 'outline'} onClick={() => { if (name === 'input' || name === 'prompt') setInput(option); }}>{option}</Button>)}</div> : schema.type === 'number' ? <Input id={`parameter-${name}`} type="number" min={schema.minimum} max={schema.maximum} defaultValue={schema.default as number | undefined} onChange={event => { if (name === 'input' || name === 'prompt') setInput(event.target.value); }} /> : schema.type === 'file' ? <Input id={`parameter-${name}`} type="file" accept="image/*,video/*,audio/*" /> : <Textarea id={`parameter-${name}`} rows={name === 'input' || name === 'prompt' ? 6 : 2} value={name === 'input' || name === 'prompt' ? input : String(schema.default ?? '')} onChange={event => { if (name === 'input' || name === 'prompt') setInput(event.target.value); }} placeholder={schema.description} />}</div>)}</div>}
+              {(mode === 'speech' || mode === 'image' || mode === 'video') ? <p className="text-xs text-muted-foreground">Fields come from this model's provider schema. Image and video generation remain disabled until a compatible API route is available.</p> : null}
+              <Button onClick={() => void run()} disabled={status === 'Running' || !selected || mode === 'image' || mode === 'video' || estimate === undefined}><Play />{status === 'Running' ? 'Running…' : mode === 'image' || mode === 'video' ? 'Coming soon' : estimate === undefined ? 'Run · no price set' : `Run ${formatUsd(estimate)}`}</Button>
+              <p className="text-xs text-muted-foreground">The estimate uses published pricing only; unpriced models cannot be run from this page.</p>
               {selected && price ? <p className="text-xs text-muted-foreground">Published price: ${price.input}/1M input · ${price.output}/1M output</p> : <p className="text-xs text-muted-foreground">Price not published</p>}
             </CardContent>
           </Card>
           <Card>
+            <CardHeader><CardTitle>Use it in code</CardTitle><CardDescription>Equivalent API request for the selected model and current inputs.</CardDescription></CardHeader>
+            <CardContent><pre className="overflow-auto rounded-lg border bg-muted/40 p-3 text-xs">{selected ? mediaCurl(mode === 'chat' ? 'speech' : mode, selected.id, { input }) : 'Choose a model to see the request.'}</pre></CardContent>
+          </Card>
+          <Card>
             <CardHeader><CardTitle>Output</CardTitle><CardDescription><span className="mr-2 rounded-full border px-2 py-0.5 text-xs">{status}</span>{elapsed ? `${elapsed}ms` : 'Ready'}</CardDescription></CardHeader>
             <CardContent className="grid gap-4">
-              {output ? <pre className="min-h-40 whitespace-pre-wrap rounded-lg border bg-muted/40 p-4 text-sm">{output}</pre> : <div className="grid min-h-40 place-items-center rounded-lg border border-dashed text-sm text-muted-foreground">Run the selected model to see its output.</div>}
+              {output ? mode === 'speech' && output.startsWith('blob:') ? <audio className="w-full" controls src={output} /> : mode === 'image' && output.startsWith('http') ? <img className="max-h-96 w-full rounded-lg object-contain" src={output} alt="Generated result" /> : mode === 'video' && output.startsWith('http') ? <video className="max-h-96 w-full" controls src={output} /> : <pre className="min-h-40 whitespace-pre-wrap rounded-lg border bg-muted/40 p-4 text-sm">{output}</pre> : <div className="grid min-h-40 place-items-center rounded-lg border border-dashed text-sm text-muted-foreground">Run the selected model to see its output.</div>}
               {cost !== undefined ? <p className="text-sm">Cost: {formatUsd(cost)} · Runtime: {elapsed}ms</p> : null}
-              {snippets ? <details><summary className="flex cursor-pointer items-center gap-2 text-sm font-medium"><Code2 className="size-4" />Use it in code</summary><div className="mt-3 grid gap-3 text-xs"><pre className="overflow-auto rounded border p-3">{snippets.curl}</pre><pre className="overflow-auto rounded border p-3">{snippets.python}</pre><pre className="overflow-auto rounded border p-3">{snippets.javascript}</pre><Button type="button" variant="outline" onClick={() => void navigator.clipboard?.writeText(snippets.curl)}><Copy />Copy curl</Button></div></details> : null}
+              {snippets ? <details open><summary className="flex cursor-pointer items-center gap-2 text-sm font-medium"><Code2 className="size-4" />API request · Use it in code</summary><div className="mt-3 grid gap-3 text-xs"><pre className="overflow-auto rounded border p-3">{snippets.curl}</pre><pre className="overflow-auto rounded border p-3">{snippets.python}</pre><pre className="overflow-auto rounded border p-3">{snippets.javascript}</pre><Button type="button" variant="outline" onClick={() => void navigator.clipboard?.writeText(snippets.curl)}><Copy />Copy curl</Button></div></details> : <p className="text-sm text-muted-foreground">Choose a model to see the equivalent API request.</p>}
             </CardContent>
           </Card>
         </div>
