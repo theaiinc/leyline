@@ -23,16 +23,18 @@ export function accessConfigFromEnv(env: Record<string, string | undefined>): Ac
 }
 
 type Jwk = { kid?: string; kty?: string; [k: string]: unknown };
-const certs = new Map<string, { keys: Jwk[]; at: number }>();
+/** Access's signing keys, per configuration, for an hour (refetched at once for an unknown key id). */
+const certs = new WeakMap<AccessConfig, { keys: Jwk[]; at: number }>();
 
 async function keysFor(cfg: AccessConfig, refresh: boolean): Promise<Jwk[]> {
-  const cached = certs.get(cfg.teamDomain);
-  if (cached && !refresh && Date.now() - cached.at < 3_600_000) return cached.keys;
+  const cached = certs.get(cfg);
+  // An unknown key id refetches, but at most once a minute (made-up key ids can't make us fetch on every request).
+  if (cached && (refresh ? Date.now() - cached.at < 60_000 : Date.now() - cached.at < 3_600_000)) return cached.keys;
   const fetchImpl = cfg.fetchImpl ?? ((input, init) => fetch(input, init));
   const res = await fetchImpl(`${cfg.teamDomain}/cdn-cgi/access/certs`);
   if (!res.ok) throw new Error(`Access certs ${res.status}`);
   const keys = ((await res.json()) as { keys?: Jwk[] }).keys ?? [];
-  certs.set(cfg.teamDomain, { keys, at: Date.now() });
+  certs.set(cfg, { keys, at: Date.now() });
   return keys;
 }
 
