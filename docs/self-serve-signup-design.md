@@ -1,5 +1,10 @@
 # Valefront Self-Serve Signup Design
 
+> **Status:** implemented with prepaid billing (README, "Self-serve sign-up and billing"). Differences from this design:
+> the free grant is stored in D1 (`free_grants`) rather than behind a separate FreeGrantService; the first API key is
+> made in the same step as the workspace (one Turnstile check); a second account with an already-used email gets a
+> workspace without free tokens instead of a refusal; per-key concurrency and the anomaly auto-pause are not built yet.
+
 ## Goals
 
 Any person who authenticates through Aegis using the `leyline-dashboard` client can create and use an isolated Valefront workspace without an access-request step. Each workspace owns its keys, usage, billing state, history, grants, limits, and suspension state. Administrative capabilities remain restricted to `adminEmails` and the administrator surface is hosted separately behind Cloudflare Access at `adm.valefront.com`.

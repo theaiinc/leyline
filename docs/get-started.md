@@ -1,71 +1,48 @@
-# Get started
+# Get started with Valefront
 
-> This page documents the self-serve foundation currently implemented in this branch. Workspace persistence, key issuance, email verification, Turnstile verification, billing, and production free-grant fulfillment are not yet enabled here; do not use this branch as a production signup flow. with Valefront
+## Sign up
 
-## Sign in and create your workspace
+1. Open `https://dash.valefront.com` and sign in (Aegis).
+2. If your email isn't verified yet, verify it from the sign-in email, then sign in again.
+3. Accept the Terms, pass the security check, and select **Create workspace and API key**.
+4. Copy your API key: it is shown once. You can make more under **API keys** (each needs the security check again).
 
-1. Open `https://dash.valefront.com`.
-2. Sign in with Aegis using the `leyline-dashboard` client.
-3. Accept the current Terms.
-4. Verify your email address. Valefront will not issue an API key until the email is verified.
-5. Complete the Cloudflare Turnstile check.
-6. Create your first API key. The complete key is shown once; store it securely.
+New accounts get **1,000,000 free tokens for 30 days** on the free-tier models listed on the Get started page and in `https://llm.valefront.com/v1/pricing` (`free_tier`), up to 50,000 a day. Free tokens are given once per email address and sign-in account.
 
-Each Aegis account receives an isolated workspace. Keys, usage, billing, history, grants, and suspension state are scoped to that workspace.
+## Make a request
 
-Disposable email domains and duplicate free-grant claims are rejected. Workspace creation is also rate-limited by source IP.
-
-## Free tier
-
-The initial free grant is 1,000,000 tokens and expires after 30 days. Free keys can use only the eligible free-tier models and are subject to request-per-minute, concurrency, and daily-token limits. Paid models require paid credit.
-
-When the global free-tier daily budget is exhausted, requests return HTTP 429 with an explicit free-budget error.
-
-## OpenAI-compatible request
-
-Replace `$VALEFRONT_API_KEY` with the key shown during onboarding:
+OpenAI format (replace the model with one from `/v1/pricing`, or use `auto`):
 
 ```sh
-export VALEFRONT_API_KEY='...'
+export VALEFRONT_API_KEY='ll_...'
 
 curl https://llm.valefront.com/v1/chat/completions \
   -H "Authorization: Bearer $VALEFRONT_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4o-mini",
-    "messages": [{"role": "user", "content": "Say hello from Valefront."}]
-  }'
+  -d '{"model": "seed-2-0-lite-260428", "messages": [{"role": "user", "content": "Say hello from Valefront."}]}'
 ```
 
-## Anthropic-compatible request
+Anthropic format:
 
 ```sh
 curl https://llm.valefront.com/v1/messages \
   -H "x-api-key: $VALEFRONT_API_KEY" \
   -H "anthropic-version: 2023-06-01" \
   -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-3-5-haiku",
-    "max_tokens": 128,
-    "messages": [{"role": "user", "content": "Say hello from Valefront."}]
-  }'
+  -d '{"model": "seed-2-0-lite-260428", "max_tokens": 128, "messages": [{"role": "user", "content": "Say hello from Valefront."}]}'
 ```
 
-## Security and suspension
+## Pay as you go
 
-Never commit an API key. A suspended workspace or key returns HTTP 403. Sudden request spikes can automatically pause a key for administrator review.
+Each request costs the model's official price per token. Free tokens are used first on free-tier models; everything else comes from your prepaid balance.
 
-For billing, Add-credit, and every subsequent API-key creation, Valefront requires another successful Turnstile check.
+- **Add credit** on the Billing page (`https://dash.valefront.com/billing`): at least $10, by PayPal (PayPal balance or card) or by bank transfer in USD. Fill in your billing details first: your country sets the VAT (0% outside Vietnam, 10% in Vietnam).
+- PayPal adds the credit as soon as the payment completes. A bank transfer is credited when it arrives (usually 1–3 business days): send exactly the amount shown, with the reference.
+- Every payment gets a receipt by email, and on the Billing page (view, print, PDF).
+- In Vietnam you can ask for a VAT invoice (hóa đơn GTGT) when adding credit: enter the company name, tax code (MST), address and the email to send it to. It is issued as an e-invoice through Viettel S-Invoice and emailed to you; until then the Billing page says "Your VAT invoice is being issued".
 
-## Support and administration
+With no credit and no free tokens left, requests return HTTP `402` with the code `insufficient_credit`. Some limits answer `429`: 60 requests a minute per key, the daily free-token limit, and the free tier's daily capacity. A model without a published price returns `403 model_not_priced`.
 
-Administrative controls remain restricted to configured `adminEmails` and are intended for `https://adm.valefront.com` behind Cloudflare Access. The administrator surface handles suspensions, anomaly review, the global free-tier budget, and audit events.
+## Your data
 
-## Deployment configuration
-
-The Turnstile widget must allow these hostnames:
-
-- `dash.valefront.com`
-- `valefront.com`
-
-The public site key may be dashboard configuration. The Siteverify secret must be stored as the Worker secret `TURNSTILE_SECRET`; it must never be committed or sent to the browser.
+Under **Your data** you can download everything Valefront keeps about your account (JSON), or delete your account. Deleting revokes your keys at once and deletes your workspace and usage; receipts, VAT invoices, payments and the credit ledger are kept for 10 years, as accounting law requires. Questions: privacy@valefront.com.
