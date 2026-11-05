@@ -86,7 +86,7 @@ export interface ModelDetail {
 // ── Capabilities beyond chat (embeddings, speech-to-text, text-to-speech) ──
 
 /** What a provider serves. Providers that don't say serve chat only. */
-export type Capability = 'chat' | 'vision' | 'audio' | 'embeddings' | 'transcription' | 'speech';
+export type Capability = 'chat' | 'vision' | 'audio' | 'embeddings' | 'transcription' | 'speech' | 'image' | 'video';
 
 export interface EmbeddingRequest {
   model: string;
@@ -148,6 +148,36 @@ export interface SpeechResult {
   contentType: string;
 }
 
+export interface ImageGenerationRequest {
+  model: string;
+  prompt: string;
+  size?: string;
+  n?: number;
+  response_format?: string;
+  [key: string]: unknown;
+}
+
+export interface ImageGenerationResult {
+  data: Array<{ url?: string; b64_json?: string; revised_prompt?: string }>;
+  model: string;
+}
+
+export interface VideoGenerationRequest {
+  model: string;
+  prompt: string;
+  duration?: number;
+  size?: string;
+  [key: string]: unknown;
+}
+
+export interface VideoGenerationResult {
+  id: string;
+  status: string;
+  url?: string;
+  error?: string;
+  model: string;
+}
+
 export interface Provider {
   name: string;
   /** Provider family shared across instances, e.g. 'AzureOpenAI'. Unset for single-instance providers. */
@@ -170,6 +200,8 @@ export interface Provider {
   embed?(request: EmbeddingRequest): Promise<EmbeddingResult>;
   transcribe?(request: TranscriptionRequest): Promise<TranscriptionResult>;
   speak?(request: SpeechRequest): Promise<SpeechResult>;
+  generateImage?(request: ImageGenerationRequest): Promise<ImageGenerationResult>;
+  generateVideo?(request: VideoGenerationRequest): Promise<VideoGenerationResult>;
   /**
    * Whether it can take this request's non-text content (images, audio, files) for `request.model`. Unset: it
    * passes content parts through to an OpenAI-compatible upstream, which decides. Providers that would drop the

@@ -1205,6 +1205,8 @@ export const CAPABILITY_PREFERENCE: Record<Exclude<Capability, 'chat'>, string[]
   embeddings: ['OpenAI', 'AzureOpenAI', 'WorkersAI', 'Gemini', 'OpenRouter'],
   transcription: ['OpenAI', 'Deepgram', 'WorkersAI'],
   speech: ['OpenAI', 'WorkersAI'],
+  image: ['WaveSpeed', 'BytePlus'],
+  video: ['WaveSpeed', 'BytePlus'],
 };
 
 function normalizeProviderName(provider: string): string {
