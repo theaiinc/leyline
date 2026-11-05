@@ -38,15 +38,20 @@ const share = (part: number, total: number) => {
 
 export function SpendingPage() {
   const [month, setMonth] = useState<string | null>(null);
-  const [keyId, setKeyId] = useState<string | null>(() => new URLSearchParams(window.location.hash.split('?')[1] ?? '').get('key'));
+  const readKeyId = () => new URLSearchParams(window.location.search).get('key') ?? new URLSearchParams(window.location.hash.split('?')[1] ?? '').get('key');
+  const [keyId, setKeyId] = useState<string | null>(readKeyId);
   const [data, setData] = useState<SpendResponse | null>(null);
   const [keys, setKeys] = useState<IssuedKey[]>([]);
   const [alertLog, setAlertLog] = useState<Alert[]>([]);
 
   useEffect(() => {
-    const onHashChange = () => setKeyId(new URLSearchParams(window.location.hash.split('?')[1] ?? '').get('key'));
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
+    const onRouteChange = () => setKeyId(readKeyId());
+    window.addEventListener('hashchange', onRouteChange);
+    window.addEventListener('popstate', onRouteChange);
+    return () => {
+      window.removeEventListener('hashchange', onRouteChange);
+      window.removeEventListener('popstate', onRouteChange);
+    };
   }, []);
   useEffect(() => {
     const query = new URLSearchParams();
@@ -57,7 +62,14 @@ export function SpendingPage() {
       .catch(error => toast.error(error instanceof Error ? error.message : 'Could not load spending'));
   }, [month, keyId]);
   const selectedKey = keyId ? keys.find(k => k.id === keyId) : undefined;
-  const clearKey = () => { window.location.hash = '#/spending'; };
+  const clearKey = () => {
+    if (window.location.search) {
+      window.history.pushState({}, '', `${window.location.pathname}#/spending`);
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    } else {
+      window.location.hash = '#/spending';
+    }
+  };
   useEffect(() => {
     api<{ keys: IssuedKey[] }>('/admin/api/keys').then(r => setKeys(r.keys)).catch(() => undefined);
   }, []);

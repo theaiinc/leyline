@@ -135,7 +135,15 @@ export function KeysPage({ d }: { d: Dashboard }) {
                           type="button"
                           className="text-left font-medium hover:underline"
                           aria-label={`View spending for ${k.name}`}
-                          onClick={() => { window.location.hash = `#/spending?key=${encodeURIComponent(k.id)}`; }}
+                          onClick={() => {
+                            const target = `/spending?key=${encodeURIComponent(k.id)}`;
+                            if (window.location.pathname.startsWith('/spending')) {
+                              window.history.pushState({}, '', target);
+                              window.dispatchEvent(new PopStateEvent('popstate'));
+                            } else {
+                              window.location.hash = `#/spending?key=${encodeURIComponent(k.id)}`;
+                            }
+                          }}
                         >
                           {k.name}
                         </button>
