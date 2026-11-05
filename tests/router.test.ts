@@ -91,26 +91,26 @@ describe('Router', () => {
     });
 
     it('should route to first available provider', async () => {
-        const response = await router.route({ model: 'test', messages: [] });
+        const response = await router.route({ model: 'model-a', messages: [] });
         expect(response.choices[0].message.content).toContain('p1');
     });
 
     it('should failover to second provider if first fails availability check', async () => {
         p1.shouldFail = true;
-        const response = await router.route({ model: 'test', messages: [] });
+        const response = await router.route({ model: 'model-a', messages: [] });
         expect(response.choices[0].message.content).toContain('p2');
     });
 
     it('should failover to second provider if first throws error', async () => {
         p1.shouldThrow = true;
-        const response = await router.route({ model: 'test', messages: [] });
+        const response = await router.route({ model: 'model-a', messages: [] });
         expect(response.choices[0].message.content).toContain('p2');
     });
 
     it('should throw if all providers fail', async () => {
         p1.shouldFail = true;
         p2.shouldFail = true;
-        await expect(router.route({ model: 'test', messages: [] }))
+        await expect(router.route({ model: 'model-a', messages: [] }))
             .rejects.toThrow('All providers failed or are rate-limited');
     });
 
@@ -174,7 +174,7 @@ describe('Router', () => {
             }
         });
 
-        const stream = router.routeStream({ model: 'test', messages: [] });
+        const stream = router.routeStream({ model: 'model-a', messages: [] });
         const chunks = [];
         for await (const chunk of stream) {
             chunks.push(chunk.choices[0].delta.content);

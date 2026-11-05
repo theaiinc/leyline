@@ -129,10 +129,10 @@ describe('Router model pool', () => {
         expect(response.choices[0].message.content).toContain('Beta');
     });
 
-    it('falls back to priority order for unknown explicit models', async () => {
-        const response = await router.route({ model: 'mystery-model', messages: [] });
+    it('routes an explicit listed model to its provider even outside the auto pool', async () => {
+        const response = await router.route({ model: 'alpha-small', messages: [] });
         expect(response.choices[0].message.content).toContain('Alpha');
-        expect(alpha.lastRequest?.model).toBe('mystery-model');
+        expect(alpha.lastRequest?.model).toBe('alpha-small');
     });
 
     it('routes explicit streamed requests to the matching provider', async () => {
