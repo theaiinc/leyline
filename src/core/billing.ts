@@ -10,7 +10,8 @@ import { randomBytes } from 'crypto';
  *   A buyer in Vietnam who asks for one also gets a Vietnamese VAT e-invoice through Viettel S-Invoice
  *   (einvoice-viettel.ts), queued until S-Invoice is configured and retried until it's issued.
  * - Payment methods: WorldFirst bank transfer (manual: an admin marks the order paid), PayPal (Orders API v2,
- *   paypal.ts). SePay (VND bank QR) is not offered yet: it is a PaymentGateway to add later.
+ *   paypal.ts), SePay (a VietQR bank transfer in VND for the order's exact quoted amount, sepay.ts: SePay tells us
+ *   by webhook, or we find it by polling, and the order credits itself).
  */
 
 export type PaymentMethod = 'worldfirst' | 'paypal' | 'sepay';
@@ -92,6 +93,10 @@ export type BillingOrder = {
   einvoiceRequest?: VatInvoiceDetails | null;
   /** The WorldFirst account shown with a bank-transfer order (as it was when the order was made). */
   account?: BillingAccount | null;
+  /** SePay orders: the VND amount the customer was asked to pay, at which rate, until when (sepay.ts). */
+  quote?: VndQuote | null;
+  /** What an admin should know about how it was paid (underpaid by, overpaid: refund, paid late...). */
+  paymentNote?: string | null;
   providerOrderId?: string | null;
   providerCaptureId?: string | null;
   createdAt: number;
@@ -107,6 +112,32 @@ export type LedgerEntry = {
   description: string;
   orderId?: string | null;
   createdAt: number;
+};
+
+/** The Vietnamese bank account a SePay order is paid into (VietQR). */
+export type VndBankAccount = {
+  accountNumber: string;
+  /** VietQR bank id: BIN (970436) or short code (VCB), as qr.sepay.vn takes it. */
+  bankId: string;
+  bankName: string;
+  accountName: string;
+};
+
+/**
+ * A SePay order's price in VND: totalCents at the day's rate (the one /v1/pricing publishes), rounded up to a whole
+ * dong, and the transfer content (the order reference without symbols: Vietnamese banks strip them).
+ */
+export type VndQuote = {
+  currency: 'VND';
+  vndAmount: number;
+  vndPerUsd: number;
+  rateDate: string;
+  rateSource: string;
+  quotedAt: number;
+  expiresAt: number;
+  transferContent: string;
+  bank: VndBankAccount;
+  qrUrl: string;
 };
 
 /** A receipt: one per payment (VF-RCT-2026-000001), emailed as a PDF. */
@@ -187,8 +218,8 @@ export type EInvoice = {
 };
 
 /**
- * A way to pay. WorldFirst needs no gateway (manual), PayPal is paypal.ts. A SePay gateway (VND bank QR, not for
- * launch) plugs in here: createCheckout returns its QR/redirect, and its webhook calls BillingService.markPaid.
+ * A redirect checkout (PayPal, paypal.ts). WorldFirst needs no gateway (manual); SePay (sepay.ts) is a bank QR, not
+ * a redirect: its quote is made with the order and its payments arrive by webhook or polling.
  */
 export interface PaymentGateway {
   readonly method: PaymentMethod;

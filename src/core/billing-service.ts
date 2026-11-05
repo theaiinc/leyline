@@ -22,6 +22,7 @@ import {
   type Receipt,
   type VatInvoiceDetails,
   type VatSettings,
+  type VndQuote,
 } from './billing';
 import { MICROS_PER_CENT, type D1BillingStore, type WorkspaceRecord } from './billing-store';
 import { receiptPdf, type DocumentFonts } from './billing-documents';
@@ -30,6 +31,8 @@ import { getMode, type ProviderMode } from './provider-modes';
 import { INVOICE_LOOKUP_URL } from './einvoice-viettel';
 import type { FreeTierConfig } from './self-serve-workspaces';
 import { PII_ADDON_ID, PII_ADDON_NAME, piiFeeMicros, piiPricePerMTokens } from './addons';
+import { vndRate as publishedVndRate, type VndRate } from './fx';
+import { SePayError, referencesIn, transactionFromWebhook, transferContentFor, type SePayClient, type SePayTransaction } from './sepay';
 
 /** One email with attachments, as the Worker's Email Sending binding takes it. */
 export type BillingEmail = {
@@ -58,6 +61,10 @@ export type BillingServiceOptions = {
   free: FreeTierConfig;
   /** Viettel S-Invoice for a mode; null until that mode is configured (requested VAT invoices wait as "pending"). */
   einvoice?: (mode: ProviderMode) => EInvoiceProvider | null;
+  /** SePay (VND bank QR, sepay.ts); unset or null: not offered. Live only: SePay has no sandbox for bank accounts. */
+  sepay?: SePayClient | null;
+  /** The day's VND rate: the one /v1/pricing publishes (fx.ts), unless a test gives another. */
+  vndRate?: () => Promise<VndRate | null>;
   /** Hook for the Bookkeeper service, which will later take over rendering and sharing receipts. */
   onReceiptIssued?: (receipt: Receipt) => Promise<void>;
   now?: () => number;
@@ -69,6 +76,20 @@ export const SETTINGS = { account: 'worldfirst_account', legal: 'legal', vat: 'v
 export type ExchangeRateSetting = { vndPerUsd: number; date: string };
 
 export type Admission = { mode: 'free' | 'paid' } | { refusal: { status: number; code: string; message: string } };
+
+/** A SePay quote is good for this long; after that the customer gets a new one (the rate moves daily). */
+export const SEPAY_QUOTE_MS = 30 * 60_000;
+/** "Check now" asks SePay at most this often per workspace. */
+export const SEPAY_CHECK_INTERVAL_MS = 15_000;
+/** Polling looks at pending SePay orders made this recently. */
+export const SEPAY_POLL_WINDOW_MS = 3 * 86_400_000;
+
+export type SepayMethod = { enabled: boolean; vndPerUsd: number | null; rateDate: string | null; bankName: string | null; quoteMinutes: number };
+
+/** What happened with one SePay transaction. */
+export type SepayOutcome = { outcome: string; orderId?: string | null; credited?: boolean; duplicate?: boolean };
+
+const vnd = (n: number) => `${n.toLocaleString('en-US')} VND`;
 
 export const ADD_CREDIT_URL = 'https://dash.valefront.com/billing';
 
@@ -121,10 +142,47 @@ export class BillingService {
    * The ways this workspace can pay. PayPal in sandbox mode is only for the owner's workspaces: anyone can make a
    * PayPal sandbox account, and sandbox payments add (test) credit.
    */
-  async methods(ws?: WorkspaceRecord): Promise<{ worldfirst: boolean; paypal: { enabled: boolean; env: ProviderMode | null }; sepay: false }> {
+  async methods(ws?: WorkspaceRecord): Promise<{ worldfirst: boolean; paypal: { enabled: boolean; env: ProviderMode | null }; sepay: SepayMethod }> {
     const { mode, client } = await this.paypalNow();
     const allowed = Boolean(client) && (mode === 'live' || (ws ? Boolean(this.opts.isAdminWorkspace?.(ws)) : true));
-    return { worldfirst: Boolean(await this.account()), paypal: { enabled: allowed, env: client ? mode : null }, sepay: false };
+    return { worldfirst: Boolean(await this.account()), paypal: { enabled: allowed, env: client ? mode : null }, sepay: await this.sepayMethod() };
+  }
+
+  /** SePay is offered when its account is known, payments can be confirmed (webhook key or API token), and there's a rate. */
+  async sepayMethod(): Promise<SepayMethod> {
+    const off: SepayMethod = { enabled: false, vndPerUsd: null, rateDate: null, bankName: null, quoteMinutes: SEPAY_QUOTE_MS / 60_000 };
+    const sepay = this.opts.sepay;
+    if (!sepay?.canConfirm) return off;
+    const account = await sepay.account();
+    if (!account) return off;
+    const rate = await this.rate();
+    if (!rate) return { ...off, bankName: account.bankName };
+    return { enabled: true, vndPerUsd: rate.vnd_per_usd, rateDate: rate.date, bankName: account.bankName, quoteMinutes: SEPAY_QUOTE_MS / 60_000 };
+  }
+
+  private async rate(): Promise<VndRate | null> {
+    const r = await (this.opts.vndRate ?? publishedVndRate)().catch(() => null);
+    return r && Number.isInteger(r.vnd_per_usd) && r.vnd_per_usd > 1000 && r.vnd_per_usd < 1_000_000 ? r : null;
+  }
+
+  /**
+   * A VND quote for an order's total: ceil(totalCents / 100 x vnd_per_usd), in whole dong (integer arithmetic, so it
+   * is exact), valid for SEPAY_QUOTE_MS.
+   */
+  private async sepayQuote(totalCents: number, reference: string): Promise<VndQuote> {
+    const sepay = this.opts.sepay;
+    const account = sepay?.canConfirm ? await sepay.account() : null;
+    if (!sepay || !account) throw new BillingError('method_unavailable', 'Vietnamese bank transfer is not available right now.', 409);
+    const rate = await this.rate();
+    if (!rate) throw new BillingError('method_unavailable', "Vietnamese bank transfer is not available right now (no exchange rate); try again shortly.", 409);
+    const vndAmount = Math.ceil((totalCents * rate.vnd_per_usd) / 100);
+    if (!Number.isSafeInteger(vndAmount) || vndAmount <= 0) throw new BillingError('quote_failed', 'Could not price this order in VND.', 500);
+    const transferContent = transferContentFor(reference);
+    const quotedAt = this.now();
+    return {
+      currency: 'VND', vndAmount, vndPerUsd: rate.vnd_per_usd, rateDate: rate.date, rateSource: rate.source, quotedAt, expiresAt: quotedAt + SEPAY_QUOTE_MS,
+      transferContent, bank: account, qrUrl: sepay.qrUrl(account, vndAmount, transferContent),
+    };
   }
 
   // ── orders ────────────────────────────────────────────────────────────────────────────────────────────
@@ -172,10 +230,16 @@ export class BillingService {
       const paypal = await this.paypalNow();
       if (!paypal.client || (paypal.mode === 'sandbox' && !this.opts.isAdminWorkspace?.(ws))) throw new BillingError('method_unavailable', 'PayPal is not available right now.', 409);
       mode = paypal.mode;
+    } else if (input.method === 'sepay') {
+      // A replayed click returns its order (and quote) as it was; a new one is quoted below.
+      const replay = await this.store.orderByIdempotencyKey(ws.id, input.idempotencyKey);
+      if (replay) return { order: replay };
     } else {
       throw new BillingError('method_unavailable', `${METHOD_LABELS[input.method] ?? 'This method'} is not available yet.`, 409);
     }
     const { vatRateBp, vatCents, totalCents } = vatFor(input.amountCents, buyer.country, await this.vat());
+    const reference = createPaymentReference();
+    const quote = input.method === 'sepay' ? await this.sepayQuote(totalCents, reference) : null;
     const draft: BillingOrder = {
       id: `ord_${randomUUID().replace(/-/g, '')}`,
       workspaceId: ws.id,
@@ -186,11 +250,12 @@ export class BillingService {
       vatCents,
       totalCents,
       currency: CURRENCY,
-      reference: createPaymentReference(),
+      reference,
       status: 'pending',
       buyer,
       einvoiceRequest,
       account,
+      quote,
       createdAt: this.now(),
     };
     const { order, created } = await this.store.createOrder(draft, input.idempotencyKey);
@@ -270,6 +335,157 @@ export class BillingService {
     if (!capture) return { status: 200, body: { ignored: 'no_capture' } };
     const result = await this.applyCapture(capture, 'paypal-webhook', verified);
     return { status: 200, body: result };
+  }
+
+  // ── SePay ─────────────────────────────────────────────────────────────────────────────────────────────
+
+  /** A pending SePay order whose quote ran out gets a new one (same order and reference; the rate of now). */
+  async requoteSepay(ws: WorkspaceRecord, orderId: string): Promise<BillingOrder> {
+    const order = await this.store.order(orderId);
+    if (!order || order.workspaceId !== ws.id || order.method !== 'sepay') throw new BillingError('order_not_found', 'Order not found.', 404);
+    if (order.status !== 'pending') return order;
+    if (order.quote && this.now() < order.quote.expiresAt) return order;
+    // Money already received toward it stays counted; the customer pays what's left at the new quote.
+    await this.store.setQuote(order.id, await this.sepayQuote(order.totalCents, order.reference));
+    return (await this.store.order(orderId))!;
+  }
+
+  private lastCheck = new Map<string, number>();
+
+  /**
+   * The customer's "I've paid, check now": polls SePay (at most every SEPAY_CHECK_INTERVAL_MS per workspace; sooner
+   * just returns the order as it is) and applies what it finds. The webhook usually got there first.
+   */
+  async checkSepay(ws: WorkspaceRecord, orderId: string): Promise<{ order: BillingOrder; checked: boolean }> {
+    const order = await this.store.order(orderId);
+    if (!order || order.workspaceId !== ws.id || order.method !== 'sepay') throw new BillingError('order_not_found', 'Order not found.', 404);
+    if (order.status !== 'pending') return { order, checked: false };
+    const last = this.lastCheck.get(ws.id) ?? 0;
+    if (this.now() - last < SEPAY_CHECK_INTERVAL_MS || !this.opts.sepay?.status.apiToken) return { order, checked: false };
+    this.lastCheck.set(ws.id, this.now());
+    if (this.lastCheck.size > 5000) this.lastCheck.clear();
+    await this.pollSepay();
+    return { order: (await this.store.order(orderId))!, checked: true };
+  }
+
+  /** Polling fallback (the 15-minute cron, "check now"): SePay's latest transactions, when SePay orders are pending. */
+  async pollSepay(): Promise<{ credited: number; seen: number }> {
+    const sepay = this.opts.sepay;
+    if (!sepay?.status.apiToken) return { credited: 0, seen: 0 };
+    const pending = await this.store.pendingOrders('sepay', this.now() - SEPAY_POLL_WINDOW_MS, 1);
+    if (!pending.length) return { credited: 0, seen: 0 };
+    let list: SePayTransaction[];
+    try {
+      list = await sepay.recentTransactions(50);
+    } catch (err) {
+      console.error('[sepay] polling failed', err instanceof Error ? err.message : err);
+      return { credited: 0, seen: 0 };
+    }
+    let credited = 0;
+    for (const tx of list) {
+      if (tx.direction !== 'in') continue;
+      if ((await this.applySepay(tx, 'poll')).credited) credited++;
+    }
+    if (credited) console.log(JSON.stringify({ event: 'sepay_poll_credited', credited }));
+    return { credited, seen: list.length };
+  }
+
+  /**
+   * SePay's webhook: `Authorization: Apikey <key>` (constant-time), then the transaction is applied. Every payload we
+   * recognise gets 200 {success:true}, so SePay doesn't retry; a wrong key is 401; a failure on our side is 500 (SePay
+   * retries, and the transaction id keeps a retry from counting twice).
+   */
+  async handleSepayWebhook(headers: Record<string, string | string[] | undefined>, body: unknown): Promise<{ status: number; body: unknown }> {
+    const sepay = this.opts.sepay;
+    if (!sepay) return { status: 404, body: { success: false, error: 'sepay_not_configured' } };
+    if (!sepay.verifyWebhook(headers.authorization)) {
+      console.log(JSON.stringify({ event: 'sepay_webhook_rejected' }));
+      return { status: 401, body: { success: false, error: 'invalid_api_key' } };
+    }
+    const tx = transactionFromWebhook(body);
+    if (!tx) {
+      console.log(JSON.stringify({ event: 'sepay_webhook_unrecognised' }));
+      return { status: 400, body: { success: false, error: 'not_a_transaction' } };
+    }
+    const result = await this.applySepay(tx, 'webhook');
+    return { status: 200, body: { success: true, ...result } };
+  }
+
+  /**
+   * One SePay transaction -> its order paid (once). Incoming only, into our account, carrying an order reference.
+   * What an order received is the sum of its matched transactions (each SePay id counted once): at least the quoted
+   * VND credits the order's USD amount (an excess is noted for a refund); less keeps it pending, noted "underpaid by".
+   */
+  async applySepay(tx: SePayTransaction, source: 'webhook' | 'poll'): Promise<SepayOutcome> {
+    const { created, row } = await this.store.recordSepayTransaction({ ...tx, source, receivedAt: this.now() });
+    const log = (outcome: string, orderId: string | null = null) => console.log(JSON.stringify({ event: 'sepay_transaction', outcome, source, id: tx.id, orderId }));
+    // A replay of one already settled: nothing more to do (an order it counted toward is re-checked below).
+    if (!created && row.outcome && row.outcome !== 'underpaid') return { outcome: row.outcome, orderId: row.orderId ?? null, duplicate: true };
+    const done = async (outcome: string, orderId: string | null = null): Promise<SepayOutcome> => {
+      await this.store.setSepayOutcome(tx.id, orderId, outcome);
+      log(outcome, orderId);
+      return { outcome, orderId };
+    };
+    if (tx.direction !== 'in') return done('outbound');
+    // No account right now (SePay's API unreachable): fail, so the webhook is retried, rather than drop the payment.
+    const ours = (await this.opts.sepay?.account())?.accountNumber;
+    if (!ours) throw new SePayError('SePay bank account unknown; retry later', 503);
+    if (tx.accountNumber !== ours) return done('wrong_account');
+    let order: BillingOrder | null = row.orderId ? await this.store.order(row.orderId) : null;
+    if (!order) {
+      for (const ref of referencesIn(tx.content)) {
+        order = await this.store.orderByReference(ref);
+        if (order) break;
+      }
+    }
+    if (!order) return done('unmatched');
+    if (order.method !== 'sepay' || !order.quote) return done('not_sepay_order', order.id);
+    if (order.quote.bank.accountNumber !== tx.accountNumber) return done('wrong_account', order.id);
+    const note = (line: string) => this.store.addPaymentNote(order!.id, `${new Date(this.now()).toISOString().slice(0, 16).replace('T', ' ')} UTC: ${line}`);
+    // A replay of one already counted (a crash before it was settled): settle again, without a second note.
+    const counted = !created && row.outcome === 'underpaid';
+    if (!counted) {
+      if (order.status === 'paid') {
+        await note(`another transfer of ${vnd(tx.amountVnd)} (SePay ${tx.id}) arrived after the order was paid: refund it.`);
+        return done('already_paid', order.id);
+      }
+      if (order.status === 'cancelled') {
+        await note(`a transfer of ${vnd(tx.amountVnd)} (SePay ${tx.id}) arrived for this cancelled order: refund it or credit it by hand.`);
+        return done('order_cancelled', order.id);
+      }
+      // Counted toward the order from here on.
+      await this.store.setSepayOutcome(tx.id, order.id, 'underpaid');
+    }
+    return { ...(await this.settleSepay(order.id, tx, !counted)), ...(counted ? { duplicate: true } : {}) };
+  }
+
+  /** Credits a SePay order when what it received reaches its quote (idempotent: markPaid transitions once). */
+  private async settleSepay(orderId: string, tx: SePayTransaction, fresh: boolean): Promise<SepayOutcome> {
+    const order = (await this.store.order(orderId))!;
+    const quote = order.quote!;
+    const received = await this.store.sepayReceived(order.id);
+    const at = this.now();
+    const note = (line: string) => this.store.addPaymentNote(order.id, `${new Date(at).toISOString().slice(0, 16).replace('T', ' ')} UTC: ${line}`);
+    const result = (outcome: string, credited = false): SepayOutcome => {
+      console.log(JSON.stringify({ event: 'sepay_transaction', outcome, id: tx.id, orderId: order.id, receivedVnd: received, quotedVnd: quote.vndAmount }));
+      return { outcome, orderId: order.id, credited };
+    };
+    if (order.status === 'paid') {
+      await this.store.setSepayOutcome(tx.id, order.id, 'credited');
+      return { ...result('credited'), duplicate: true };
+    }
+    if (received < quote.vndAmount) {
+      if (fresh) await note(`underpaid by ${vnd(quote.vndAmount - received)}: received ${vnd(received)} of ${vnd(quote.vndAmount)} (SePay ${tx.id}, ${vnd(tx.amountVnd)}). Waiting for the rest.`);
+      return result('underpaid');
+    }
+    const { transitioned } = await this.markPaid(order.id, { by: 'sepay', captureId: `SEPAY-${tx.id}` });
+    await this.store.setSepayOutcome(tx.id, order.id, 'credited');
+    if (transitioned) {
+      await note(`paid: received ${vnd(received)} for a quote of ${vnd(quote.vndAmount)} at ${quote.vndPerUsd} VND/USD (${quote.rateDate}); credited ${formatUsd(order.amountCents)} (SePay ${tx.id}${tx.referenceCode ? `, bank ref ${tx.referenceCode}` : ''}).`);
+      if (received > quote.vndAmount) await note(`overpaid by ${vnd(received - quote.vndAmount)}: refund the excess.`);
+      if (at > quote.expiresAt) await note(`paid ${Math.round((at - quote.expiresAt) / 60_000)} min after the quote expired; credited at the quoted amount.`);
+    }
+    return result('credited', transitioned);
   }
 
   /**
