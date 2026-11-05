@@ -1,8 +1,17 @@
 import express from 'express';
 import type { Express, NextFunction, Request, RequestHandler, Response } from 'express';
 import type { Router } from './router';
-import type { AudioFile, EmbeddingResult, SpeechResult, TranscriptionResult } from './types';
+import type {
+  AudioFile,
+  EmbeddingResult,
+  ImageGenerationResult,
+  SpeechResult,
+  TranscriptionResult,
+  VideoGenerationResult,
+} from './types';
 import { resolveModel, servedBy, type HostedOptions } from './hosted';
+import { WAVESPEED_MEDIA_PRICES } from '../providers/wavespeed';
+import { BYTEPLUS_CATALOG_PRICING } from '../providers/byteplus';
 import { chatCompletionErrorResponse, formatProviderError } from './api-errors';
 import {
   CapabilityError, TRANSCRIPTION_FORMATS, embeddingToBase64, estimateAudioSeconds, estimateTextTokens, formatTranscription,
@@ -189,4 +198,94 @@ export function mountMediaRoutes(app: Express, router: Router, opts: MediaRouteO
       sendError(res, '/v1/audio/speech', error);
     }
   });
+
+  const videoJobs = new Map<string, VideoGenerationResult>();
+
+  const mediaPrice = (modelName: string, kind: 'image' | 'video') => {
+    const catalog = kind === 'image'
+      ? { ...WAVESPEED_MEDIA_PRICES, ...BYTEPLUS_CATALOG_PRICING }
+      : { ...WAVESPEED_MEDIA_PRICES, ...BYTEPLUS_CATALOG_PRICING };
+    const price = catalog[modelName];
+    if (typeof price === 'number') return price;
+    if (price && typeof price === 'object') {
+      const value = (price as { image?: number; video?: number; perImageUsd?: number; perSecondUsd?: number; output?: number }).image
+        ?? (price as { video?: number }).video
+        ?? (price as { perImageUsd?: number }).perImageUsd
+        ?? (price as { perSecondUsd?: number }).perSecondUsd
+        ?? (price as { output?: number }).output;
+      return typeof value === 'number' ? value : undefined;
+    }
+    return undefined;
+  };
+
+  app.post('/v1/images/generations', opts.auth, async (req, res) => {
+    try {
+      const body = req.body ?? {};
+      if (typeof body.prompt !== 'string' || !body.prompt.trim()) {
+        return fail(res, 400, 'invalid_prompt', 'prompt is required.');
+      }
+      if (body.response_format !== undefined && body.response_format !== 'url' && body.response_format !== 'b64_json') {
+        return fail(res, 400, 'invalid_response_format', 'response_format must be url or b64_json.');
+      }
+      const { result, model: used } = await router.routeCapability<ImageGenerationResult>('image', model(req), (provider, selectedModel) => provider.generateImage!({
+        model: selectedModel,
+        prompt: body.prompt,
+        ...(body.n !== undefined ? { n: body.n } : {}),
+        ...(typeof body.size === 'string' ? { size: body.size } : {}),
+        ...(body.response_format !== undefined ? { response_format: body.response_format } : {}),
+      }), { forceProvider: forced(req), onServed: servedBy(req) });
+      const price = mediaPrice(used, 'image');
+      if (price === undefined) return fail(res, 400, 'unpriced_model', `Model ${used} has no configured media price.`);
+      opts.record(req, used, { prompt_tokens: 0, completion_tokens: 0 }, price);
+      return res.json({
+        created: Math.floor(Date.now() / 1000),
+        data: result.data.map(image => ({ url: image.url, b64_json: image.b64_json })),
+        model: result.model || used,
+      });
+    } catch (error) {
+      sendError(res, '/v1/images/generations', error);
+    }
+  });
+
+  app.post('/v1/videos', opts.auth, async (req, res) => {
+    try {
+      const body = req.body ?? {};
+      if (typeof body.prompt !== 'string' || !body.prompt.trim()) {
+        return fail(res, 400, 'invalid_prompt', 'prompt is required.');
+      }
+      const { result, model: used } = await router.routeCapability<VideoGenerationResult>('video', model(req), (provider, selectedModel) => provider.generateVideo!({
+        model: selectedModel,
+        prompt: body.prompt,
+        ...(typeof body.duration === 'number' ? { duration: body.duration } : {}),
+        ...(typeof body.size === 'string' ? { size: body.size } : {}),
+      }), { forceProvider: forced(req), onServed: servedBy(req) });
+      const price = mediaPrice(used, 'video');
+      if (price === undefined) return fail(res, 400, 'unpriced_model', `Model ${used} has no configured media price.`);
+      opts.record(req, used, { prompt_tokens: 0, completion_tokens: 0 }, price);
+      const id = result.id || `video-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      videoJobs.set(id, result);
+      return res.status(result.status === 'completed' ? 200 : 202).json({
+        id,
+        object: 'video',
+        status: result.status || 'queued',
+        model: result.model || used,
+        ...(result.url ? { url: result.url } : {}),
+      });
+    } catch (error) {
+      sendError(res, '/v1/videos', error);
+    }
+  });
+
+  app.get('/v1/videos/:id', opts.auth, (req, res) => {
+    const result = videoJobs.get(req.params.id);
+    if (!result) return fail(res, 404, 'video_not_found', 'Video job not found.');
+    return res.json({
+      id: req.params.id,
+      object: 'video',
+      status: result.status || 'queued',
+      model: result.model,
+      ...(result.url ? { url: result.url } : {}),
+    });
+  });
+
 }
