@@ -105,6 +105,11 @@ export class AegisAuth {
     this.fetchImpl = cfg.fetchImpl ?? ((input, init) => fetch(input, init));
   }
 
+  /** Aegis's own sign-out page (RP-initiated logout): ends the Aegis session too, so signing in again asks again. */
+  endSessionUrl(): string {
+    return `${this.cfg.issuer.replace(/\/+$/, '')}/session/end?client_id=${encodeURIComponent(this.cfg.clientId)}`;
+  }
+
   private discover(): Promise<Discovery> {
     this.discovery ??= this.fetchImpl(`${this.cfg.issuer.replace(/\/+$/, '')}/.well-known/openid-configuration`)
       .then((r) => {
