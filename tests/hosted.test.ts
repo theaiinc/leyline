@@ -173,15 +173,26 @@ describe('hosted dashboard', () => {
     return setup({ login, adminEmails: ['owner@example.com'] });
   };
 
-  it('is for the signed-in owner only; strangers are sent to sign in', async () => {
+  it('the page is for anyone signed in; the owner\'s APIs are for the owner only; strangers are sent to sign in', async () => {
     const { app } = withLogin();
     const page = await request(app).get('/dashboard/');
     expect(page.status).toBe(302);
-    expect(page.headers.location).toBe('/auth/login?next=/dashboard/');
+    expect(page.headers.location).toBe('/auth/login?next=/');
     expect((await request(app).get('/dashboard/api-keys')).status).toBe(401);
-    expect((await request(app).get('/dashboard/api-keys').set('Cookie', cookieFor('someone@else.com'))).status).toBe(401);
+    // A customer (signed in, not an admin): the page shell, but none of the owner's dashboard APIs.
+    const customer = cookieFor('someone@else.com');
+    expect((await request(app).get('/dashboard/').set('Cookie', customer)).status).not.toBe(302);
+    for (const path of ['/dashboard/api-keys', '/dashboard/stats', '/dashboard/routing', '/dashboard/provider-instances', '/admin/api/keys', '/admin/api/spend', '/admin/api/settings']) {
+      expect((await request(app).get(path).set('Cookie', customer)).status).toBe(401);
+    }
+    expect((await request(app).post('/dashboard/routing').set('Cookie', customer).send({ mode: 'auto' })).status).toBe(401);
+    expect((await request(app).post('/dashboard/api-keys').set('Cookie', customer).send({ provider: 'OpenAI', apiKey: 'x' })).status).toBe(401);
+    expect((await request(app).post('/admin/api/keys').set('Cookie', customer).send({ name: 'x' })).status).toBe(401);
+    expect((await request(app).get('/dashboard/session').set('Cookie', customer)).body).toEqual({ hosted: true, email: 'someone@else.com', admin: false, publicUrl: 'https://leyline.test', signIn: true });
+    // A customer's session is no owner playground: no key, no free requests.
+    expect((await request(app).post('/v1/chat/completions').set('Cookie', customer).send({ model: 'gpt-5.5', messages: [{ role: 'user', content: 'hi' }] })).status).toBe(401);
     const me = await request(app).get('/dashboard/session').set('Cookie', cookieFor('owner@example.com'));
-    expect(me.body).toEqual({ hosted: true, email: 'owner@example.com', publicUrl: 'https://leyline.test', signIn: true });
+    expect(me.body).toEqual({ hosted: true, email: 'owner@example.com', admin: true, publicUrl: 'https://leyline.test', signIn: true });
     expect((await request(app).get('/dashboard/api-keys').set('Cookie', cookieFor('owner@example.com'))).status).toBe(200);
   });
 

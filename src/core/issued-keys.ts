@@ -41,6 +41,8 @@ export type IssuedKey = {
   createdBy: string;
   revokedAt?: number | null;
   lastUsedAt?: number | null;
+  /** A self-serve customer's key: its workspace (usage is charged to its balance). Unset: an owner/internal key. */
+  workspaceId?: string;
 };
 
 export type KeyUsage = {
@@ -78,6 +80,8 @@ export interface DocStore {
   /** Write; with ifGen, only if the document is at that generation ('0': must not exist). */
   put(key: string, value: unknown, ifGen?: string): Promise<string>;
   list(prefix: string): Promise<string[]>;
+  /** Remove a document (account deletion); stores without it keep the data. */
+  delete?(key: string): Promise<void>;
 }
 
 export class Conflict extends Error {}
@@ -98,6 +102,9 @@ export class MemoryDocStore implements DocStore {
   }
   async list(prefix: string) {
     return [...this.docs.keys()].filter((k) => k.startsWith(prefix)).sort();
+  }
+  async delete(key: string) {
+    this.docs.delete(key);
   }
 }
 
@@ -348,7 +355,7 @@ export class IssuedKeys {
   }
 
   /** Make a key: returns the key itself (shown once) and its record. */
-  async create(input: { name: string; caps?: KeyCaps; note?: string; by: string }): Promise<{ key: string; record: IssuedKey }> {
+  async create(input: { name: string; caps?: KeyCaps; note?: string; by: string; workspaceId?: string }): Promise<{ key: string; record: IssuedKey }> {
     const name = input.name.trim().slice(0, 80);
     if (!name) throw new Error('a name is required');
     const key = `ll_${randomBytes(24).toString('base64url')}`;
@@ -363,10 +370,50 @@ export class IssuedKeys {
       createdBy: input.by,
       revokedAt: null,
       lastUsedAt: null,
+      ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
     };
     await this.store.put(`hashes/${record.hash}`, { id: record.id }, '0');
     await this.store.put(`keys/${record.id}`, record, '0');
+    if (input.workspaceId) await this.store.put(`wskeys/${input.workspaceId}/${record.id}`, { id: record.id }, '0');
     return { key, record };
+  }
+
+  /** A workspace's keys (newest first), with this month's usage. */
+  async listForWorkspace(workspaceId: string): Promise<Array<IssuedKey & { usage: KeyUsage }>> {
+    const ids = (await this.store.list(`wskeys/${workspaceId}/`)).map((k) => k.slice(`wskeys/${workspaceId}/`.length));
+    const out = await Promise.all(ids.map(async (id) => {
+      const record = await this.get(id);
+      return record && record.workspaceId === workspaceId ? { ...record, usage: await this.usage(id) } : null;
+    }));
+    return out.filter((x): x is IssuedKey & { usage: KeyUsage } => !!x).sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  /** Every month of usage a key has (for a data export). */
+  async allUsage(id: string): Promise<KeyUsage[]> {
+    const months = await this.store.list(`usage/${id}/`);
+    const out = await Promise.all(months.map(async (k) => (await this.store.get<KeyUsage>(k))?.value ?? null));
+    return out.filter((u): u is KeyUsage => !!u);
+  }
+
+  /**
+   * Deletes a workspace's keys and their usage (account deletion): each stops working at once (its hash is gone,
+   * and it's revoked first for stores that can't delete).
+   */
+  async deleteWorkspaceKeys(workspaceId: string): Promise<number> {
+    const ids = (await this.store.list(`wskeys/${workspaceId}/`)).map((k) => k.slice(`wskeys/${workspaceId}/`.length));
+    for (const id of ids) {
+      const record = await this.get(id);
+      if (!record || record.workspaceId !== workspaceId) continue;
+      await this.revoke(id).catch(() => undefined);
+      if (this.store.delete) {
+        for (const k of await this.store.list(`usage/${id}/`)) await this.store.delete(k);
+        await this.store.delete(`hashes/${record.hash}`);
+        await this.store.delete(`keys/${id}`);
+        await this.store.delete(`wskeys/${workspaceId}/${id}`);
+      }
+    }
+    this.cache.clear();
+    return ids.length;
   }
 
   async list(): Promise<Array<IssuedKey & { usage: KeyUsage }>> {

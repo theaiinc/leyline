@@ -201,6 +201,6 @@ export function estimateTokens(req: AnthropicRequest): number {
 
 /** An Anthropic-shaped error body. */
 export function anthropicError(status: number, message: string): { type: 'error'; error: { type: string; message: string } } {
-  const type = status === 401 ? 'authentication_error' : status === 403 ? 'permission_error' : status === 429 ? 'rate_limit_error' : status === 404 ? 'not_found_error' : status >= 500 ? 'api_error' : 'invalid_request_error';
+  const type = status === 401 ? 'authentication_error' : status === 402 ? 'billing_error' : status === 403 ? 'permission_error' : status === 429 ? 'rate_limit_error' : status === 404 ? 'not_found_error' : status >= 500 ? 'api_error' : 'invalid_request_error';
   return { type: 'error', error: { type, message } };
 }

@@ -7,7 +7,10 @@ import { AnthropicStream, anthropicError, anthropicToOpenAI, estimateTokens, ope
 import { builtinPrice } from './pricing';
 import { errorStatus } from './media';
 import { estimateBodyTokens } from './content';
-import { DEFAULT_PRICE, IssuedKeys, costUsd, modelAllowed, priceOf, type HostedSettings, type IssuedKey, type KeyCaps, type Price } from './issued-keys';
+import { DEFAULT_PRICE, IssuedKeys, costUsd, manualPriceOf, modelAllowed, priceOf, type HostedSettings, type IssuedKey, type KeyCaps, type Price } from './issued-keys';
+import type { BillingService } from './billing-service';
+import type { WorkspaceRecord } from './billing-store';
+import type { AccessConfig } from './cloudflare-access';
 import type { BenchmarkSnapshot } from './benchmarks';
 import { RequestPiiRedactor } from './pii-redaction';
 
@@ -76,9 +79,18 @@ export type HostedOptions = {
    * cancels anything a finished request left running.
    */
   background?: (work: Promise<unknown>) => void;
+  /** Self-serve workspaces and prepaid billing (D1); unset: only owner-issued keys, nothing is charged. */
+  billing?: BillingService | null;
+  /** Cloudflare Turnstile: the public site key, and Siteverify with the TURNSTILE_SECRET secret. */
+  turnstile?: { siteKey: string; verify: (token: string, ip: string) => Promise<boolean> } | null;
+  /** The admin host (adm.valefront.com), behind Cloudflare Access: billing admin is served there only. */
+  adminHost?: string;
+  access?: AccessConfig | null;
+  /** The Worker's vars and secrets, for the admin page's "credentials present: yes/no" (values are never shown). */
+  providerEnv?: Record<string, string | undefined>;
 };
 
-type WithKey = Request & { issuedKey?: IssuedKey; requestedModel?: string; ownerRequest?: boolean; served?: { provider: string; model: string }; timings?: { lookupMs: number; admitMs: number }; pii?: RequestPiiRedactor };
+type WithKey = Request & { issuedKey?: IssuedKey; requestedModel?: string; ownerRequest?: boolean; workspace?: WorkspaceRecord; served?: { provider: string; model: string }; timings?: { lookupMs: number; admitMs: number }; pii?: RequestPiiRedactor };
 
 /** Route option that remembers which provider and model served this request (for spend by provider and model). */
 export function servedBy(req: Request): (provider: string, model: string) => void {
@@ -108,7 +120,7 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
   return async (req: Request, res: Response, next: NextFunction) => {
     const fail = (status: number, code: string, message: string) => (format === 'anthropic'
       ? res.status(status).json(anthropicError(status, message))
-      : res.status(status).json({ error: { message, type: status === 401 ? 'invalid_request_error' : status === 429 ? 'rate_limit_error' : 'permission_error', code } }));
+      : res.status(status).json({ error: { message, type: status === 401 ? 'invalid_request_error' : status === 402 ? 'insufficient_credit' : status === 429 ? 'rate_limit_error' : 'permission_error', code } }));
     const presented = presentedKey(req);
     // The owner, signed in on the dashboard (its playground): no key, no caps, not counted.
     if (!presented && adminOf(opts, req) && sameOrigin(opts, req)) {
@@ -136,6 +148,35 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
     const refusal = await opts.keys.admit(key, requested, opts.monthlyBudgetUsd ?? null);
     (req as WithKey).timings = { lookupMs: admitAt - lookupAt, admitMs: Date.now() - admitAt };
     if (refusal) return fail(refusal.status, refusal.code, refusal.message);
+    // A customer's key: the workspace must be in good standing, the model must have a real price, and there must be
+    // credit (or free tokens) left. Owner/internal keys (no workspace) and the admins' own workspaces never are.
+    if (key.workspaceId) {
+      if (!opts.billing) return fail(503, 'billing_unavailable', 'Valefront could not check your balance just now; try again.');
+      let ws: WorkspaceRecord | null;
+      try {
+        ws = await opts.billing.store.workspace(key.workspaceId);
+      } catch (err) {
+        console.error('[hosted] workspace lookup failed', err);
+        return fail(503, 'billing_unavailable', 'Valefront could not check your balance just now; try again.');
+      }
+      if (!ws || ws.deletedAt) return fail(401, 'key_revoked', 'This API key has been revoked.');
+      if (!isAdminEmail(opts, ws.email)) {
+        const target = resolveModel(opts.aliases, requested);
+        const routerPicks = !requested || requested === 'auto' || requested === 'auto-vision';
+        if (!routerPicks && !realPrice(opts, target)) {
+          return fail(403, 'model_not_priced', `The model "${requested}" has no published price yet, so it can't be used with this key; see https://llm.valefront.com/v1/pricing.`);
+        }
+        let admission;
+        try {
+          admission = await opts.billing.admit(ws, routerPicks ? requested : target);
+        } catch (err) {
+          console.error('[hosted] credit check failed', err);
+          return fail(503, 'billing_unavailable', 'Valefront could not check your balance just now; try again.');
+        }
+        if ('refusal' in admission) return fail(admission.refusal.status, admission.refusal.code, admission.refusal.message);
+        (req as WithKey).workspace = ws;
+      }
+    }
     (req as WithKey).issuedKey = key;
     (req as WithKey).requestedModel = requested;
     (req as WithKey).pii = new RequestPiiRedactor({
@@ -186,6 +227,34 @@ export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_
     .then(() => checkAlerts(opts, r.issuedKey ?? null))
     .catch((err) => console.error('[hosted] usage record failed', err));
   opts.background?.(work);
+  // A customer pays real prices only: set by hand or published, never the default price.
+  if (r.workspace && opts.billing) {
+    const price = realPrice(opts, used, r.served?.provider);
+    const charged = usd ?? (price ? costUsd(price, counted) : null);
+    const tokens = (counted.prompt_tokens ?? 0) + (counted.completion_tokens ?? 0);
+    const billing = opts.billing.charge(r.workspace, { model: used, tokens, usd: charged })
+      .catch((err) => console.error('[hosted] usage charge failed', r.workspace?.id, err));
+    opts.background?.(billing);
+  }
+}
+
+/** A model's real price (set by hand, published by its provider, or Leyline's built-in list), or undefined. */
+export function realPrice(opts: HostedOptions, model: string, provider?: string): Price | undefined {
+  const manual = manualPriceOf(opts.prices ?? {}, model);
+  if (manual) return manual;
+  if (opts.usePublishedPrices === false) return undefined;
+  return (provider ? opts.publishedPrice?.(provider, model) : undefined) ?? opts.anyPublishedPrice?.(model) ?? builtinPrice(model);
+}
+
+export function isAdminEmail(opts: HostedOptions, email: string): boolean {
+  const e = email.trim().toLowerCase();
+  return !!e && opts.adminEmails.some((a) => a.trim().toLowerCase() === e);
+}
+
+/** Whoever is signed in with Aegis (any account: customers too), or null. */
+export function sessionOf(opts: HostedOptions, req: Request): AdminUser | null {
+  const s = opts.login?.session(req.headers.cookie);
+  return s && s.email ? s : null;
 }
 
 function alertsFor(opts: HostedOptions): CostAlerts {
@@ -492,10 +561,8 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
     app.get('/auth/callback', async (req, res) => {
       try {
         const done = await login.finish(new URLSearchParams(req.url.split('?')[1] ?? ''), req.headers.cookie);
-        if (!opts.adminEmails.includes(done.session.email.toLowerCase())) {
-          res.setHeader('Set-Cookie', cookie('leyline_login', '', 0));
-          return res.status(403).type('html').send(refusedPage(done.session.email));
-        }
+        // Sign-in is self-serve: every Aegis account may enter the dashboard (its own workspace). The owner's pages
+        // and APIs stay behind adminOf (adminEmails or the admin token).
         res.setHeader('Set-Cookie', [...done.cookies, cookie('leyline_login', '', 0)]);
         res.redirect(302, done.next);
       } catch (err) {
@@ -579,17 +646,6 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
       res.status(404).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
-}
-
-/** Signed in, but not one of the owners: say so, and offer another account. */
-function refusedPage(email: string): string {
-  const esc = (t: string) => t.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Valefront</title><link rel="icon" href="/icon.svg" type="image/svg+xml">
-<style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;font:15px/1.5 system-ui,sans-serif;background:#0b0d12;color:#eef1f7}
-@media (prefers-color-scheme: light){body{background:#f6f7fb;color:#141824}}main{max-width:420px;padding:24px;text-align:center}
-a{display:inline-block;margin-top:16px;padding:9px 16px;border-radius:9px;background:#3557e8;color:#fff;text-decoration:none}</style></head>
-<body><main><h1 style="font-size:20px">Not an owner of this Valefront</h1><p>You signed in as <strong>${esc(email)}</strong>, which can't manage it.</p>
-<a href="/auth/login?next=/dashboard/&amp;switch=1">Use a different account</a></main></body></html>`;
 }
 
 /** The key check for endpoints with no model in the body (models list, token counting). */

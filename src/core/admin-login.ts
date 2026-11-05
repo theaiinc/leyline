@@ -3,7 +3,7 @@ import { createCipheriv, createDecipheriv, createHash, createHmac, createPublicK
 type JsonWebKey = { kid?: string; alg?: string; kty?: string; [k: string]: unknown };
 
 /** A signed-in person. */
-export type AdminUser = { sub: string; email: string; name?: string };
+export type AdminUser = { sub: string; email: string; name?: string; /** Aegis's email_verified claim. */ emailVerified?: boolean };
 
 /**
  * Sign-in with Aegis (OpenID Connect, authorization code + PKCE) for Leyline's admin page, then a signed
@@ -229,6 +229,7 @@ export class AegisAuth {
     return {
       sub: String(claims['sub']),
       email: String(claims['email']).toLowerCase(),
+      emailVerified: claims['email_verified'] === true || claims['email_verified'] === 'true',
       ...(nameFrom(claims) ? { name: nameFrom(claims)! } : {}),
       exp: Math.floor(Date.now() / 1000) + (this.cfg.sessionHours ?? 12) * 3600,
     };
