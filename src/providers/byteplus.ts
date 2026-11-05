@@ -19,6 +19,10 @@ const BYTEPLUS_CATALOG: Array<ModelDetail & { pricing: { input: number; output: 
   { id: 'seed-2-0-lite-260428', name: 'Seed 2.0 Lite', pricing: { input: 0.25, output: 2.0 } },
   { id: 'seed-2-0-mini-260428', name: 'Dola Seed 2.0 Mini', pricing: { input: 0.1, output: 0.4 } },
   { id: 'deepseek-v4-flash-ga-260731', name: 'DeepSeek V4 Flash', pricing: { input: 0.14, output: 0.28 } },
+  // BytePlus ModelArk official pricing: Seedream image generation is priced per image;
+  // Seedance video generation is priced per second. Unlisted account models remain refused.
+  { id: 'seedream-4-0-250828', name: 'Seedream 4.0', pricing: { input: 0, output: 0.03 } },
+  { id: 'seedance-1-0-pro-250528', name: 'Seedance 1.0 Pro', pricing: { input: 0, output: 0.12 } },
   // TODO: confirm official prices for DeepSeek V4.1 Flash and GLM-5.3 Flash from BytePlus console/docs.
 ].map((model) => ({ ...model, source: BYTEPLUS_PRICING_SOURCE }));
 
