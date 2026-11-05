@@ -35,6 +35,7 @@ export type SePayConfig = {
   webhookKey?: string;
   base?: string;
   fetchImpl?: typeof fetch;
+  now?: () => number;
 };
 
 /** An incoming or outgoing transaction on the linked account, in whole VND. */
@@ -152,10 +153,12 @@ export class SePayClient {
   private readonly fetchImpl: typeof fetch;
   private resolved: { account: VndBankAccount | null; until: number } | null = null;
   private recent: { at: number; list: SePayTransaction[] } | null = null;
+  private readonly now: () => number;
 
   constructor(private readonly cfg: SePayConfig) {
     // Through a wrapper: Workers throws "Illegal invocation" for a bare fetch called as a method.
     this.fetchImpl = cfg.fetchImpl ?? ((input, init) => fetch(input, init));
+    this.now = cfg.now ?? Date.now;
   }
 
   get base(): string {
@@ -185,7 +188,7 @@ export class SePayClient {
    * after 5 minutes. null: SePay can't be offered.
    */
   async account(): Promise<VndBankAccount | null> {
-    const now = Date.now();
+    const now = this.now();
     if (this.resolved && now < this.resolved.until) return this.resolved.account;
     const env: Partial<VndBankAccount> = { accountNumber: this.cfg.accountNumber, bankId: this.cfg.bankId, bankName: this.cfg.bankName, accountName: this.cfg.accountName };
     let api: Partial<VndBankAccount> = {};
@@ -231,12 +234,12 @@ export class SePayClient {
    * customers pressing "check now" make one SePay call (its API allows about 2 a second).
    */
   async recentTransactions(limit = 50): Promise<SePayTransaction[]> {
-    if (this.recent && Date.now() - this.recent.at < 5_000) return this.recent.list;
+    if (this.recent && this.now() - this.recent.at < 5_000) return this.recent.list;
     const account = await this.account();
     if (!account) throw new SePayError('SePay has no bank account to read', 503);
     const body = await this.get(`/transactions/list?account_number=${encodeURIComponent(account.accountNumber)}&limit=${limit}`);
     const list = (Array.isArray(body.transactions) ? body.transactions : []).map(transactionFromApi).filter((t): t is SePayTransaction => Boolean(t));
-    this.recent = { at: Date.now(), list };
+    this.recent = { at: this.now(), list };
     return list;
   }
 }
