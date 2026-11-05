@@ -223,7 +223,8 @@ describe('hosted dashboard', () => {
     const { app, keys } = withLogin();
     const r = await request(app).post('/v1/chat/completions').set('Cookie', cookieFor('owner@example.com')).set('Origin', 'https://leyline.test')
       .send({ model: 'anything-at-all', messages: [{ role: 'user', content: 'hi' }] });
-    expect(r.status).toBe(200);
+    expect(r.status).toBe(404);
+    expect(r.body.error.code).toBe('model_not_found');
     expect(await keys.list()).toEqual([]);
     expect((await request(app).post('/v1/chat/completions').set('Cookie', cookieFor('owner@example.com')).set('Origin', 'https://evil.example')
       .send({ model: 'gpt-5.5', messages: [{ role: 'user', content: 'hi' }] })).status).toBe(401);

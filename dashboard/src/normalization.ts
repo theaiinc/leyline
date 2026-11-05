@@ -18,6 +18,7 @@ export type ApiKeyProvider = {
   family?: string;
   label?: string;
   defaultModel: string;
+  apiKeyConfigurable?: boolean;
   configured: boolean;
   source: ApiKeySource;
   persisted: boolean;
@@ -371,6 +372,7 @@ function normalizeApiKeyProvider(value: unknown, index: number): ApiKeyProvider 
     family: optionalString(raw.family),
     label: optionalString(raw.label),
     defaultModel: optionalString(raw.defaultModel) || '-',
+    apiKeyConfigurable: typeof raw.apiKeyConfigurable === 'boolean' ? raw.apiKeyConfigurable : undefined,
     configured: Boolean(raw.configured),
     source: sourceValue(raw.source),
     persisted: Boolean(raw.persisted),

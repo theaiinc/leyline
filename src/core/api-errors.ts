@@ -22,8 +22,8 @@ export function isInsufficientBalanceError(error: unknown): boolean {
   ].filter(Boolean).join(' ').toLowerCase();
 
   return candidate?.response?.status === 402
-    || /\b(insufficient|not enough|low)\b.*\b(balance|credit|funds?)\b/.test(message)
-    || /\b(balance|credit|funds?)\b.*\b(insufficient|exhausted|depleted|empty)\b/.test(message)
+    || /\b(insufficient|not enough|low|น้อยเกินไป)\b.*\b(balance|credit|funds?)\b/.test(message)
+    || /\b(balance|credit|funds?)\b.*\b(insufficient|exhausted|depleted|empty|ต่ำ)\b/.test(message)
     || message.includes('out of credit')
     || message.includes('payment required');
 }

@@ -36,14 +36,28 @@ function Field({ id, label, hint, children }: { id: string; label: string; hint?
 export function ProvidersPage({ d }: { d: Dashboard }) {
   const { status, families, session, storeLabel, localStorageAvailable } = d;
   const hosted = Boolean(session?.hosted);
+  const sharedPoolProviders = useMemo(() => hosted
+    ? (status?.providers ?? []).filter(provider => provider.source === 'env')
+    : [], [hosted, status]);
   const providers = useMemo(() => [...(status?.providers ?? [])]
     .filter(provider => provider.name !== 'Shared pool' && provider.label !== 'Shared pool')
-    .sort((a, b) => familyOf(a.name, a.family).localeCompare(familyOf(b.name, b.family)) || a.name.localeCompare(b.name)), [status]);
+    .filter(provider => !hosted || provider.source !== 'env')
+    .sort((a, b) => {
+      const readiness = (provider: typeof a) => {
+        if (provider.apiKeyConfigurable && !provider.configured) return 2;
+        if (provider.runtimeReady === false && provider.configured) return 1;
+        return 0;
+      };
+      return readiness(a) - readiness(b)
+        || familyOf(a.name, a.family).localeCompare(familyOf(b.name, b.family))
+        || a.name.localeCompare(b.name);
+    }), [hosted, status]);
   const [selected, setSelected] = useState('');
   const active = providers.find(p => p.name === selected) ?? providers.find(p => p.name === status?.routing?.fixedProvider) ?? providers[0];
   const persistence = status?.persistence;
   const keychainAvailable = Boolean(persistence?.modes.keychain.available);
   const arcanaAvailable = Boolean(active?.arcanaAvailable);
+  const hostedStoreLabel = 'Cloudflare (encrypted)';
 
   const savedMode: PersistenceMode = active
     ? ((localStorageAvailable && !hosted ? window.localStorage.getItem(localModeKey(active.name)) as PersistenceMode | null : null)
@@ -142,19 +156,23 @@ export function ProvidersPage({ d }: { d: Dashboard }) {
   }
 
   const modes: Array<{ value: PersistenceMode; label: string; hint: string; available: boolean; show: boolean }> = [
-    { value: 'keychain', label: storeLabel, hint: keychainAvailable ? (hosted ? 'Kept in the cloud project; survives restarts and deploys.' : 'Most secure server-side option on macOS.') : 'Unavailable on this server.', available: keychainAvailable, show: true },
+    { value: 'keychain', label: hosted ? hostedStoreLabel : storeLabel, hint: keychainAvailable ? (hosted ? 'Encrypted in the Valefront cloud project.' : 'Most secure server-side option on macOS.') : 'Unavailable on this server.', available: keychainAvailable, show: true },
     { value: 'arcana', label: 'Arcana', hint: arcanaAvailable ? 'Resolve this key from an Arcana reference.' : 'No Arcana reference is available for this provider.', available: arcanaAvailable, show: !hosted || arcanaAvailable },
     { value: 'localStorage', label: 'Browser localStorage', hint: 'Browser-local fallback; re-sent to Valefront when this dashboard opens.', available: localStorageAvailable, show: !hosted },
-    { value: 'memory', label: 'Server memory', hint: hosted ? 'Until this instance restarts (deploys and scale-downs restart it).' : 'Until this server process exits.', available: true, show: true },
+    { value: 'memory', label: 'Server memory', hint: 'Until this server process exits.', available: true, show: !hosted },
   ];
 
   return (
     <>
       <PageHeader
         title="Providers"
-        description={hosted ? 'The provider accounts this Leyline uses. Everyone with an access key is served from these.' : 'Provider keys, runtime settings, and extra endpoints.'}
-        actions={families.map(family => <AddInstanceDialog key={family.family} family={family} d={d} onAdded={setSelected} />)}
+        description={hosted ? 'Configured providers are read-only here; Valefront supplies the shared pool.' : 'Provider keys, runtime settings, and extra endpoints.'}
+        actions={hosted || families.length > 0 ? <AddInstanceDialog families={families} d={d} onAdded={setSelected} /> : null}
       />
+
+      {hosted && sharedPoolProviders.length > 0 ? (
+        <Alert className="mb-4"><AlertDescription>Valefront shared pool: {sharedPoolProviders.map(provider => provider.label || provider.name).join(', ')}</AlertDescription></Alert>
+      ) : null}
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {providers.map(provider => {
@@ -195,7 +213,7 @@ export function ProvidersPage({ d }: { d: Dashboard }) {
         })}
       </div>
 
-      {active ? (
+      {active && !hosted ? (
         <div className="mt-6 grid gap-4 lg:grid-cols-2">
           <Card>
             <CardHeader>
@@ -271,16 +289,18 @@ export function ProvidersPage({ d }: { d: Dashboard }) {
   );
 }
 
-function AddInstanceDialog({ family, d, onAdded }: { family: InstanceFamily; d: Dashboard; onAdded: (name: string) => void }) {
+function AddInstanceDialog({ families, d, onAdded }: { families: InstanceFamily[]; d: Dashboard; onAdded: (name: string) => void }) {
   const [open, setOpen] = useState(false);
+  const [familyName, setFamilyName] = useState(families[0]?.family || '');
   const [values, setValues] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
-  // The key itself is set afterwards on the provider's key card; this only collects non-secret config.
-  const fields = family.fields.filter(f => f.role !== 'secret');
-  const canSubmit = fields.every(f => !f.required || Boolean(values[f.key]?.trim()));
+  const family = families.find(item => item.family === familyName) || families[0];
+  const fields = family?.fields.filter(f => f.role !== 'secret') || [];
+  const canSubmit = Boolean(family) && fields.every(f => !f.required || Boolean(values[f.key]?.trim()));
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (!family) return;
     setBusy(true);
     try {
       const data = await api<{ name: string; label?: string }>('/dashboard/provider-instances', { method: 'POST', body: { family: family.family, config: values } });
@@ -298,13 +318,18 @@ function AddInstanceDialog({ family, d, onAdded }: { family: InstanceFamily; d: 
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild><Button variant="outline" size="sm"><Plus />{family.displayName} endpoint</Button></DialogTrigger>
+      <DialogTrigger asChild><Button variant="outline" size="sm"><Plus />Add endpoint</Button></DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Add {family.displayName} endpoint</DialogTitle>
-          <DialogDescription>Another {family.displayName} account with its own endpoint and model ({family.instances.length} extra so far).</DialogDescription>
+          <DialogTitle>Add endpoint</DialogTitle>
+          <DialogDescription>Choose a provider, then configure its endpoint and model.</DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="grid gap-4">
+          <Field id="endpoint-provider" label="Provider">
+            <select id="endpoint-provider" className="h-10 rounded-md border bg-background px-3 text-sm" value={family?.family || ''} onChange={event => { setFamilyName(event.target.value); setValues({}); }}>
+              {families.map(item => <option key={item.family} value={item.family}>{item.displayName}</option>)}
+            </select>
+          </Field>
           {fields.map(field => (
             <Field key={field.key} id={`inst-${field.key}`} label={field.label}>
               <Input id={`inst-${field.key}`} value={values[field.key] || ''} placeholder={field.placeholder} autoComplete="off" onChange={e => setValues(v => ({ ...v, [field.key]: e.target.value }))} />
