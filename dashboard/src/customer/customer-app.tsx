@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { BookOpen, Calculator, CreditCard, Database, KeyRound, LogOut, Moon, Sun, Wallet } from 'lucide-react';
+import { BookOpen, Calculator, ChevronDown, CreditCard, Database, KeyRound, Landmark, LogOut, Moon, Sun, Wallet } from 'lucide-react';
 import { SideNav, navIds, type NavEntry } from '@/components/side-nav';
 import { CalculatorPage } from '@/pages/calculator';
 import { toast } from 'sonner';
@@ -132,7 +132,7 @@ export function CustomerApp({ dark, toggleTheme }: { dark: boolean; toggleTheme:
         </div>
       </aside>
       <main className="min-w-0 px-4 py-6 md:px-8 md:py-8">
-        <div className="mx-auto max-w-4xl">
+        <div className={cn("mx-auto", current === "billing" ? "max-w-6xl" : "max-w-4xl")}>
           {error ? <Card><CardContent className="text-sm text-destructive">{error}</CardContent></Card>
             : !me ? <div className="grid gap-4"><Skeleton className="h-8 w-48" /><Skeleton className="h-40" /></div>
               : current === 'keys' ? <KeysPage me={me} />
@@ -373,7 +373,7 @@ function countryName(code: string): string {
   }
 }
 
-function ProfileForm({ billing, onSaved }: { billing: Billing; onSaved: () => Promise<void> }) {
+function ProfileForm({ billing, onSaved, onCancel }: { billing: Billing; onSaved: () => Promise<void>; onCancel?: () => void }) {
   const [p, setP] = useState<Profile>(billing.profile ?? { name: '', email: billing.email, country: '' });
   const countries = useMemo(() => COUNTRIES.map((c) => [c, countryName(c)] as const).sort((a, b) => a[1].localeCompare(b[1])), []);
   const set = (k: keyof Profile) => (e: { target: { value: string } }) => setP({ ...p, [k]: e.target.value });
@@ -397,7 +397,7 @@ function ProfileForm({ billing, onSaved }: { billing: Billing; onSaved: () => Pr
         <select id="bp-country" className="h-9 rounded-md border bg-background px-2 text-sm" value={p.country} onChange={set('country')}>
           <option value="">Choose…</option>{countries.map(([c, n]) => <option key={c} value={c}>{n}</option>)}
         </select></div>
-      <div className="flex items-end"><Button variant="outline" onClick={save}>Save billing details</Button></div>
+      <div className="flex items-end gap-2"><Button onClick={save}>Save details</Button>{onCancel ? <Button variant="ghost" onClick={onCancel}>Cancel</Button> : null}</div>
     </div>
   );
 }
@@ -409,9 +409,9 @@ function vatOf(billing: Billing, cents: number) {
   return { bp, vat, total: cents + vat };
 }
 
-function AddCredit({ me, billing, onOrder }: { me: Me; billing: Billing; onOrder: (o: Order) => void }) {
-  const [amount, setAmount] = useState('20');
-  const [method, setMethod] = useState<'paypal' | 'worldfirst'>(billing.methods.paypal.enabled ? 'paypal' : 'worldfirst');
+function AddCredit({ me, billing, onOrder, onSaved }: { me: Me; billing: Billing; onOrder: (o: Order) => void; onSaved: () => Promise<void> }) {
+  const [amount, setAmount] = useState('25');
+  const [method, setMethod] = useState<'paypal' | 'worldfirst'>(billing.methods.worldfirst ? 'worldfirst' : 'paypal');
   const [token, setToken] = useState<string | null>(null);
   const [reset, setReset] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -443,37 +443,76 @@ function AddCredit({ me, billing, onOrder }: { me: Me; billing: Billing; onOrder
       setReset((n) => n + 1);
     }
   }
-  if (!billing.profile) return <p className="text-sm text-muted-foreground">Add your billing details above first: they go on your receipt.</p>;
+  const [editing, setEditing] = useState(false);
   if (!anyMethod) return <p className="text-sm text-muted-foreground">Payments are not available right now. Please try again later.</p>;
+  const profile = billing.profile;
+  const AMOUNTS = [10, 25, 50, 100];
+  const methodCard = (id: 'paypal' | 'worldfirst', title: string, detail: string, enabled: boolean) => (
+    <button key={id} type="button" disabled={!enabled} onClick={() => { setMethod(id); setIdem(newKey()); }}
+      className={cn('flex min-w-0 flex-1 flex-col items-start gap-1 rounded-xl border p-3 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+        method === id && enabled ? 'border-[#a9f5cf]/70 bg-[#a9f5cf]/10' : 'hover:bg-muted/50')}>
+      <span className="flex items-center gap-2 font-semibold">{id === 'paypal' ? <CreditCard className="size-4" /> : <Landmark className="size-4" />}{title}</span>
+      <span className="text-xs text-muted-foreground">{detail}</span>
+    </button>
+  );
   return (
-    <div className="grid gap-4">
-      <div className="grid gap-1 sm:max-w-xs">
-        <Label htmlFor="amount">Credit (USD, at least {usd(billing.minimumCents)})</Label>
-        <Input id="amount" inputMode="decimal" value={amount} onChange={(e) => { setAmount(e.target.value.trim()); setIdem(newKey()); }} />
-        <div className="flex flex-wrap gap-1">{[10, 20, 50, 100].map((v) => <Button key={v} size="sm" variant="outline" onClick={() => { setAmount(String(v)); setIdem(newKey()); }}>${v}</Button>)}</div>
-      </div>
-      <fieldset className="grid gap-2">
-        <legend className="mb-1 text-sm font-medium">Pay with</legend>
-        {billing.methods.paypal.enabled ? <label className="flex items-start gap-2 text-sm"><input type="radio" className="mt-1" checked={method === 'paypal'} onChange={() => { setMethod('paypal'); setIdem(newKey()); }} /><span><strong>PayPal or card</strong> — instant{billing.methods.paypal.env === 'sandbox' ? ' (test mode)' : ''}</span></label> : null}
-        {billing.methods.worldfirst ? <label className="flex items-start gap-2 text-sm"><input type="radio" className="mt-1" checked={method === 'worldfirst'} onChange={() => { setMethod('worldfirst'); setIdem(newKey()); }} /><span><strong>Bank transfer (USD)</strong> — credit added when the transfer arrives, usually 1–3 business days</span></label> : null}
-      </fieldset>
-      {inVietnam ? (
-        <div className="grid gap-2 rounded-md border p-3">
-          <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={wantVat} onChange={(e) => { setWantVat(e.target.checked); setIdem(newKey()); }} /><span>I need a Vietnamese VAT invoice (hóa đơn GTGT)</span></label>
-          {wantVat ? (
-            <div className="grid gap-2 sm:grid-cols-2">
-              <div className="grid gap-1 sm:col-span-2"><Label htmlFor="vat-company">Company name (tên đơn vị)</Label><Input id="vat-company" value={vat.companyName} onChange={setV('companyName')} /></div>
-              <div className="grid gap-1"><Label htmlFor="vat-mst">Tax code (MST): 10 or 13 digits</Label><Input id="vat-mst" inputMode="numeric" value={vat.taxCode} onChange={setV('taxCode')} placeholder="0123456789 or 0123456789-001" /></div>
-              <div className="grid gap-1"><Label htmlFor="vat-email">Email to receive the invoice</Label><Input id="vat-email" type="email" value={vat.email} onChange={setV('email')} /></div>
-              <div className="grid gap-1 sm:col-span-2"><Label htmlFor="vat-address">Company address</Label><Input id="vat-address" value={vat.address} onChange={setV('address')} /></div>
-              <p className="text-xs text-muted-foreground sm:col-span-2">Issued as an e-invoice through Viettel S-Invoice after payment, and emailed to you. Saved for next time.</p>
-            </div>
-          ) : null}
+    <div className="grid gap-3">
+      <Step n={1} done={valid} active={!valid} title="Choose an amount">
+        <div className="flex flex-wrap gap-2">
+          {AMOUNTS.map((v) => (
+            <button key={v} type="button" onClick={() => { setAmount(String(v)); setIdem(newKey()); }}
+              className={cn('h-10 min-w-16 rounded-lg border px-4 text-sm font-semibold tabular-nums transition-colors', amount === String(v) ? 'border-[#a9f5cf]/70 bg-[#a9f5cf]/15' : 'hover:bg-muted/50')}>${v}</button>
+          ))}
+          <div className="flex h-10 items-center rounded-lg border px-3 focus-within:ring-2 focus-within:ring-ring/40">
+            <span className="text-sm text-muted-foreground">$</span>
+            <input aria-label="Other amount in US dollars" inputMode="decimal" className="w-20 bg-transparent px-1 text-sm font-semibold tabular-nums outline-none" placeholder="Other"
+              value={AMOUNTS.map(String).includes(amount) ? '' : amount} onChange={(e) => { setAmount(e.target.value.trim()); setIdem(newKey()); }} />
+          </div>
         </div>
-      ) : null}
-      {valid ? <div className="rounded-md bg-muted p-3 text-sm tabular-nums">Credit {usd(cents)} + VAT {(bp / 100).toFixed(bp % 100 ? 2 : 0)}% {usd(vatCents)} = <strong>{usd(total)}</strong> to pay</div> : <p className="text-sm text-destructive">Enter at least {usd(billing.minimumCents)}.</p>}
-      <Turnstile siteKey={me.turnstileSiteKey} action="add_credit" onToken={setToken} resetKey={reset} />
-      <div><Button disabled={!valid || !token || busy} onClick={submit}><CreditCard />{busy ? 'Working…' : method === 'paypal' ? 'Continue to PayPal' : 'Get bank details'}</Button></div>
+        {!valid && amount ? <p className="mt-2 text-xs text-destructive">Enter at least {usd(billing.minimumCents)}.</p> : <p className="mt-2 text-xs text-muted-foreground">Minimum {usd(billing.minimumCents)}. Credit doesn&apos;t expire.</p>}
+      </Step>
+      <Step n={2} done={valid && Boolean(method)} active={valid} title="Pay with">
+        <div className="flex flex-col gap-2 sm:flex-row">
+          {methodCard('worldfirst', 'Bank transfer (USD)', 'Credit is added when the transfer arrives, usually 1–3 business days.', billing.methods.worldfirst)}
+          {methodCard('paypal', billing.methods.paypal.enabled ? `PayPal or card${billing.methods.paypal.env === 'sandbox' ? ' (test mode)' : ''}` : 'PayPal or card', billing.methods.paypal.enabled ? 'Instant.' : 'Coming soon.', billing.methods.paypal.enabled)}
+        </div>
+      </Step>
+      <Step n={3} done={Boolean(profile) && !editing} active={valid && (!profile || editing)} title="Receipt details">
+        {profile && !editing ? (
+          <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+            <span className="min-w-0 text-muted-foreground"><span className="font-medium text-foreground">{profile.company || profile.name}</span> · {profile.email} · {countryName(profile.country)}{profile.taxId ? ` · Tax ID ${profile.taxId}` : ''}</span>
+            <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>Edit</Button>
+          </div>
+        ) : (
+          <><p className="mb-3 text-xs text-muted-foreground">Shown on your receipt. Your country sets the VAT: 0% outside Vietnam (export of services), 10% in Vietnam.</p>
+          <ProfileForm billing={billing} onSaved={async () => { setEditing(false); await onSaved(); }} onCancel={profile ? () => setEditing(false) : undefined} /></>
+        )}
+        {inVietnam && !editing ? (
+          <div className="mt-3 grid gap-2 rounded-lg border p-3">
+            <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={wantVat} onChange={(e) => { setWantVat(e.target.checked); setIdem(newKey()); }} /><span>I need a Vietnamese VAT invoice (hóa đơn GTGT)</span></label>
+            {wantVat ? (
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div className="grid gap-1 sm:col-span-2"><Label htmlFor="vat-company">Company name (tên đơn vị)</Label><Input id="vat-company" value={vat.companyName} onChange={setV('companyName')} /></div>
+                <div className="grid gap-1"><Label htmlFor="vat-mst">Tax code (MST): 10 or 13 digits</Label><Input id="vat-mst" inputMode="numeric" value={vat.taxCode} onChange={setV('taxCode')} placeholder="0123456789 or 0123456789-001" /></div>
+                <div className="grid gap-1"><Label htmlFor="vat-email">Email to receive the invoice</Label><Input id="vat-email" type="email" value={vat.email} onChange={setV('email')} /></div>
+                <div className="grid gap-1 sm:col-span-2"><Label htmlFor="vat-address">Company address</Label><Input id="vat-address" value={vat.address} onChange={setV('address')} /></div>
+                <p className="text-xs text-muted-foreground sm:col-span-2">Issued as an e-invoice through Viettel S-Invoice after payment, and emailed to you. Saved for next time.</p>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </Step>
+      <Step n={4} done={false} active={valid && Boolean(profile) && !editing} title="Review and pay">
+        {valid && profile ? (
+          <div className="mb-3 grid gap-1 rounded-lg bg-muted/60 p-3 text-sm tabular-nums">
+            <div className="flex justify-between"><span className="text-muted-foreground">Credit</span><span>{usd(cents)}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">VAT {(bp / 100).toFixed(bp % 100 ? 2 : 0)}%</span><span>{usd(vatCents)}</span></div>
+            <div className="mt-1 flex justify-between border-t pt-2 font-semibold"><span>To pay</span><span>{usd(total)}</span></div>
+          </div>
+        ) : <p className="mb-3 text-xs text-muted-foreground">{!valid ? 'Choose an amount first.' : 'Save your receipt details first.'}</p>}
+        <Turnstile siteKey={me.turnstileSiteKey} action="add_credit" onToken={setToken} resetKey={reset} />
+        <div className="mt-3 max-w-sm"><MintButton disabled={!valid || !profile || editing || !token || busy} onClick={submit}>{busy ? 'Working…' : method === 'paypal' ? `Pay ${valid ? usd(total) : ''} with PayPal` : `Get bank details for ${valid ? usd(total) : ''}`}</MintButton></div>
+      </Step>
     </div>
   );
 }
@@ -531,42 +570,79 @@ function BillingPage({ me, reload }: { me: Me; reload: () => Promise<void> }) {
   if (!billing) return <div className="grid gap-4"><Skeleton className="h-8 w-48" /><Skeleton className="h-40" /></div>;
   const receiptFor = new Map(billing.receipts.map((r) => [r.orderId, r]));
   const einvoiceFor = new Map(billing.einvoices.map((i) => [i.orderId, i]));
+  const free = billing.free;
+  const freeLeft = free ? Math.max(0, free.tokens - free.usedTokens) : 0;
+  const statusBadge = (st: Order['status']) => (
+    <span className={cn('rounded-full px-2 py-0.5 text-[11px] font-medium', st === 'paid' ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300' : st === 'pending' ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300' : 'bg-muted text-muted-foreground')}>
+      {st === 'paid' ? 'Paid' : st === 'pending' ? 'Waiting for payment' : 'Cancelled'}
+    </span>
+  );
   return (<>
-    <PageHeader title="Billing" description="Prepaid credit in US dollars. Each request is charged at its model's official price; free tokens are used first on free-tier models." />
-    <Section title="Balance">
-      <div className="text-3xl font-semibold tabular-nums">{usd(billing.availableCents)}</div>
-      {billing.pendingUsageCents > 0 ? <p className="mt-1 text-xs text-muted-foreground">Includes {usd(Math.ceil(billing.pendingUsageCents))} of usage not yet on the ledger.</p> : null}
-      {billing.free ? <p className="mt-2 text-sm text-muted-foreground">Free tokens: {tokens(Math.max(0, billing.free.tokens - billing.free.usedTokens))} left until {date(billing.free.expiresAt)}.</p> : null}
-      {billing.availableCents <= 0 ? <p className="mt-2 text-sm text-warning">With no credit, requests other than free tokens return HTTP 402 insufficient_credit.</p> : null}
-    </Section>
-    <Section title="Billing details" description="Shown on your receipts. Your country sets the VAT: 0% outside Vietnam (export of services), 10% in Vietnam."><ProfileForm billing={billing} onSaved={load} /></Section>
-    <Section title="Add credit"><AddCredit me={me} billing={billing} onOrder={(o) => { setOpen(o); void load(); }} /></Section>
-    {open?.bankTransfer ? <Section title={`Bank transfer ${open.reference}`} description="Pay this order from your bank."><BankTransfer order={open} /><div className="mt-3 flex gap-2"><Button variant="outline" size="sm" onClick={() => setOpen(null)}>Close</Button><Button variant="ghost" size="sm" onClick={() => cancel(open)}>Cancel order</Button></div></Section> : null}
-    <Section title="Orders and receipts" description="Every payment gets a receipt by email. Customers in Vietnam can ask for a VAT invoice (hóa đơn GTGT) when adding credit.">
-      {billing.orders.length === 0 ? <p className="text-sm text-muted-foreground">No orders yet.</p> : (
-        <div className="grid gap-2">{billing.orders.map((o) => {
-          const r = receiptFor.get(o.id);
-          const i = einvoiceFor.get(o.id);
-          return (
-            <div key={o.id} className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-md border p-3 text-sm">
-              <div className="min-w-0 flex-1"><div className="font-medium">{usd(o.amountCents)} credit · {o.method === 'paypal' ? 'PayPal' : 'Bank transfer'}</div><div className="text-xs text-muted-foreground">{date(o.createdAt)} · <code>{o.reference}</code> · {o.status}{o.vatCents ? ` · paid ${usd(o.totalCents)} incl. VAT` : ''}</div></div>
-              {i ? (i.status === 'issued' && i.invoiceNo
-                ? <span className="flex flex-wrap gap-2"><a className="underline" href={apiUrl(`/dashboard/me/billing/einvoices/${i.id}.pdf`)}>VAT invoice {i.invoiceNo} (PDF)</a>{i.codeOfTax ? <span className="text-xs text-muted-foreground">CQT {i.codeOfTax}</span> : null}</span>
-                : i.status === 'pending' ? <span className="text-xs text-muted-foreground">Your VAT invoice is being issued</span> : <span className="text-xs text-muted-foreground">VAT invoice {i.status}</span>) : null}
-              {r ? <span className="flex gap-2"><a className="underline" href={apiUrl(`/dashboard/me/billing/receipts/${r.id}`)} target="_blank" rel="noreferrer">Receipt {r.number}</a><a className="text-muted-foreground underline" href={apiUrl(`/dashboard/me/billing/receipts/${r.id}.pdf`)}>PDF</a></span> : null}
-              {o.status === 'pending' && o.method === 'worldfirst' ? <Button variant="outline" size="sm" onClick={() => view(o)}>Bank details</Button> : null}
-              {o.status === 'pending' ? <Button variant="ghost" size="sm" onClick={() => cancel(o)}>Cancel</Button> : null}
-            </div>
-          );
-        })}</div>
-      )}
-    </Section>
-    <Section title="Ledger" description="Every credit and charge. Usage is moved here in whole cents.">
-      {billing.ledger.length === 0 ? <p className="text-sm text-muted-foreground">Nothing yet.</p> : (
-        <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr className="border-b"><th className="p-2">Date</th><th className="p-2">Entry</th><th className="p-2 text-right">Amount</th></tr></thead>
-          <tbody>{billing.ledger.map((l) => <tr key={l.id} className="border-b last:border-0"><td className="p-2 whitespace-nowrap">{date(l.createdAt)}</td><td className="p-2">{l.description}</td><td className={cn('p-2 text-right tabular-nums', l.amountCents < 0 ? 'text-muted-foreground' : 'text-success')}>{usd(l.amountCents)}</td></tr>)}</tbody></table></div>
-      )}
-    </Section>
+    <PageHeader title="Billing" description="Prepaid credit in US dollars, charged per request at each model's official price. Free tokens are used first." />
+    <div className="mb-6 grid gap-4 rounded-2xl border bg-card p-5 md:grid-cols-[1fr_1.2fr] md:items-center md:p-6">
+      <div>
+        <div className="text-xs font-medium text-muted-foreground uppercase">Available credit</div>
+        <div className="mt-1 text-4xl font-semibold tracking-tight tabular-nums">{usd(billing.availableCents)}</div>
+        {billing.pendingUsageCents > 0 ? <p className="mt-1 text-xs text-muted-foreground">After {usd(Math.ceil(billing.pendingUsageCents))} of recent usage.</p> : null}
+        {billing.availableCents <= 0 ? <p className="mt-2 text-xs text-muted-foreground">{free && freeLeft > 0 ? 'You are on free tokens. Add credit to use other models, or to keep going after them.' : 'Add credit to make requests (without it they return HTTP 402).'}</p> : null}
+      </div>
+      {free ? (
+        <div className="rounded-xl bg-muted/50 p-4">
+          <div className="flex items-baseline justify-between text-sm"><span className="font-medium">Free tokens</span><span className="tabular-nums text-muted-foreground">{tokens(freeLeft)} of {tokens(free.tokens)} left</span></div>
+          <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-gradient-to-r from-[#a9f5cf] to-[#7aa6ff]" style={{ width: `${free.tokens ? Math.max(2, (freeLeft / free.tokens) * 100) : 0}%` }} /></div>
+          <div className="mt-2 text-xs text-muted-foreground">Until {date(free.expiresAt)}{free.models.length ? <> · on {free.models.map(friendlyModel).join(', ')}</> : null}</div>
+        </div>
+      ) : null}
+    </div>
+    <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+      <div className="min-w-0">
+        {open?.bankTransfer ? (
+          <div className="mb-4 rounded-2xl border border-[#a9f5cf]/50 bg-[#a9f5cf]/5 p-5">
+            <div className="flex flex-wrap items-center justify-between gap-2"><div className="font-semibold">Transfer {usd(open.bankTransfer.amount)} to finish order <code>{open.reference}</code></div>{statusBadge(open.status)}</div>
+            <p className="mt-1 mb-3 text-xs text-muted-foreground">Include the reference so we can match your payment. Credit is added when it arrives, and your receipt is emailed.</p>
+            <BankTransfer order={open} />
+            <div className="mt-3 flex gap-2"><Button variant="outline" size="sm" onClick={() => setOpen(null)}>Done</Button><Button variant="ghost" size="sm" onClick={() => cancel(open)}>Cancel order</Button></div>
+          </div>
+        ) : null}
+        <div className="rounded-2xl border bg-card p-5 md:p-6">
+          <div className="mb-4 text-lg font-semibold">Add credit</div>
+          <AddCredit me={me} billing={billing} onOrder={(o) => { setOpen(o); void load(); }} onSaved={load} />
+        </div>
+      </div>
+      <div className="grid min-w-0 gap-4">
+        <div className="rounded-2xl border bg-card p-5">
+          <div className="mb-1 font-semibold">Orders and receipts</div>
+          <p className="mb-3 text-xs text-muted-foreground">Every payment gets a receipt by email. Customers in Vietnam can ask for a VAT invoice when adding credit.</p>
+          {billing.orders.length === 0 ? <p className="text-sm text-muted-foreground">No orders yet.</p> : (
+            <div className="grid gap-2">{billing.orders.map((o) => {
+              const r = receiptFor.get(o.id);
+              const i = einvoiceFor.get(o.id);
+              return (
+                <div key={o.id} className="grid gap-1.5 rounded-xl border p-3 text-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-semibold tabular-nums">{usd(o.amountCents)}</span>{statusBadge(o.status)}</div>
+                  <div className="text-xs text-muted-foreground">{date(o.createdAt)} · {o.method === 'paypal' ? 'PayPal' : 'Bank transfer'} · <code>{o.reference}</code>{o.vatCents ? ` · ${usd(o.totalCents)} incl. VAT` : ''}</div>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                    {r ? <><a className="underline" href={apiUrl(`/dashboard/me/billing/receipts/${r.id}`)} target="_blank" rel="noreferrer">Receipt {r.number}</a><a className="text-muted-foreground underline" href={apiUrl(`/dashboard/me/billing/receipts/${r.id}.pdf`)}>PDF</a></> : null}
+                    {i ? (i.status === 'issued' && i.invoiceNo
+                      ? <a className="underline" href={apiUrl(`/dashboard/me/billing/einvoices/${i.id}.pdf`)}>VAT invoice {i.invoiceNo}</a>
+                      : <span className="text-muted-foreground">{i.status === 'pending' ? 'VAT invoice being issued' : `VAT invoice ${i.status}`}</span>) : null}
+                    {o.status === 'pending' && o.method === 'worldfirst' ? <Button variant="outline" size="sm" className="h-7" onClick={() => view(o)}>Bank details</Button> : null}
+                    {o.status === 'pending' ? <Button variant="ghost" size="sm" className="h-7" onClick={() => cancel(o)}>Cancel</Button> : null}
+                  </div>
+                </div>
+              );
+            })}</div>
+          )}
+        </div>
+        <details className="group rounded-2xl border bg-card p-5">
+          <summary className="flex cursor-pointer list-none items-center justify-between font-semibold">Ledger<ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" /></summary>
+          <p className="mt-1 mb-3 text-xs text-muted-foreground">Every credit and charge. Usage is moved here in whole cents.</p>
+          {billing.ledger.length === 0 ? <p className="text-sm text-muted-foreground">Nothing yet.</p> : (
+            <div className="grid gap-1 text-sm">{billing.ledger.map((l) => <div key={l.id} className="flex items-baseline justify-between gap-3 border-b py-1.5 last:border-0"><span className="min-w-0"><span className="block truncate">{l.description}</span><span className="text-xs text-muted-foreground">{date(l.createdAt)}</span></span><span className={cn('shrink-0 tabular-nums', l.amountCents < 0 ? 'text-muted-foreground' : 'text-emerald-600 dark:text-emerald-300')}>{usd(l.amountCents)}</span></div>)}</div>
+          )}
+        </details>
+      </div>
+    </div>
   </>);
 }
 
