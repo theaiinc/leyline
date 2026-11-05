@@ -332,14 +332,15 @@ export class D1BillingStore {
 
   // ── ledger and usage ──────────────────────────────────────────────────────────────────────────────────
 
-  /** The balance: the ledger's sum in cents, less usage not yet moved to it (micros, < 1 cent). */
+  /** The balance: the ledger's sum in cents, less usage and add-on fees not yet moved to it (micros, < 1 cent each). */
   async balance(workspaceId: string): Promise<{ cents: number; pendingMicros: number; availableMicros: number }> {
-    const [sum, accrual] = await Promise.all([
+    const [sum, accrual, addons] = await Promise.all([
       this.first<{ cents: number }>('SELECT COALESCE(SUM(amount_cents), 0) AS cents FROM ledger WHERE workspace_id = ?', workspaceId),
       this.first<{ micros: number }>('SELECT micros FROM usage_accrual WHERE workspace_id = ?', workspaceId),
+      this.first<{ micros: number }>('SELECT COALESCE(SUM(micros), 0) AS micros FROM addon_accrual WHERE workspace_id = ?', workspaceId),
     ]);
     const cents = Number(sum?.cents ?? 0);
-    const pendingMicros = Number(accrual?.micros ?? 0);
+    const pendingMicros = Number(accrual?.micros ?? 0) + Number(addons?.micros ?? 0);
     return { cents, pendingMicros, availableMicros: cents * MICROS_PER_CENT - pendingMicros };
   }
 
@@ -358,6 +359,23 @@ export class D1BillingStore {
         SELECT ?, workspace_id, -(micros / ${MICROS_PER_CENT}), 'usage', 'usage:' || workspace_id || ':' || (flushes + 1), 'API usage', ? FROM usage_accrual WHERE workspace_id = ? AND micros >= ${MICROS_PER_CENT}`)
         .bind(`led_${randomUUID()}`, at, workspaceId),
       this.db.prepare(`UPDATE usage_accrual SET micros = micros % ${MICROS_PER_CENT}, flushes = flushes + 1 WHERE workspace_id = ? AND micros >= ${MICROS_PER_CENT}`).bind(workspaceId),
+    ]);
+  }
+
+  /**
+   * Takes a paid add-on's fee (e.g. PII protection) from the balance, like chargeUsage but accrued on its own and
+   * moved to the ledger as its own usage line (`description`, e.g. "PII protection"), one D1 batch.
+   */
+  async chargeAddon(workspaceId: string, addon: string, micros: number, description: string): Promise<void> {
+    const m = Math.max(0, Math.round(micros));
+    if (!m) return;
+    const at = this.now();
+    await this.db.batch([
+      this.db.prepare('INSERT INTO addon_accrual (workspace_id, addon, micros, flushes) VALUES (?, ?, ?, 0) ON CONFLICT(workspace_id, addon) DO UPDATE SET micros = micros + excluded.micros').bind(workspaceId, addon, m),
+      this.db.prepare(`INSERT INTO ledger (id, workspace_id, amount_cents, kind, source_key, description, created_at)
+        SELECT ?, workspace_id, -(micros / ${MICROS_PER_CENT}), 'usage', 'addon:' || addon || ':' || workspace_id || ':' || (flushes + 1), ?, ? FROM addon_accrual WHERE workspace_id = ? AND addon = ? AND micros >= ${MICROS_PER_CENT}`)
+        .bind(`led_${randomUUID()}`, description.slice(0, 200), at, workspaceId, addon),
+      this.db.prepare(`UPDATE addon_accrual SET micros = micros % ${MICROS_PER_CENT}, flushes = flushes + 1 WHERE workspace_id = ? AND addon = ? AND micros >= ${MICROS_PER_CENT}`).bind(workspaceId, addon),
     ]);
   }
 

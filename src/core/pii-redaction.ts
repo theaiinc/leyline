@@ -71,6 +71,13 @@ import { PresidioDetector } from '@theaiinc/veil-presidio';
     private readonly fallback: boolean;
     private streamBuffers = new Map<string, string>();
 
+    private redacted = false;
+
+    /** True once a request's messages went through redaction (what the paid PII protection add-on charges for). */
+    get applied(): boolean {
+      return this.redacted;
+    }
+
     /** True when Presidio was requested but no analyzer endpoint is configured. */
     get presidioUnavailable(): boolean {
       return this.fallback;
@@ -146,6 +153,7 @@ import { PresidioDetector } from '@theaiinc/veil-presidio';
       if (typeof value !== 'object') return value;
       const request = value as Record<string, unknown>;
       if (!Array.isArray(request.messages)) return value;
+      this.redacted = true;
       const redactBlock = async (part: unknown): Promise<unknown> => {
         if (!part || typeof part !== 'object') return part;
         const block = { ...(part as Record<string, unknown>) };

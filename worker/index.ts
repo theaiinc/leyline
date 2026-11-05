@@ -47,6 +47,8 @@ interface Env {
   LM_ARENA_URL?: string;
   /** Optional Veil Presidio analyzer endpoint; regex is used when unset. */
   PRESIDIO_ANALYZER_URL?: string;
+  /** PII protection add-on price, US dollars per 1M input tokens (default 0.20, src/core/addons.ts). */
+  PII_PRICE_PER_M_TOKENS?: string;
   /** Billing email sender ("Valefront Billing <billing@valefront.com>"), on a domain onboarded to Email Sending. */
   BILLING_FROM?: string;
   /** Turnstile: public site key (var) and Siteverify secret (secret). */
