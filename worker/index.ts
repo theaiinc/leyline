@@ -297,10 +297,19 @@ export default {
     liveCtx = ctx;
     if (pending.size) ctx.waitUntil(Promise.allSettled([...pending]));
     const url = new URL(request.url);
-    // The billing admin host: straight to the app, whose own check (behind Cloudflare Access) decides.
+    // The platform admin host (behind Cloudflare Access): the owner's dashboard page and files (nothing private in
+    // them), and everything else to the app, whose own Access check (adminHostGate) decides on every request.
     if (url.hostname === (env.ADMIN_HOST || 'adm.valefront.com')) {
+      const asset = assetPath(url.pathname);
+      if (asset) {
+        const res = await env.ASSETS.fetch(new Request(new URL(asset, url), request));
+        if (asset !== '/') return res;
+        const page = new Response(res.body, res);
+        page.headers.set('Cache-Control', 'no-store');
+        return page;
+      }
       const b = await current(env);
-      return handleAsNodeRequest(b.port, request, env, ctx as never);
+      return handleAsNodeRequest(b.port, dashboardApiRequest(request) ?? request, env, ctx as never);
     }
     // llm.theaiinc.com is an API compatibility alias only. Keep API callers working there,
     // but send dashboard and authentication traffic to Valefront's canonical dashboard host.

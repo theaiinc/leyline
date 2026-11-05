@@ -10,7 +10,7 @@ import { logger } from './core/logger';
 import { QuotaManager } from './core/quota-manager';
 import { config } from './config';
 import { requireClientApiKey } from './core/client-auth';
-import { mountAdminBilling } from './core/admin-billing';
+import { adminHostGate, mountAdminBilling } from './core/admin-billing';
 import { mountCustomerRoutes } from './core/customer-routes';
 import { adminOf, sessionOf, mountHosted, providersOverBudget, resumeAdminSession, recordUsage, servedBy, requireIssuedKey, resolveModel, sameOrigin, type HostedOptions } from './core/hosted';
 import { createRequireAegisToken, AegisTenant } from './core/aegis-auth';
@@ -253,8 +253,12 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   app.use(cors({ exposedHeaders: ['Mcp-Session-Id'] }));
   // The PayPal webhook's signature is checked over the body exactly as it arrived.
   app.use(express.json({ limit: config.bodyLimit, verify: (req, _res, buf) => { if ((req as Request).url?.startsWith('/webhooks/')) (req as Request & { rawBody?: Buffer }).rawBody = Buffer.from(buf); } }));
-  // Billing admin lives on its own host (adm.valefront.com, behind Cloudflare Access); nothing else is served there.
-  if (hosted?.adminHost) mountAdminBilling(app, hosted);
+  // The platform admin host (adm.valefront.com, behind Cloudflare Access): every request there is checked first;
+  // the owner's dashboard is served there, and customer billing is administered under /billing.
+  if (hosted?.adminHost) {
+    app.use(adminHostGate(hosted));
+    mountAdminBilling(app, hosted);
+  }
   // An admin whose session ran out keeps going on Aegis's refresh token (hosted.ts).
   if (hosted?.login) app.use(resumeAdminSession(hosted));
 

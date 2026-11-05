@@ -7,11 +7,12 @@ import { ModeChangeError, PROVIDERS, providerStatus, setMode, type ProviderId } 
 import type { HostedOptions } from './hosted';
 
 /**
- * Billing admin on its own host (adm.valefront.com), behind a Cloudflare Access application, plus this app's own
- * check of the Access token (cloudflare-access.ts). Requests for that host never reach the rest of the app, and
- * these pages exist on no other host.
+ * The platform admin host (adm.valefront.com), behind a Cloudflare Access application, plus this app's own check
+ * of the Access token (cloudflare-access.ts) on every request for that host (adminHostGate). dash.valefront.com is
+ * the customers' dashboard; the owner's dashboard (providers, routing, offered models, spending...) is served here,
+ * and customer billing is administered under /billing:
  *
- *   GET  /                          orders, settings, PayPal mode
+ *   GET  /billing/                  orders, settings, PayPal mode
  *   GET  /api/orders?status=        orders as JSON (automation, with an Access service token)
  *   POST /orders/:id/mark-paid      WorldFirst transfer arrived: credit, invoice, receipt, email (once)
  *   POST /orders/:id/resend-email   send the receipt email again
@@ -22,7 +23,33 @@ import type { HostedOptions } from './hosted';
  *   POST /einvoices/:id/cancel       cancel an issued e-invoice at Viettel (with the agreement's description)
  *   POST /einvoices/:id/replace      issue a replacement e-invoice with corrected buyer details
  */
-type AdminRequest = Request & { billingAdmin?: string };
+type AdminRequest = Request & { billingAdmin?: string; accessAdmin?: string };
+
+/** Every request for the admin host: a platform admin through Cloudflare Access (or an Access service token), or 403. */
+export function adminHostGate(opts: HostedOptions) {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    if (!isAdminHost(opts, req)) return next();
+    const who = await accessAdmin(typeof req.headers['cf-access-jwt-assertion'] === 'string' ? req.headers['cf-access-jwt-assertion'] : undefined, opts.access, opts.adminEmails);
+    if (!who) {
+      res.status(opts.access ? 403 : 503).type('text').send(opts.access ? 'Not allowed.' : 'The admin host is not configured (CF_ACCESS_TEAM_DOMAIN, CF_ACCESS_AUD).');
+      return;
+    }
+    if (req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'OPTIONS') {
+      const origin = req.headers.origin;
+      if (origin ? origin !== `https://${opts.adminHost}` : !who.startsWith('service:')) {
+        res.status(403).type('text').send('Cross-site request refused.');
+        return;
+      }
+    }
+    (req as AdminRequest).accessAdmin = who;
+    next();
+  };
+}
+
+/** The platform admin this request was let through as (adminHostGate), if any. */
+export function accessAdminOf(req: Request): string | null {
+  return (req as AdminRequest).accessAdmin ?? null;
+}
 
 const esc = (t: unknown) => String(t ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
@@ -34,20 +61,16 @@ export function isAdminHost(opts: HostedOptions, req: Request): boolean {
 export function mountAdminBilling(app: Express, opts: HostedOptions): void {
   const router = express.Router();
   router.use(express.urlencoded({ extended: false, limit: '64kb' }));
-  router.use(async (req: Request, res: Response, next: NextFunction) => {
-    const who = await accessAdmin(typeof req.headers['cf-access-jwt-assertion'] === 'string' ? req.headers['cf-access-jwt-assertion'] : undefined, opts.access, opts.adminEmails);
-    if (!who) return res.status(opts.access ? 403 : 503).type('text').send(opts.access ? 'Not allowed.' : 'The admin host is not configured (CF_ACCESS_TEAM_DOMAIN, CF_ACCESS_AUD).');
-    if (req.method !== 'GET' && req.method !== 'HEAD') {
-      const origin = req.headers.origin;
-      const service = who.startsWith('service:');
-      if (origin ? origin !== `https://${opts.adminHost}` : !service) return res.status(403).type('text').send('Cross-site request refused.');
-    }
+  router.use((req: Request, res: Response, next: NextFunction) => {
+    // adminHostGate already checked Cloudflare Access and the request's origin.
+    const who = accessAdminOf(req);
+    if (!who) return res.status(403).type('text').send('Not allowed.');
     if (!opts.billing) return res.status(503).type('text').send('Billing is not configured on this server.');
     (req as AdminRequest).billingAdmin = who;
     next();
   });
 
-  const back = (res: Response, note: string) => res.redirect(303, `/?note=${encodeURIComponent(note)}`);
+  const back = (res: Response, note: string) => res.redirect(303, `/billing/?note=${encodeURIComponent(note)}`);
   const fail = (req: Request, res: Response, err: unknown) => {
     const message = err instanceof BillingError ? err.message : 'Failed; see the Worker logs.';
     if (!(err instanceof BillingError)) console.error('[admin-billing]', err);
@@ -234,9 +257,7 @@ export function mountAdminBilling(app: Express, opts: HostedOptions): void {
     res.type('html').send(adminPage({ who: (req as AdminRequest).billingAdmin!, note, status, orders, receiptOf, account, seller, vat, einvoices, fx: fx?.value ?? null, providers }));
   });
 
-  app.use((req, res, next) => (isAdminHost(opts, req) ? router(req, res, next) : next()));
-  // Nothing else is served on the admin host.
-  app.use((req, res, next) => (isAdminHost(opts, req) ? res.status(404).type('text').send('Not found.') : next()));
+  app.use('/billing', (req, res, next) => (isAdminHost(opts, req) ? router(req, res, next) : next()));
 }
 
 function field(name: string, label: string, value: unknown, extra = ''): string {
@@ -252,24 +273,24 @@ function adminPage(p: {
   const prows = p.providers.map((pr) => {
     const creds = (m: 'sandbox' | 'live') => `${yes(pr[m].ready)}<br><small>${pr[m].secrets.map((x) => `${esc(x.name)}${x.optional ? ' (optional)' : ''}: ${x.set ? 'set' : 'missing'}`).join('<br>')}</small>`;
     const to = pr.mode === 'live' ? 'sandbox' : 'live';
-    const form = `<form method="post" action="/providers/${esc(pr.id)}/mode"${to === 'live' ? ` onsubmit="return this.confirm.value==='LIVE' || (alert('Type LIVE to switch to live.'), false)"` : ''}><input type="hidden" name="mode" value="${to}">${to === 'live' ? '<input name="confirm" placeholder="Type LIVE" size="9" autocomplete="off">' : ''}<button>Switch to ${to}</button></form>`;
-    const check = pr.id === 'sinvoice' ? (['sandbox', 'live'] as const).map((m) => `<form method="post" action="/providers/sinvoice/check"><input type="hidden" name="mode" value="${m}"><button>Check ${m} template/series</button></form>`).join('') : '';
+    const form = `<form method="post" action="/billing/providers/${esc(pr.id)}/mode"${to === 'live' ? ` onsubmit="return this.confirm.value==='LIVE' || (alert('Type LIVE to switch to live.'), false)"` : ''}><input type="hidden" name="mode" value="${to}">${to === 'live' ? '<input name="confirm" placeholder="Type LIVE" size="9" autocomplete="off">' : ''}<button>Switch to ${to}</button></form>`;
+    const check = pr.id === 'sinvoice' ? (['sandbox', 'live'] as const).map((m) => `<form method="post" action="/billing/providers/sinvoice/check"><input type="hidden" name="mode" value="${m}"><button>Check ${m} template/series</button></form>`).join('') : '';
     return `<tr><td>${esc(pr.label)}</td><td><strong>${pr.mode === 'live' ? 'LIVE' : 'SANDBOX'}</strong></td><td>${creds('sandbox')}</td><td>${creds('live')}</td><td>${form}${check}</td></tr>`;
   }).join('');
   const erows = p.einvoices.map((e) => {
-    const actions = e.status === 'failed' ? `<form method="post" action="/einvoices/${esc(e.id)}/retry"><button>Retry</button></form>`
+    const actions = e.status === 'failed' ? `<form method="post" action="/billing/einvoices/${esc(e.id)}/retry"><button>Retry</button></form>`
       : e.status === 'issued' ? `<details><summary>Cancel / replace</summary>
-<form method="post" action="/einvoices/${esc(e.id)}/cancel" onsubmit="return confirm('Cancel this e-invoice at Viettel?')"><input name="description" placeholder="Cancellation agreement" required><button>Cancel at Viettel</button></form>
-<form method="post" action="/einvoices/${esc(e.id)}/replace">${field('companyName', 'Company', e.details.companyName, 'required')}${field('taxCode', 'MST', e.details.taxCode, 'required')}${field('address', 'Address', e.details.address, 'required')}${field('email', 'Email', e.details.email, 'required')}${field('reason', 'Reason', '', 'required')}<button>Issue replacement</button></form></details>` : '';
+<form method="post" action="/billing/einvoices/${esc(e.id)}/cancel" onsubmit="return confirm('Cancel this e-invoice at Viettel?')"><input name="description" placeholder="Cancellation agreement" required><button>Cancel at Viettel</button></form>
+<form method="post" action="/billing/einvoices/${esc(e.id)}/replace">${field('companyName', 'Company', e.details.companyName, 'required')}${field('taxCode', 'MST', e.details.taxCode, 'required')}${field('address', 'Address', e.details.address, 'required')}${field('email', 'Email', e.details.email, 'required')}${field('reason', 'Reason', '', 'required')}<button>Issue replacement</button></form></details>` : '';
     return `<tr><td>${esc(new Date(e.createdAt).toISOString().slice(0, 10))}</td><td>${esc(e.details.companyName)}<br><small>MST ${esc(e.details.taxCode)} · ${esc(e.details.email)}</small></td><td class="n">${esc(formatUsd(e.totalCents))}</td>
 <td>${e.mode === 'sandbox' ? '<strong>SANDBOX</strong> ' : ''}${esc(e.status)}${e.record ? `<br><small>${esc(e.record.invoiceNo)}${e.record.codeOfTax ? ` · CQT ${esc(e.record.codeOfTax)}` : ''} · email ${esc(e.emailStatus ?? 'not sent')}</small>` : ''}${e.lastError ? `<br><small>${esc(e.lastError)} (${e.attempts} attempts)</small>` : ''}</td><td>${actions}</td></tr>`;
   }).join('');
   const rows = p.orders.map((o) => {
     const r = p.receiptOf.get(o.id);
     const action = o.status === 'pending' && o.method === 'worldfirst'
-      ? `<form method="post" action="/orders/${esc(o.id)}/mark-paid" onsubmit="return confirm('Mark ${esc(o.reference)} paid (${esc(formatUsd(o.totalCents))})?')">
+      ? `<form method="post" action="/billing/orders/${esc(o.id)}/mark-paid" onsubmit="return confirm('Mark ${esc(o.reference)} paid (${esc(formatUsd(o.totalCents))})?')">
 <input name="receivedUsd" placeholder="Received USD" value="${esc((o.totalCents / 100).toFixed(2))}" size="8"><input name="bankReference" placeholder="Bank transaction ref" size="14"><button>Mark paid</button></form>`
-      : r ? `${esc(r.number)} · email ${esc(r.emailStatus ?? 'not sent')} <form method="post" action="/orders/${esc(o.id)}/resend-email" style="display:inline"><button>Resend email</button></form>` : '';
+      : r ? `${esc(r.number)} · email ${esc(r.emailStatus ?? 'not sent')} <form method="post" action="/billing/orders/${esc(o.id)}/resend-email" style="display:inline"><button>Resend email</button></form>` : '';
     return `<tr><td>${esc(new Date(o.createdAt).toISOString().slice(0, 16).replace('T', ' '))}</td><td><code>${esc(o.reference)}</code></td><td>${esc(o.buyer.company || o.buyer.name)}<br><small>${esc(o.buyer.email)} · ${esc(o.buyer.country)}</small></td>
 <td>${esc(METHOD_LABELS[o.method])}${o.mode === 'sandbox' ? ' <strong>SANDBOX</strong>' : ''}${o.einvoiceRequest ? '<br><small>VAT invoice requested</small>' : ''}</td><td class="n">${esc(formatUsd(o.amountCents))}<br><small>+VAT ${esc(vatLabel(o.vatRateBp))} = ${esc(formatUsd(o.totalCents))}</small></td><td>${esc(o.status)}${o.paidBy ? `<br><small>${esc(o.paidBy)}</small>` : ''}</td><td>${action}</td></tr>`;
   }).join('');
@@ -284,20 +305,20 @@ label{display:flex;flex-direction:column;font-size:12px;color:#555}input,textare
 ${p.note ? `<p class="note">${esc(p.note)}</p>` : ''}
 <h2>Providers: sandbox or live</h2><p><small>Secrets are Worker secrets (wrangler secret put); this page shows only whether they're set. In sandbox, PayPal is offered to admin workspaces only, and its receipts are marked SANDBOX and numbered apart. A VAT invoice is issued only through S-Invoice in its payment's mode. Every switch is audit-logged with who made it.</small></p>
 <div class="wrap"><table><thead><tr><th>Provider</th><th>Mode</th><th>Sandbox credentials</th><th>Live credentials</th><th></th></tr></thead><tbody>${prows}</tbody></table></div>
-<h2>Orders</h2><p><a href="/">All</a> · <a href="/?status=pending">Pending</a> · <a href="/?status=paid">Paid</a> · <a href="/?status=cancelled">Cancelled</a></p>
+<h2>Orders</h2><p><a href="/billing/">All</a> · <a href="/billing/?status=pending">Pending</a> · <a href="/billing/?status=paid">Paid</a> · <a href="/billing/?status=cancelled">Cancelled</a></p>
 <div class="wrap"><table><thead><tr><th>Created (UTC)</th><th>Reference</th><th>Buyer</th><th>Method</th><th class="n">Credit / total</th><th>Status</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="7">No orders.</td></tr>'}</tbody></table></div>
 <h2>Vietnamese VAT e-invoices (Viettel S-Invoice)</h2><p>Requested invoices wait as pending until S-Invoice is configured in their payment's mode. Exchange rate: <strong>${p.fx ? `${esc(p.fx.vndPerUsd)} VND/USD, set ${esc(p.fx.date)}` : 'not set'}</strong>.</p>
-<form class="settings" method="post" action="/settings/exchange-rate">${field('vndPerUsd', 'VND per 1 USD (for invoices issued from now)', p.fx?.vndPerUsd ?? '', 'required')}<div><button>Save rate and issue pending</button></div></form>
-<form method="post" action="/einvoices/process" style="margin:8px 0"><button>Run the retry job now</button></form>
+<form class="settings" method="post" action="/billing/settings/exchange-rate">${field('vndPerUsd', 'VND per 1 USD (for invoices issued from now)', p.fx?.vndPerUsd ?? '', 'required')}<div><button>Save rate and issue pending</button></div></form>
+<form method="post" action="/billing/einvoices/process" style="margin:8px 0"><button>Run the retry job now</button></form>
 <div class="wrap"><table><thead><tr><th>Paid</th><th>Buyer</th><th class="n">Total</th><th>Status</th><th></th></tr></thead><tbody>${erows || '<tr><td colspan="5">No VAT invoices requested.</td></tr>'}</tbody></table></div>
-<h2>WorldFirst receiving account (USD)</h2><form class="settings" method="post" action="/settings/worldfirst">
+<h2>WorldFirst receiving account (USD)</h2><form class="settings" method="post" action="/billing/settings/worldfirst">
 ${field('accountName', 'Account name', a?.accountName, 'required')}${field('accountNumber', 'Account number', a?.accountNumber, 'required')}${field('bankName', 'Bank name', a?.bankName, 'required')}
 ${field('swiftCode', 'SWIFT/BIC', a?.swiftCode, 'required')}${field('routingNumber', 'Routing number (ACH/ABA)', a?.routingNumber)}${field('bankAddress', 'Bank address', a?.bankAddress)}
 <label>Instructions<textarea name="instructions">${esc(a?.instructions)}</textarea></label><div><button>Save account</button></div></form>
-<h2>Seller (legal) details on invoices and receipts</h2><form class="settings" method="post" action="/settings/legal">
+<h2>Seller (legal) details on invoices and receipts</h2><form class="settings" method="post" action="/billing/settings/legal">
 ${field('companyName', 'Company name', p.seller.companyName, 'required')}${field('localName', 'Registered Vietnamese name', p.seller.localName)}${field('taxCode', 'Enterprise / tax code (MST)', p.seller.taxCode, 'required')}
 ${field('address', 'Address', p.seller.address, 'required')}${field('email', 'Email', p.seller.email, 'required')}<div><button>Save legal details</button></div></form>
-<h2>VAT by buyer country</h2><form class="settings" method="post" action="/settings/vat">
+<h2>VAT by buyer country</h2><form class="settings" method="post" action="/billing/settings/vat">
 ${field('defaultBp', 'Default rate, basis points (0 = export of services)', p.vat.defaultBp, 'required')}
 <label>Per country (CC=basis points, one per line; 1000 = 10%)<textarea name="byCountry">${esc(Object.entries(p.vat.byCountry).map(([c, r]) => `${c}=${r}`).join('\n'))}</textarea></label><div><button>Save VAT rates</button></div></form>
 </main></body></html>`;

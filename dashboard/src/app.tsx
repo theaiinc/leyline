@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Activity, Calculator, FlaskConical, KeyRound, LayoutDashboard, Layers, LogOut, Moon, RefreshCw, Route, Server, Sun, Wallet } from 'lucide-react';
+import { Activity, Calculator, CreditCard, FlaskConical, KeyRound, LayoutDashboard, Layers, LogOut, Moon, RefreshCw, Route, Server, Sun, Wallet } from 'lucide-react';
 import { SideNav, navIds, type NavEntry } from '@/components/side-nav';
 import { Card, CardContent } from '@/components/ui/card';
 import { PageHeader } from '@/components/common';
@@ -34,10 +34,12 @@ const NAV: Nav[] = [
   { id: 'playground', label: 'Playground', icon: FlaskConical },
   { id: 'activity', label: 'Activity', icon: Activity },
 ];
-/** Money in one place: spending (hosted) and the cost calculator. Customer billing is administered on
- * adm.valefront.com (platform admins only, behind Cloudflare Access), never on this dashboard. */
+/** Money in one place: spending (hosted), customer billing (hosted: its own pages under /billing on the platform
+ * admin host) and the cost calculator. */
+const CUSTOMER_BILLING = 'customer-billing';
 const BILLING: Nav[] = [
   { id: 'spending', label: 'Spending', icon: Wallet, hosted: true },
+  { id: CUSTOMER_BILLING, label: 'Customer billing', icon: CreditCard, hosted: true },
   { id: 'calculator', label: 'Cost calculator', icon: Calculator },
 ];
 
@@ -79,7 +81,12 @@ export function App() {
   const nav = navFor(hosted);
   const current = navIds(nav).includes(page) ? page : 'overview';
 
+  // Customer billing is a set of server pages on the admin host, not a page of this app.
+  const goTo = (id: string) => { if (id === CUSTOMER_BILLING) window.location.href = '/billing/'; else go(id); };
+
   async function signOut() {
+    // Hosted, this dashboard is only on the platform admin host, signed in through Cloudflare Access.
+    if (hosted) { window.location.href = '/cdn-cgi/access/logout'; return; }
     const res = await fetch(apiUrl('/auth/logout'), { method: 'POST', credentials: 'same-origin' });
     // Aegis's sign-out page ends the Aegis session too; without it the next sign-in skipped the login.
     const next = res.ok ? ((await res.json().catch(() => null)) as { next?: string } | null)?.next : undefined;
@@ -100,7 +107,7 @@ export function App() {
             {hosted && d.session?.signIn && d.session.email !== 'token' ? <Button variant="ghost" size="icon" onClick={signOut} aria-label="Sign out"><LogOut /></Button> : null}
           </div>
         </div>
-        <SideNav entries={nav} current={current} go={go} />
+        <SideNav entries={nav} current={current} go={goTo} />
         <div className="mt-auto hidden p-3 md:block">
           <Separator className="mb-3" />
           {hosted ? (
