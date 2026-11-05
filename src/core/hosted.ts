@@ -668,6 +668,22 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
   // Spend by provider and model for a month (default: this one), and which months have any.
   app.get('/admin/api/spend', guard, async (req, res) => {
     const month = typeof req.query.month === 'string' && /^\d{4}-\d{2}$/.test(req.query.month) ? req.query.month : undefined;
+    const keyId = typeof req.query.key === 'string' ? req.query.key : undefined;
+    if (keyId) {
+      const key = await opts.keys.get(keyId);
+      if (!key) return res.status(404).json({ error: 'key_not_found' });
+      const [usage, months] = await Promise.all([opts.keys.usage(keyId, month), opts.keys.spendMonths()]);
+      const spend = {
+        month: usage.month,
+        usd: usage.usd ?? 0,
+        requests: usage.requests,
+        tokens: usage.promptTokens + usage.completionTokens,
+        byProvider: usage.byProvider,
+        byModel: usage.byServed,
+        byDay: usage.byDay,
+      };
+      return res.json({ spend, months, monthlyBudgetUsd: opts.monthlyBudgetUsd ?? null, key: { id: key.id, name: key.name } });
+    }
     const [spend, months] = await Promise.all([opts.keys.spend(month), opts.keys.spendMonths()]);
     res.json({ spend, months, monthlyBudgetUsd: opts.monthlyBudgetUsd ?? null });
   });

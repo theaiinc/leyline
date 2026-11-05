@@ -345,6 +345,32 @@ describe('spend by provider and model', () => {
   });
 });
 
+describe('key-filtered spend route', () => {
+  it('returns only the requested key totals and 404s for an unknown key', async () => {
+    const { app } = setup({ prices: { 'gemini-2.5-pro': { input: 10_000, output: 0 } }, defaultPrice: { input: 0, output: 0 } });
+    const a = (await request(app).post('/admin/api/keys').set(ADMIN).send({ name: 'A' })).body;
+    const b = (await request(app).post('/admin/api/keys').set(ADMIN).send({ name: 'B' })).body;
+
+    expect((await request(app).post('/v1/chat/completions').set({ Authorization: `Bearer ${a.key}` }).send({ model: 'gemini-2.5-pro', messages: [{ role: 'user', content: 'a' }] })).status).toBe(200);
+    expect((await request(app).post('/v1/chat/completions').set({ Authorization: `Bearer ${b.key}` }).send({ model: 'gemini-2.5-pro', messages: [{ role: 'user', content: 'b' }] })).status).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const aggregate = await request(app).get('/admin/api/spend').set(ADMIN);
+    const onlyA = await request(app).get(`/admin/api/spend?key=${encodeURIComponent(a.record.id)}`).set(ADMIN);
+    const unknown = await request(app).get('/admin/api/spend?key=missing-key').set(ADMIN);
+
+    expect(aggregate.status).toBe(200);
+    expect(aggregate.body.spend.requests).toBe(2);
+    expect(onlyA.status).toBe(200);
+    expect(onlyA.body.key).toEqual({ id: a.record.id, name: 'A' });
+    expect(onlyA.body.spend.requests).toBe(1);
+    expect(onlyA.body.spend.usd).toBeCloseTo(1);
+    expect(onlyA.body.spend.requests).not.toBe(aggregate.body.spend.requests);
+    expect(unknown.status).toBe(404);
+    expect(unknown.body).toEqual({ error: 'key_not_found' });
+  });
+});
+
 describe('empty offered model pool', () => {
   it('lists provider models while excluding blocked and key-capped models', async () => {
     const { app } = setup({ models: [], aliases: {}, blockedModels: ['claude-*'] });
