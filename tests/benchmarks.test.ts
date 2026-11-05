@@ -74,15 +74,22 @@ describe('benchmark matching and ranking', () => {
     expect(matchBenchmarkModel('gpt-4o-mini', snapshot.benchmarks[0]!.scores)).toBeUndefined();
   });
 
-  it('matches DeepSeek V4 Flash leaderboard names to the BytePlus dated model alias', () => {
-    const scores = [{
-      model: 'deepseek-v4-flash-ga-260731',
-      score: 91,
-      source: 'leaderboard',
-      asOf: '2026-11-05',
-      aliases: ['deepseek-v4-flash'],
-    }];
-    expect(matchBenchmarkModel('DeepSeek V4 Flash', scores)?.model).toBe('deepseek-v4-flash-ga-260731');
+  it('maps DeepSeek V4 leaderboard names to the served BytePlus dated model aliases', async () => {
+    const { mapBenchmarkScores } = await import('../src/core/benchmarks');
+    const servedModels = [
+      { id: 'deepseek-v4-flash-ga-260731' },
+      { id: 'deepseek-v4-pro-ga-260813' },
+    ];
+    const mapped = mapBenchmarkScores([
+      { model: 'DeepSeek V4 Flash', score: 91, source: 'leaderboard', asOf: '2026-11-05' },
+      { model: 'deepseek-v4-flash', score: 90, source: 'leaderboard', asOf: '2026-11-05' },
+      { model: 'DeepSeek V4 Pro', score: 92, source: 'leaderboard', asOf: '2026-11-05' },
+      { model: 'deepseek-v4-pro', score: 91, source: 'leaderboard', asOf: '2026-11-05' },
+    ], servedModels);
+    expect(mapped).toEqual(expect.arrayContaining([
+      expect.objectContaining({ model: 'DeepSeek V4 Flash', leylineModel: 'deepseek-v4-flash-ga-260731' }),
+      expect.objectContaining({ model: 'DeepSeek V4 Pro', leylineModel: 'deepseek-v4-pro-ga-260813' }),
+    ]));
   });
 
   it('ranks scored models first and keeps missing scores unbenchmarked', () => {
