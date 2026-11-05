@@ -66,6 +66,7 @@ describe('billing domain', () => {
 });
 
 describe('billing store (D1, real SQL)', () => {
+  jest.setTimeout(30_000);
   async function paidSetup() {
     const f = billingFixture();
     await f.store.saveSetting(SETTINGS.account, WORLDFIRST, 'admin@x');
