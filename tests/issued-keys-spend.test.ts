@@ -4,16 +4,17 @@ describe('daily spend persistence', () => {
   it('aggregates same-day usage by provider and model', async () => {
     let now = Date.parse('2026-10-21T10:00:00Z');
     const keys = new IssuedKeys(new MemoryDocStore(), { now: () => now });
+    const { record: createdKey } = await keys.create({ name: 'Spend test key', by: 'test' });
 
-    await keys.record(null, 'model-a', { prompt_tokens: 10, completion_tokens: 5 }, 0.25, {
+    await keys.record(createdKey, 'model-a', { prompt_tokens: 10, completion_tokens: 5 }, 0.25, {
       provider: 'BytePlus',
       model: 'model-a',
     });
-    await keys.record(null, 'model-a', { prompt_tokens: 20, completion_tokens: 7 }, 0.5, {
+    await keys.record(createdKey, 'model-a', { prompt_tokens: 20, completion_tokens: 7 }, 0.5, {
       provider: 'BytePlus',
       model: 'model-a',
     });
-    await keys.record(null, 'model-b', { prompt_tokens: 4, completion_tokens: 1 }, 0.1, {
+    await keys.record(createdKey, 'model-b', { prompt_tokens: 4, completion_tokens: 1 }, 0.1, {
       provider: 'OpenAI',
       model: 'model-b',
     });
@@ -34,6 +35,12 @@ describe('daily spend persistence', () => {
       requests: 2,
       tokens: 42,
     });
+
+    const usage = await keys.usage(createdKey.id, '2026-10');
+    expect(usage.byModel?.['model-a']).toMatchObject({ usd: 0.75, requests: 2, tokens: 42 });
+    expect(usage.byProvider?.BytePlus).toMatchObject({ usd: 0.75, requests: 2, tokens: 42 });
+    expect(usage.byServed?.['BytePlus/model-a']).toMatchObject({ usd: 0.75, requests: 2, tokens: 42, provider: 'BytePlus', model: 'model-a' });
+    expect(usage.byDay?.['2026-10-21']?.['BytePlus/model-a']).toMatchObject({ usd: 0.75, requests: 2, tokens: 42 });
   });
 
   it('stores different UTC dates in separate daily buckets', async () => {

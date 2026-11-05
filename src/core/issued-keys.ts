@@ -55,6 +55,12 @@ export type KeyUsage = {
   /** Requests per day (yyyy-mm-dd), for the daily cap. */
   days: Record<string, number>;
   byModel: Record<string, { requests: number; tokens: number; usd?: number }>;
+  /** Served-provider spend, keyed by provider. */
+  byProvider?: Record<string, SpendLine>;
+  /** Served-provider/model spend, keyed "provider/model". */
+  byServed?: Record<string, SpendLine & { provider: string; model: string }>;
+  /** Served-provider/model spend by UTC day. */
+  byDay?: Record<string, Record<string, SpendLine>>;
   /** Paid add-ons (src/core/addons.ts) by id, e.g. "pii-protection": requests protected, input tokens, dollars charged. */
   addons?: Record<string, { requests: number; tokens: number; usd: number }>;
 };
@@ -609,12 +615,17 @@ export class IssuedKeys {
     }
     if (!key) return;
     const model_ = model || 'unknown';
+    const servedId = `${served.provider}/${served.model || 'unknown'}`;
     const usageAdds: Increment[] = [
       [['requests'], 1], [['promptTokens'], prompt], [['completionTokens'], completion], [['usd'], usd], [['days', day], 1],
       [['byModel', model_, 'requests'], 1], [['byModel', model_, 'tokens'], prompt + completion], [['byModel', model_, 'usd'], usd],
+      ...line(['byProvider', served.provider]), ...line(['byServed', servedId]), ...line(['byDay', day, servedId]),
+    ];
+    const usageSets: Array<[string[], string]> = [
+      [['byServed', servedId, 'provider'], served.provider], [['byServed', servedId, 'model'], served.model || 'unknown'],
     ];
     if (this.store.increment) {
-      await this.store.increment(`usage/${key.id}/${month}`, emptyUsage(month), usageAdds);
+      await this.store.increment(`usage/${key.id}/${month}`, emptyUsage(month), usageAdds, usageSets);
     } else {
       await update<KeyUsage>(this.store, `usage/${key.id}/${month}`, (cur) => applyIncrements(structuredClone(cur ?? emptyUsage(month)) as Record<string, unknown>, usageAdds) as KeyUsage);
     }
