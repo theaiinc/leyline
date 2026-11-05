@@ -9,7 +9,7 @@ import { useMemo, useState } from 'react';
   import { apiUrl } from '@/api';
   import { costForTokens, formatUsd, type ModelPrice } from '@/lib/cost';
   import { formatRunCost, modeLabel, modesForModel, maskedCodeSnippets, type PlaygroundMode, type PlaygroundModel } from '@/lib/playground';
-import { mediaModels, parameterDefaults, mediaRunLabel, type MediaModel } from '@/lib/media-playground';
+import { mediaModels, defaultMediaParameters, type MediaKind, type MediaModel, type ParameterSchema } from '@/lib/media-playground';
   import type { Dashboard } from '@/hooks/use-dashboard';
 
   type Run = { mode: PlaygroundMode; model: string; input: string; output: string; cost?: number; elapsed: number };
@@ -26,16 +26,24 @@ import { mediaModels, parameterDefaults, mediaRunLabel, type MediaModel } from '
     const mediaCatalog = useMemo<MediaModel[]>(() => d.stats.providers.flatMap(provider => provider.models.flatMap(model => {
       const capabilities = provider.capabilities;
       const id = `${model.id} ${model.name}`.toLowerCase();
-      const kind = capabilities.includes('speech') || capabilities.includes('transcription') || /\b(tts|stt|speech|transcri)/i.test(id) ? 'audio' : /image|diffusion|flux|qwen-image|gpt-image/i.test(id) ? 'image' : /video|veo|kling|seedance|sora|wan2/i.test(id) ? 'video' : null;
+      const kind: MediaKind | null = capabilities.includes('speech') || capabilities.includes('transcription') || /\b(tts|stt|speech|transcri)/i.test(id) ? 'audio' : /image|diffusion|flux|qwen-image|gpt-image/i.test(id) ? 'image' : /video|veo|kling|seedance|sora|wan2/i.test(id) ? 'video' : null;
       if (!kind) return [];
-      // The current API exposes speech, transcription, and embeddings routes. Image/video
-      // generation is intentionally surfaced as unavailable until those routes exist.
+      // The current API exposes speech and transcription routes. Image/video generation
+      // is intentionally surfaced as unavailable until those routes exist.
       const capability = kind === 'audio'
         ? (capabilities.includes('speech') || capabilities.includes('transcription'))
-        : kind === 'image' || kind === 'video'
-          ? false
-          : capabilities.includes(kind);
-      return [{ id: model.id, name: model.name, provider: provider.name, kind, served: capability, comingSoon: !capability, parameters: parameterDefaults(kind), price: undefined }];
+        : false;
+      const parameters: Record<string, ParameterSchema> = defaultMediaParameters(kind);
+      const mediaModel: MediaModel = {
+        id: model.id,
+        name: model.name,
+        provider: provider.name,
+        kind,
+        served: capability,
+        comingSoon: !capability,
+        parameters,
+      };
+      return [mediaModel];
     })), [d.stats.providers]);
     const [query, setQuery] = useState('');
     const [selected, setSelected] = useState<PlaygroundModel | undefined>(allModels[0]);
@@ -105,7 +113,7 @@ import { mediaModels, parameterDefaults, mediaRunLabel, type MediaModel } from '
                 <div className="border-b px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Chat and tools</div>
                 {filtered.map(model => <button type="button" key={`${model.provider}:${model.id}`} className={`block w-full px-3 py-2 text-left text-sm ${selected?.id === model.id ? 'bg-accent' : ''}`} onClick={() => { setSelected(model); setMode(modesForModel(model)[0] || 'chat'); }}>{model.name || model.id}<span className="ml-2 text-muted-foreground">{model.provider}</span></button>)}
                 <div className="border-y px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Media</div>
-                {mediaFiltered.map(model => <button type="button" key={`media:${model.provider}:${model.id}`} disabled={!model.served} className={`block w-full px-3 py-2 text-left text-sm ${!model.served ? 'cursor-not-allowed opacity-50' : 'hover:bg-accent'}`} onClick={() => { if (model.served) { setSelected({ id: model.id, name: model.name, provider: model.provider, capabilities: { [model.kind === 'audio' ? 'speech' : model.kind]: true } }); setMode(model.kind === 'audio' ? 'speech' : model.kind); } }}>{model.name || model.id}<span className="ml-2 text-muted-foreground">{model.provider} · {model.served ? 'available' : 'Coming soon'}</span></button>)}
+                {mediaFiltered.map(model => <button type="button" key={`media:${model.provider}:${model.id}`} disabled={!model.served} className={`block w-full px-3 py-2 text-left text-sm ${!model.served ? 'cursor-not-allowed opacity-50' : 'hover:bg-accent'}`} onClick={() => { if (model.served) { setSelected({ id: model.id, name: model.name, provider: model.provider, parameters: model.parameters, capabilities: { [model.kind === 'audio' ? 'speech' : model.kind]: true } }); setMode(model.kind === 'audio' ? 'speech' : model.kind); } }}>{model.name || model.id}<span className="ml-2 text-muted-foreground">{model.provider} · {model.served ? 'available' : 'Coming soon'}</span></button>)}
               </div>
               {selected ? <div className="flex flex-wrap gap-2">{availableModes.map(item => <Button key={item} type="button" variant={mode === item ? 'default' : 'outline'} size="sm" onClick={() => setMode(item)}>{modeLabel(item)}</Button>)}</div> : null}
               {mode === 'transcription' ? <div className="grid gap-2"><Label htmlFor="model-input">Audio file or recording *</Label><Input id="model-input" type="file" accept="audio/*" /><p className="text-xs text-muted-foreground">Upload an audio file. The file is sent as multipart data and is never placed in a URL.</p></div> : <div className="grid gap-4">{Object.entries(selected?.parameters ?? {}).map(([name, schema]) => <div className="grid gap-2" key={name}><Label htmlFor={`parameter-${name}`}>{schema.title ?? name}{schema.required ? ' *' : ''}</Label>{schema.enum?.length ? <div className="flex flex-wrap gap-2">{schema.enum.map(option => <Button key={option} type="button" size="sm" variant={String((name === 'input' || name === 'prompt') ? input : '') === option ? 'default' : 'outline'} onClick={() => { if (name === 'input' || name === 'prompt') setInput(option); }}>{option}</Button>)}</div> : schema.type === 'number' ? <Input id={`parameter-${name}`} type="number" min={schema.minimum} max={schema.maximum} defaultValue={schema.default as number | undefined} onChange={event => { if (name === 'input' || name === 'prompt') setInput(event.target.value); }} /> : schema.type === 'file' ? <Input id={`parameter-${name}`} type="file" accept="image/*,video/*,audio/*" /> : <Textarea id={`parameter-${name}`} rows={name === 'input' || name === 'prompt' ? 6 : 2} value={name === 'input' || name === 'prompt' ? input : String(schema.default ?? '')} onChange={event => { if (name === 'input' || name === 'prompt') setInput(event.target.value); }} placeholder={schema.description} />}</div>)}</div>}

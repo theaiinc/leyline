@@ -7,7 +7,7 @@ describe('playground modality helpers', () => {
     expect(modesForModel({ id: 'speech', capabilities: { speech: true } })).toEqual(['speech']);
     expect(modesForModel({ id: 'transcribe', capabilities: { transcription: true } })).toEqual(['transcription']);
     expect(modesForModel({ id: 'embed', capabilities: { embeddings: true } })).toEqual(['embeddings']);
-    expect(modesForModel({ id: 'empty', capabilities: { image: true, video: true } })).toEqual([]);
+    expect(modesForModel({ id: 'empty', capabilities: { image: true, video: true } })).toEqual(['image', 'video']);
   });
 
   it('builds masked-key snippets for each served API mode', () => {

@@ -35,8 +35,10 @@ export function PlaygroundPage({ d }: { d: Dashboard }) {
   useEffect(() => {
     fetch(apiUrl('/v1/pricing'), { credentials: 'same-origin' }).then(response => response.json()).then(data => {
       const next: Record<string, ModelPrice> = {};
-      for (const [model, value] of Object.entries((data as { models?: Record<string, { input?: number; output?: number; cachedInput?: number }> }).models ?? {})) {
-        if (typeof value.input === 'number' && typeof value.output === 'number') next[model] = { model, input: value.input, output: value.output, cachedInput: value.cachedInput };
+      for (const item of Array.isArray(data?.models) ? data.models : []) {
+        if (typeof item?.id === 'string' && typeof item.input === 'number' && typeof item.output === 'number') {
+          next[item.id] = { model: item.id, input: item.input, output: item.output, cachedInput: item.cached_input };
+        }
       }
       setPrices(next);
     }).catch(() => undefined);

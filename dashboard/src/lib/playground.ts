@@ -1,3 +1,5 @@
+import type { ParameterSchema } from './media-playground';
+
 export type PlaygroundMode = 'chat' | 'speech' | 'transcription' | 'embeddings' | 'image' | 'video';
 
 export type PlaygroundCapabilities = {
@@ -16,6 +18,7 @@ export type PlaygroundModel = {
     provider?: string;
     description?: string;
     capabilities?: PlaygroundCapabilities;
+    parameters?: Record<string, ParameterSchema>;
     price?: { input?: number; output?: number };
   };
 

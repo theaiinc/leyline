@@ -62,7 +62,30 @@ export type IssuedKey = {
   };
 };
 
-export type Price = { input: number; output: number };
+export type Price = { input: number; output: number; cached_input?: number };
+
+/** Response returned by GET /v1/pricing. Keep this aligned with the server contract. */
+export type PricingModel = {
+  id: string;
+  name: string;
+  provider: string;
+  input: number;
+  output: number;
+  cached_input?: number;
+  free_tier: boolean;
+  source: string;
+};
+
+export type PricingResponse = {
+  currency: string;
+  unit: string;
+  models: PricingModel[];
+  free_tier: {
+    tokens: number;
+    expires_after_days: number;
+    models: string[];
+  };
+};
 
 export type HostedSettings = {
   models: string[];
