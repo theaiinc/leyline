@@ -441,6 +441,23 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   let pricingCache: { value: unknown; expiresAt: number } | undefined;
   let pricingInFlight: Promise<unknown> | undefined;
 
+  // Vietnamese law: prices shown to customers in Vietnam are listed in VND. The rate is the one set on the admin
+  // host (also used on VAT invoices); until one is set, a daily reference rate (open.er-api.com), labelled as such.
+  let referenceFx: { vndPerUsd: number; date: string; at: number } | undefined;
+  const vndRate = async (): Promise<{ vnd_per_usd: number; date: string; source: 'valefront' | 'reference' } | null> => {
+    const set = await hosted?.billing?.exchangeRate().catch(() => null);
+    if (set && set.vndPerUsd > 0) return { vnd_per_usd: set.vndPerUsd, date: set.date, source: 'valefront' };
+    if (!referenceFx || Date.now() - referenceFx.at > 12 * 3600_000) {
+      try {
+        const r = await fetch('https://open.er-api.com/v6/latest/USD', { signal: AbortSignal.timeout(5000) });
+        const d = await r.json() as { rates?: Record<string, number>; time_last_update_unix?: number };
+        const v = Number(d.rates?.VND);
+        if (v > 1000) referenceFx = { vndPerUsd: Math.round(v), date: new Date((d.time_last_update_unix ?? Date.now() / 1000) * 1000).toISOString().slice(0, 10), at: Date.now() };
+      } catch { /* keep the last good one */ }
+    }
+    return referenceFx ? { vnd_per_usd: referenceFx.vndPerUsd, date: referenceFx.date, source: 'reference' } : null;
+  };
+
   const computePricing = async () => {
     const models = (await Promise.all(router.getProviders().map(async provider => {
       try {
@@ -465,6 +482,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
         models: config.freeTierModels.filter((id) => models.some((model) => model.id === id && Number.isFinite(model.input) && Number.isFinite(model.output))),
       },
       models,
+      exchange_rate: await vndRate(),
     };
   };
 

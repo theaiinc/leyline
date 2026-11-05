@@ -105,6 +105,11 @@ export class BillingService {
     return (await this.store.setting<VatSettings>(SETTINGS.vat))?.value ?? DEFAULT_VAT;
   }
 
+  /** The VND rate set on the admin host (the one VAT invoices use), if any. */
+  async exchangeRate(): Promise<ExchangeRateSetting | null> {
+    return (await this.store.setting<ExchangeRateSetting>(SETTINGS.exchangeRate))?.value ?? null;
+  }
+
   /** PayPal as it is now: its mode (admin setting) and, for that mode, a client (null: secrets missing). */
   async paypalNow(): Promise<{ mode: ProviderMode; client: PayPalClient | null }> {
     const mode = await getMode(this.store, 'paypal');
