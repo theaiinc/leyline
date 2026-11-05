@@ -15,7 +15,7 @@ export async function pdfText(bytes: Uint8Array | ArrayBuffer): Promise<string> 
   return (await pdfParse(Buffer.from(bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : bytes))).text;
 }
 
-export const FREE = { tokens: 1_000_000, expiresAfterDays: 30, models: ['seed-2-0-lite-260428'], tokensPerDay: 50_000, globalTokensPerDay: 10_000_000 };
+export const FREE = { tokens: 1_000_000, bonusTokens: 0, expiresAfterDays: 30, models: ['seed-2-0-lite-260428'], tokensPerDay: 50_000, globalTokensPerDay: 10_000_000 };
 
 export function billingFixture(over: Partial<BillingServiceOptions> = {}, clock = { now: Date.UTC(2026, 10, 7, 3) }) {
   const db = sqliteD1();

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { BookOpen, Calculator, ChevronDown, CreditCard, Database, KeyRound, Landmark, LogOut, Moon, Sun, Wallet } from 'lucide-react';
+import { BookOpen, Calculator, ChevronDown, CreditCard, Gift, Database, KeyRound, Landmark, LogOut, Moon, Sun, Wallet } from 'lucide-react';
 import { SideNav, navIds, type NavEntry } from '@/components/side-nav';
 import { CalculatorPage } from '@/pages/calculator';
 import { toast } from 'sonner';
@@ -30,7 +30,7 @@ type Me = {
   apiBaseUrl: string;
   workspace: { id: string; createdAt: number; suspended: boolean } | null;
   balanceCents: number | null;
-  freeTier: { tokens: number; expiresAfterDays: number; models: string[]; tokensPerDay: number; granted: { tokens: number; usedTokens: number; expiresAt: number } | null };
+  freeTier: { tokens: number; bonusTokens?: number; expiresAfterDays: number; models: string[]; tokensPerDay: number; granted: { tokens: number; usedTokens: number; expiresAt: number; bonusUnlocked?: boolean } | null };
 };
 
 type KeyView = { id: string; name: string; prefix: string; createdAt: number; revokedAt: number | null; lastUsedAt: number | null; usage: { month: string; requests: number; promptTokens: number; completionTokens: number; byModel: Record<string, { requests: number; tokens: number }> } };
@@ -49,7 +49,7 @@ type Billing = {
   receipts: Array<{ id: string; orderId: string; number: string; issuedAt: number; amountCents: number; totalCents: number; emailStatus: string | null }>;
   einvoices: Array<{ id: string; orderId: string; status: string; invoiceNo: string | null; codeOfTax: string | null; reservationCode: string | null; issuedAt: number | null; totalCents: number; email: string }>;
   profile: Profile | null;
-  free: { tokens: number; usedTokens: number; expiresAt: number; models: string[] } | null;
+  free: { tokens: number; usedTokens: number; expiresAt: number; models: string[]; bonusTokens?: number; bonusUnlocked?: boolean } | null;
   methods: { worldfirst: boolean; paypal: { enabled: boolean; env: string | null } };
   vat: { defaultBp: number; byCountry: Record<string, number> };
 };
@@ -182,9 +182,21 @@ function Quickstart({ me, apiKey }: { me: Me; apiKey?: string | null }) {
   );
 }
 
+/** The rest of the launch offer: shown until the first top-up unlocks it (Steve, 2026-11-05). */
+function BonusBanner({ bonus, onAddCredit }: { bonus: number; onAddCredit?: () => void }) {
+  if (!bonus) return null;
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-3 rounded-2xl border border-[#a9f5cf]/50 bg-gradient-to-r from-[#a9f5cf]/15 to-[#7aa6ff]/10 p-4">
+      <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-[#a9f5cf] to-[#7aa6ff] text-[#0b1a2e]"><Gift className="size-5" /></div>
+      <div className="min-w-0 flex-1 text-sm"><div className="font-semibold">{tokens(bonus)} more free tokens are waiting for you</div><div className="text-muted-foreground">They unlock with your first top-up, of any amount.</div></div>
+      {onAddCredit ? <Button onClick={onAddCredit}>Add credit</Button> : null}
+    </div>
+  );
+}
+
 function FreeTierFacts({ me }: { me: Me }) {
   const f = me.freeTier;
-  return <p className="text-sm text-muted-foreground">New accounts get <strong>{tokens(f.tokens)} free tokens</strong> for {f.expiresAfterDays} days on {f.models.join(', ')} (up to {tokens(f.tokensPerDay)} a day). Other models, and use after that, are pay as you go from prepaid credit at each provider&apos;s official price.</p>;
+  return <p className="text-sm text-muted-foreground">New accounts get <strong>{tokens(f.tokens)} free tokens</strong>{f.bonusTokens ? <>, and <strong>{tokens(f.bonusTokens)} more</strong> after their first top-up,</> : null} for {f.expiresAfterDays} days on {f.models.join(', ')} (up to {tokens(f.tokensPerDay)} a day). Other models, and use after that, are pay as you go from prepaid credit at each provider&apos;s official price.</p>;
 }
 
 function GetStarted({ me, reload, go }: { me: Me; reload: () => Promise<void>; go: (p: string) => void }) {
@@ -216,7 +228,7 @@ function GetStarted({ me, reload, go }: { me: Me; reload: () => Promise<void>; g
         <KeyBadge />
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">You&apos;re in.</h1>
-          <p className="text-sm text-muted-foreground">{granted ? `Your workspace is ready, with ${tokens(me.freeTier.tokens)} free tokens on ${me.freeTier.models.map(friendlyModel).join(', ')}.` : 'Your workspace is ready. This email or account already used its free tokens, so add credit to make requests.'}</p>
+          <p className="text-sm text-muted-foreground">{granted ? `Your workspace is ready, with ${tokens(me.freeTier.tokens)} free tokens on ${me.freeTier.models.map(friendlyModel).join(', ')}${me.freeTier.bonusTokens ? `, and ${tokens(me.freeTier.bonusTokens)} more when you first add credit` : ''}.` : 'Your workspace is ready. This email or account already used its free tokens, so add credit to make requests.'}</p>
         </div>
       </div>
       <div className="mb-4 rounded-2xl border border-[#a9f5cf]/50 bg-[#a9f5cf]/5 p-5">
@@ -241,7 +253,7 @@ function GetStarted({ me, reload, go }: { me: Me; reload: () => Promise<void>; g
     const f = me.freeTier;
     return (
       <div className="grid items-start gap-10 lg:grid-cols-[1.15fr_1fr]">
-        <WelcomeHero name={me.name} freeTokens={tokens(f.tokens)} freeDays={f.expiresAfterDays} perDay={tokens(f.tokensPerDay)} models={f.models} />
+        <WelcomeHero name={me.name} freeTokens={tokens(f.tokens)} bonusTokens={f.bonusTokens ? tokens(f.bonusTokens) : undefined} freeDays={f.expiresAfterDays} perDay={tokens(f.tokensPerDay)} models={f.models} />
         <div className="rounded-2xl border bg-card p-5 shadow-[0_20px_60px_-30px_rgba(122,166,255,0.45)] lg:sticky lg:top-8 md:p-6">
           <div className="text-lg font-semibold">Create your workspace</div>
           <p className="mt-1 text-sm text-muted-foreground">Three quick steps. Your first API key appears right after.</p>
@@ -267,6 +279,7 @@ function GetStarted({ me, reload, go }: { me: Me; reload: () => Promise<void>; g
   }
   return (<>
     <PageHeader title="Get started" description={<>Signed in as {me.email}.</>} />
+    {me.freeTier.granted && !me.freeTier.granted.bonusUnlocked ? <BonusBanner bonus={me.freeTier.bonusTokens ?? 0} onAddCredit={() => go('billing')} /> : null}
     {me.workspace?.suspended ? <Section title="This workspace is suspended"><p className="text-sm">Requests return HTTP 403. Contact support@valefront.com.</p></Section> : null}
     <Section title="Your balance">
       <div className="flex flex-wrap items-center gap-4">
@@ -579,6 +592,7 @@ function BillingPage({ me, reload }: { me: Me; reload: () => Promise<void> }) {
   );
   return (<>
     <PageHeader title="Billing" description="Prepaid credit in US dollars, charged per request at each model's official price. Free tokens are used first." />
+    {free && !free.bonusUnlocked ? <BonusBanner bonus={free.bonusTokens ?? 0} /> : null}
     <div className="mb-6 grid gap-4 rounded-2xl border bg-card p-5 md:grid-cols-[1fr_1.2fr] md:items-center md:p-6">
       <div>
         <div className="text-xs font-medium text-muted-foreground uppercase">Available credit</div>

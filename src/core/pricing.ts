@@ -49,8 +49,10 @@ export type PublicPricingModel = {
 };
 
 /** Public defaults for the Valefront product's free grant. Billing state is private-product data. */
-// Launch offer (Steve, 2026-11-05): 5M free tokens for 30 days, on DeepSeek V4 Flash (FREE_TIER_MODELS on hosted).
-export const DEFAULT_FREE_TIER_TOKENS = 5_000_000;
+// Launch offer (Steve, 2026-11-05): 1M free tokens at sign-up, and 4M more unlocked by the first top-up
+// (DEFAULT_FREE_TIER_BONUS_TOKENS), for 30 days, on DeepSeek V4 Flash (FREE_TIER_MODELS on hosted).
+export const DEFAULT_FREE_TIER_TOKENS = 1_000_000;
+export const DEFAULT_FREE_TIER_BONUS_TOKENS = 4_000_000;
 export const DEFAULT_FREE_TIER_EXPIRES_AFTER_DAYS = 30;
 
 /** BytePlus ModelArk chat models covered by the public free-tier offer. */

@@ -283,6 +283,11 @@ export class BillingService {
     if (transitioned) {
       console.log(JSON.stringify({ event: 'billing_paid', orderId, method: order.method, amountCents: order.amountCents, by: input.by }));
       await this.store.audit({ type: 'billing.paid', workspaceId: order.workspaceId, meta: { orderId, by: input.by } });
+      // The first top-up unlocks the rest of the free tokens (Steve, 2026-11-05).
+      const f = this.opts.free;
+      const unlocked = await this.store.unlockFreeBonus(order.workspaceId, { baseTokens: f.tokens, bonusTokens: f.bonusTokens ?? 0, now: this.now(), days: f.expiresAfterDays })
+        .catch((err) => { console.error('[billing] free bonus unlock failed', orderId, err); return false; });
+      if (unlocked) await this.store.audit({ type: 'free.bonus_unlocked', workspaceId: order.workspaceId, meta: { orderId, tokens: f.bonusTokens } });
     }
     // Also after a replay: finishes a receipt email or e-invoice a crashed earlier run left undone.
     await this.issueDocuments(orderId).catch((err) => console.error('[billing] documents failed', orderId, err));
@@ -540,7 +545,8 @@ export class BillingService {
         codeOfTax: e.record?.codeOfTax ?? null, reservationCode: e.record?.reservationCode ?? null, issuedAt: e.issuedAt ?? null, totalCents: e.totalCents, email: e.details.email,
       })),
       profile,
-      free: grant ? { tokens: grant.tokens, usedTokens: grant.usedTokens, expiresAt: grant.expiresAt, models: this.opts.free.models } : null,
+      free: grant ? { tokens: grant.tokens, usedTokens: grant.usedTokens, expiresAt: grant.expiresAt, models: this.opts.free.models,
+        bonusTokens: this.opts.free.bonusTokens ?? 0, bonusUnlocked: grant.tokens >= this.opts.free.tokens + (this.opts.free.bonusTokens ?? 0) } : null,
       methods,
       vat,
     };

@@ -441,21 +441,27 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   let pricingCache: { value: unknown; expiresAt: number } | undefined;
   let pricingInFlight: Promise<unknown> | undefined;
 
-  // Vietnamese law: prices shown to customers in Vietnam are listed in VND. The rate is the one set on the admin
-  // host (also used on VAT invoices); until one is set, a daily reference rate (open.er-api.com), labelled as such.
-  let referenceFx: { vndPerUsd: number; date: string; at: number } | undefined;
-  const vndRate = async (): Promise<{ vnd_per_usd: number; date: string; source: 'valefront' | 'reference' } | null> => {
-    const set = await hosted?.billing?.exchangeRate().catch(() => null);
-    if (set && set.vndPerUsd > 0) return { vnd_per_usd: set.vndPerUsd, date: set.date, source: 'valefront' };
-    if (!referenceFx || Date.now() - referenceFx.at > 12 * 3600_000) {
+  // Vietnamese law: prices shown to customers in Vietnam are listed in VND, at the day's rate (Steve, 2026-11-05:
+  // "pricing conversion should get live per day"). Vietcombank's published USD selling rate, refreshed every few
+  // hours (its feed allows one request per 5 minutes); a reference rate (open.er-api.com) only if that fails.
+  let dailyFx: { vndPerUsd: number; date: string; source: 'vietcombank' | 'reference'; at: number } | undefined;
+  const vndRate = async (): Promise<{ vnd_per_usd: number; date: string; source: 'vietcombank' | 'reference' } | null> => {
+    if (!dailyFx || Date.now() - dailyFx.at > 3 * 3600_000) {
       try {
-        const r = await fetch('https://open.er-api.com/v6/latest/USD', { signal: AbortSignal.timeout(5000) });
-        const d = await r.json() as { rates?: Record<string, number>; time_last_update_unix?: number };
-        const v = Number(d.rates?.VND);
-        if (v > 1000) referenceFx = { vndPerUsd: Math.round(v), date: new Date((d.time_last_update_unix ?? Date.now() / 1000) * 1000).toISOString().slice(0, 10), at: Date.now() };
-      } catch { /* keep the last good one */ }
+        const xml = await (await fetch('https://portal.vietcombank.com.vn/Usercontrols/TVPortal.TyGia/pXML.aspx', { signal: AbortSignal.timeout(6000), headers: { 'User-Agent': 'Valefront pricing' } })).text();
+        const sell = Number(/<Exrate CurrencyCode="USD"[^>]*Sell="([\d,.]+)"/.exec(xml)?.[1]?.replace(/,/g, ''));
+        const when = /<DateTime>(\d+)\/(\d+)\/(\d{4})/.exec(xml);
+        if (sell > 1000) dailyFx = { vndPerUsd: Math.round(sell), date: when ? `${when[3]}-${when[1].padStart(2, '0')}-${when[2].padStart(2, '0')}` : new Date().toISOString().slice(0, 10), source: 'vietcombank', at: Date.now() };
+      } catch { /* fall back below */ }
+      if (!dailyFx || Date.now() - dailyFx.at > 3 * 3600_000) {
+        try {
+          const d = await (await fetch('https://open.er-api.com/v6/latest/USD', { signal: AbortSignal.timeout(5000) })).json() as { rates?: Record<string, number>; time_last_update_unix?: number };
+          const v = Number(d.rates?.VND);
+          if (v > 1000) dailyFx = { vndPerUsd: Math.round(v), date: new Date((d.time_last_update_unix ?? Date.now() / 1000) * 1000).toISOString().slice(0, 10), source: 'reference', at: Date.now() };
+        } catch { /* keep the last good one */ }
+      }
     }
-    return referenceFx ? { vnd_per_usd: referenceFx.vndPerUsd, date: referenceFx.date, source: 'reference' } : null;
+    return dailyFx ? { vnd_per_usd: dailyFx.vndPerUsd, date: dailyFx.date, source: dailyFx.source } : null;
   };
 
   const computePricing = async () => {
@@ -477,6 +483,8 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       free_tier: {
         tokens: hosted?.billing?.opts.free?.tokens ?? DEFAULT_FREE_TIER_TOKENS,
         expires_after_days: hosted?.billing?.opts.free?.expiresAfterDays ?? DEFAULT_FREE_TIER_EXPIRES_AFTER_DAYS,
+        // 4M more unlocked by the first top-up (the launch offer).
+        ...(hosted?.billing?.opts.free?.bonusTokens ? { bonus_tokens_on_first_top_up: hosted.billing.opts.free.bonusTokens } : {}),
         // Each workspace may use at most this many free tokens a day (the cost calculator needs it).
         ...(hosted?.billing?.opts.free?.tokensPerDay ? { tokens_per_day: hosted.billing.opts.free.tokensPerDay } : {}),
         models: config.freeTierModels.filter((id) => models.some((model) => model.id === id && Number.isFinite(model.input) && Number.isFinite(model.output))),

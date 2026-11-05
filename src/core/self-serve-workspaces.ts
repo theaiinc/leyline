@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'crypto';
 import { DEFAULT_FREE_TIER_LIMITS, isDisposableEmail, normalizeEmail } from './self-serve-policy';
-import { DEFAULT_FREE_TIER_EXPIRES_AFTER_DAYS, DEFAULT_FREE_TIER_TOKENS } from './pricing';
+import { DEFAULT_FREE_TIER_EXPIRES_AFTER_DAYS, DEFAULT_FREE_TIER_TOKENS, DEFAULT_FREE_TIER_BONUS_TOKENS } from './pricing';
 import { config } from '../config';
 import type { D1BillingStore, WorkspaceRecord } from './billing-store';
 
@@ -16,6 +16,8 @@ export const SIGNUPS_PER_IP_PER_DAY = 3;
 
 export type FreeTierConfig = {
   tokens: number;
+  /** More free tokens unlocked by the workspace's first paid top-up (0: none). */
+  bonusTokens: number;
   expiresAfterDays: number;
   /** Models free tokens can be spent on (FREE_TIER_MODELS, the same list /v1/pricing publishes). */
   models: string[];
@@ -130,6 +132,7 @@ export function freeTierConfig(env: Record<string, string | undefined> = process
   };
   return {
     tokens: DEFAULT_FREE_TIER_TOKENS,
+    bonusTokens: n(env.FREE_TIER_BONUS_TOKENS, DEFAULT_FREE_TIER_BONUS_TOKENS),
     expiresAfterDays: DEFAULT_FREE_TIER_EXPIRES_AFTER_DAYS,
     models: [...config.freeTierModels],
     tokensPerDay: n(env.FREE_TIER_TOKENS_PER_DAY, DEFAULT_FREE_TIER_LIMITS.tokensPerDay),

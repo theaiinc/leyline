@@ -195,6 +195,17 @@ export class D1BillingStore {
     return r ? { workspaceId, tokens: Number(r.tokens), usedTokens: Number(r.used_tokens), grantedAt: Number(r.granted_at), expiresAt: Number(r.expires_at) } : null;
   }
 
+  /**
+   * The first paid top-up unlocks the bonus free tokens: once (a grant already at base + bonus or more is left
+   * alone), and the grant runs at least `days` more days from now, so a late top-up still has time to use them.
+   */
+  async unlockFreeBonus(workspaceId: string, input: { baseTokens: number; bonusTokens: number; now: number; days: number }): Promise<boolean> {
+    if (input.bonusTokens <= 0) return false;
+    const r = await this.db.prepare('UPDATE free_grants SET tokens = tokens + ?, expires_at = MAX(expires_at, ?) WHERE workspace_id = ? AND tokens < ?')
+      .bind(input.bonusTokens, input.now + input.days * 86_400_000, workspaceId, input.baseTokens + input.bonusTokens).run();
+    return Boolean(r.meta?.changes);
+  }
+
   async freeTokensOn(workspaceId: string, day: string): Promise<{ workspace: number; global: number }> {
     const [w, g] = await Promise.all([
       this.first<{ tokens: number }>('SELECT tokens FROM free_usage_days WHERE workspace_id = ? AND day = ?', workspaceId, day),

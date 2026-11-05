@@ -95,10 +95,11 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
         balanceCents: balance ? Math.floor(balance.availableMicros / 10_000) : null,
         freeTier: {
           tokens: free.tokens,
+          bonusTokens: free.bonusTokens ?? 0,
           expiresAfterDays: free.expiresAfterDays,
           models: free.models,
           tokensPerDay: free.tokensPerDay,
-          granted: grant ? { tokens: grant.tokens, usedTokens: grant.usedTokens, expiresAt: grant.expiresAt } : null,
+          granted: grant ? { tokens: grant.tokens, usedTokens: grant.usedTokens, expiresAt: grant.expiresAt, bonusUnlocked: grant.tokens >= free.tokens + (free.bonusTokens ?? 0) } : null,
         },
       });
     } catch (err) {

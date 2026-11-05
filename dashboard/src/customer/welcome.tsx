@@ -102,7 +102,7 @@ function Benefit({ icon, title, children }: { icon: ReactNode; title: string; ch
 }
 
 /** The welcome screen's left side: who it's for, the art, what you get, the free models. */
-export function WelcomeHero({ name, freeTokens, freeDays, perDay, models }: { name: string | null; freeTokens: string; freeDays: number; perDay: string; models: string[] }) {
+export function WelcomeHero({ name, freeTokens, bonusTokens, freeDays, perDay, models }: { name: string | null; freeTokens: string; bonusTokens?: string; freeDays: number; perDay: string; models: string[] }) {
   return (
     <div className="relative">
       <div className="inline-flex items-center gap-2 rounded-full border border-[#a9f5cf]/40 bg-[#a9f5cf]/10 px-3 py-1 text-xs font-medium text-[#2f9e6c] dark:text-[#a9f5cf]">
@@ -117,7 +117,7 @@ export function WelcomeHero({ name, freeTokens, freeDays, perDay, models }: { na
       </p>
       <RoutingArt className="mt-6 w-full max-w-xl" />
       <div className="mt-6 grid gap-3 sm:grid-cols-3">
-        <Benefit icon={<Sparkles className="size-4" />} title={`${freeTokens} free tokens`}>For {freeDays} days, up to {perDay} a day. No card needed.</Benefit>
+        <Benefit icon={<Sparkles className="size-4" />} title={`${freeTokens} free tokens`}>{bonusTokens ? <>Plus {bonusTokens} more after your first top-up. </> : null}For {freeDays} days, up to {perDay} a day. No card needed.</Benefit>
         <Benefit icon={<Plug className="size-4" />} title="Works with your SDK">OpenAI- and Anthropic-compatible: change the base URL and key.</Benefit>
         <Benefit icon={<Coins className="size-4" />} title="No markup">Pay each provider&apos;s official price from prepaid credit.</Benefit>
       </div>
