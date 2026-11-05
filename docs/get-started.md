@@ -7,7 +7,7 @@
 3. Accept the Terms, pass the security check, and select **Create workspace and API key**.
 4. Copy your API key: it is shown once. You can make more under **API keys** (each needs the security check again).
 
-New accounts get **1,000,000 free tokens for 30 days** on the free-tier models listed on the Get started page and in `https://llm.valefront.com/v1/pricing` (`free_tier`), up to 50,000 a day. Free tokens are given once per email address and sign-in account.
+New accounts get **5,000,000 free tokens for 30 days** on the free-tier models listed on the Get started page and in `https://llm.valefront.com/v1/pricing` (`free_tier`), up to 250,000 a day. Free tokens are given once per email address and sign-in account.
 
 ## Make a request
 
