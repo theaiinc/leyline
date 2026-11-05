@@ -1,12 +1,12 @@
 import { createRoot } from 'react-dom/client';
 import { Toaster } from '@/components/ui/sonner';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { App } from './app';
+import { Root } from './app';
 import './styles.css';
 
 createRoot(document.getElementById('root')!).render(
   <TooltipProvider>
-    <App />
+    <Root />
     <Toaster richColors position="bottom-right" />
   </TooltipProvider>,
 );

@@ -347,6 +347,43 @@ export ANTHROPIC_AUTH_TOKEN=ll_...
 # OpenAI-compatible agents (Cursor, Codex, OpenCode, Cline): base URL https://leyline.theaiinc.com/v1, API key ll_...
 ```
 
+## 💳 Self-serve sign-up and billing (hosted Valefront)
+
+On the Worker (D1, migration `0002_workspaces_billing.sql`), anyone can sign up and pay for what they use. Code: `src/core/self-serve-workspaces.ts`, `billing*.ts`, `customer-routes.ts`, `admin-billing.ts`, `paypal.ts`, `einvoice-viettel.ts`, `provider-modes.ts`; dashboard: `dashboard/src/customer/`.
+
+**Sign-up** (`dash.valefront.com`, any Aegis account): accept the Terms (version `2026-11-03`), a verified email (Aegis `email_verified`; disposable domains refused), at most 3 sign-ups a day per IP, a Turnstile check -> a workspace and its first API key, shown once. The first workspace for an email and Aegis account gets the free grant: 1,000,000 tokens for 30 days on `FREE_TIER_MODELS` (the `free_tier` block of `/v1/pricing`), at most `FREE_TIER_TOKENS_PER_DAY` (50,000) a day per workspace and `FREE_TIER_GLOBAL_TOKENS_PER_DAY` (20,000,000) across all. New keys need another Turnstile check; self-serve keys allow 60 requests a minute.
+
+**Credit.** Prepaid US dollars; the ledger (integer cents) is the balance. Every customer request is charged at the model's real price (set by hand or published by its provider); a model without one is refused with `403 model_not_priced`, never charged the default price. Free tokens are used first on free-tier models. With no credit and no free tokens left: `402 insufficient_credit`, "Add credit at https://dash.valefront.com/billing". Keys with no workspace (made by the owner) and workspaces of `LEYLINE_ADMIN_EMAILS` are never gated or charged.
+
+**Add credit** (at least $10; VAT 0% outside Vietnam, 10% in Vietnam unless the admin sets another rate):
+- *PayPal* (PayPal balance or card): Orders API v2, create -> approve -> capture; the `PAYMENT.CAPTURE.COMPLETED` webhook at `https://llm.valefront.com/webhooks/paypal` is checked with PayPal's verify-webhook-signature. Credited once per order and capture id.
+- *Bank transfer (WorldFirst, USD)*: the order shows the receiving account (admin settings), the amount and a reference; an admin marks it paid when it arrives.
+- SePay (VND bank QR) is not offered yet: it would be a `PaymentGateway` (`src/core/billing.ts`).
+
+**Receipts and VAT invoices.** Every payment gets a receipt, `VF-RCT-2026-000001` (no gaps, per year), as a PDF made in the Worker (pdf-lib, DejaVu Sans), stored in D1 (`billing_documents`), emailed once from `BILLING_FROM` and on the Billing page (printable HTML and PDF). A customer in Vietnam can ask for a Vietnamese VAT invoice (hóa đơn GTGT: company, tax code, address, email): after payment it's issued as an e-invoice through Viettel S-Invoice and emailed with Viettel's PDF. Until S-Invoice is configured in the payment's mode, or while Viettel fails, it waits as "pending" and a cron job (every 15 minutes) retries it; the customer sees "Your VAT invoice is being issued". The USD to VND rate for e-invoices is set on the admin host.
+
+**Sandbox | Live** for PayPal and Viettel S-Invoice is switched on the admin host (typing LIVE; audit-logged), each with its own secrets. In sandbox, PayPal is offered to admin workspaces only; sandbox receipts are marked SANDBOX and numbered apart (`VF-RCT-SANDBOX-2026-000001`). A VAT invoice is issued only through S-Invoice in its payment's mode.
+
+**Your data:** export everything as JSON, or delete the account (keys revoked and deleted; workspace data deleted; receipts, VAT invoices, payments and the ledger kept 10 years for accounting). Contact: privacy@valefront.com.
+
+**Admin: `https://adm.valefront.com`**, its own host behind a Cloudflare Access application, plus the app's own check of the Access token (`Cf-Access-Jwt-Assertion`: signed by the team, for the application's AUD, an email in `LEYLINE_ADMIN_EMAILS` or a service token in `CF_ACCESS_SERVICE_TOKEN_IDS`). Nothing else is served on that host, and its pages exist on no other. Orders (mark paid, resend receipt), VAT e-invoices (retry, cancel, replace), provider modes and whether their secrets are set, the WorldFirst account, seller details, VAT rates, the exchange rate.
+
+| Worker variable (`wrangler.jsonc`) | Meaning |
+| --- | --- |
+| `ADMIN_HOST` | `adm.valefront.com` |
+| `BILLING_FROM` | `Valefront Billing <billing@valefront.com>` (allowed in the `EMAIL` binding; valefront.com onboarded to Email Sending) |
+| `TURNSTILE_SITE_KEY` | The Turnstile widget's site key (hostnames `dash.valefront.com`, `valefront.com`) |
+| `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD` | `https://<team>.cloudflareaccess.com` and the admin Access application's AUD tag |
+| `CF_ACCESS_SERVICE_TOKEN_IDS` | Optional: Access service-token client ids allowed on the admin host |
+| `FREE_TIER_TOKENS_PER_DAY`, `FREE_TIER_GLOBAL_TOKENS_PER_DAY` | Optional free-tier abuse limits |
+
+| Worker secret (`wrangler secret put`) | Meaning |
+| --- | --- |
+| `TURNSTILE_SECRET` | Turnstile Siteverify secret |
+| `PAYPAL_SANDBOX_CLIENT_ID`, `PAYPAL_SANDBOX_CLIENT_SECRET`, `PAYPAL_SANDBOX_WEBHOOK_ID` | PayPal sandbox app and its webhook's id |
+| `PAYPAL_LIVE_CLIENT_ID`, `PAYPAL_LIVE_CLIENT_SECRET`, `PAYPAL_LIVE_WEBHOOK_ID` | PayPal live app and its webhook's id |
+| `VIETTEL_SINVOICE_{SANDBOX,LIVE}_USERNAME`, `_PASSWORD`, `_TAX_CODE`, `_TEMPLATE_CODE`, `_SERIES` | Viettel S-Invoice account per mode; template + series must exist on the account (the admin page checks); optional `_BASE_URL` |
+
 ## 🧠 Architecture
 
 ### Routing Flow

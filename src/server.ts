@@ -10,7 +10,9 @@ import { logger } from './core/logger';
 import { QuotaManager } from './core/quota-manager';
 import { config } from './config';
 import { requireClientApiKey } from './core/client-auth';
-import { adminOf, mountHosted, providersOverBudget, resumeAdminSession, recordUsage, servedBy, requireIssuedKey, resolveModel, sameOrigin, type HostedOptions } from './core/hosted';
+import { mountAdminBilling } from './core/admin-billing';
+import { mountCustomerRoutes } from './core/customer-routes';
+import { adminOf, sessionOf, mountHosted, providersOverBudget, resumeAdminSession, recordUsage, servedBy, requireIssuedKey, resolveModel, sameOrigin, type HostedOptions } from './core/hosted';
 import { createRequireAegisToken, AegisTenant } from './core/aegis-auth';
 import { chatCompletionErrorResponse, formatProviderError, hydrateAxiosError } from './core/api-errors';
 import { normalizeCompletionRequest } from './core/normalize-request';
@@ -131,6 +133,30 @@ function requireLocalDashboardAccess(req: Request, res: Response, next: NextFunc
   });
 }
 
+/** The dashboard's own files: the page shell any signed-in account may load (its data needs its own API). */
+function dashboardShell(path: string): boolean {
+  return path === '/' || path === '/index.html' || path.startsWith('/assets/') || /^\/[\w.-]+\.(?:png|ico|svg|webmanifest)$/.test(path);
+}
+
+/**
+ * Hosted: the dashboard page is for everyone signed in (customers see their own workspace); /dashboard/me/… are
+ * the customer's own routes (customer-routes.ts, each checks the session itself); everything else under /dashboard
+ * (provider keys, routing, stats) stays for the owner.
+ */
+function hostedDashboardGate(hosted: HostedOptions) {
+  const admin = requireHostedAdmin(hosted);
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (req.path === '/session' || req.path === '/me' || req.path.startsWith('/me/')) return next();
+    if ((req.method === 'GET' || req.method === 'HEAD') && dashboardShell(req.path)) {
+      if (sessionOf(hosted, req) || adminOf(hosted, req)) return next();
+      if (hosted.login) return res.redirect(302, '/auth/login?next=/');
+      res.status(401).json({ error: 'Sign in to use Valefront.' });
+      return;
+    }
+    admin(req, res, next);
+  };
+}
+
 function requireHostedAdmin(hosted: HostedOptions) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const who = adminOf(hosted, req);
@@ -156,7 +182,7 @@ function requireHostedAdmin(hosted: HostedOptions) {
 // sleeping service from an API-surface policy response.
 const EXTERNAL_ROUTES = new Set([
   '/healthz', '/readyz', '/v1/chat/completions', '/v1/route', '/mcp', '/v1/models', '/v1/messages', '/v1/messages/count_tokens',
-  '/v1/embeddings', '/v1/audio/transcriptions', '/v1/audio/speech', '/v1/benchmarks',
+  '/v1/embeddings', '/v1/audio/transcriptions', '/v1/audio/speech', '/v1/benchmarks', '/v1/pricing', '/webhooks/paypal',
 ]);
 /** Hosted keys mode: the admin page and its sign-in (each is still guarded by its own route). */
 const EXTERNAL_PREFIXES = ['/admin', '/auth/'];
@@ -225,7 +251,10 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   };
 
   app.use(cors({ exposedHeaders: ['Mcp-Session-Id'] }));
-  app.use(express.json({ limit: config.bodyLimit }));
+  // The PayPal webhook's signature is checked over the body exactly as it arrived.
+  app.use(express.json({ limit: config.bodyLimit, verify: (req, _res, buf) => { if ((req as Request).url?.startsWith('/webhooks/')) (req as Request & { rawBody?: Buffer }).rawBody = Buffer.from(buf); } }));
+  // Billing admin lives on its own host (adm.valefront.com, behind Cloudflare Access); nothing else is served there.
+  if (hosted?.adminHost) mountAdminBilling(app, hosted);
   // An admin whose session ran out keeps going on Aegis's refresh token (hosted.ts).
   if (hosted?.login) app.use(resumeAdminSession(hosted));
 
@@ -247,12 +276,14 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   });
 
   // Local: the dashboard is for this machine only. Hosted: it's for the owner, signed in with Aegis (or the admin token).
-  app.use('/dashboard', hosted ? requireHostedAdmin(hosted) : requireLocalDashboardAccess);
+  app.use('/dashboard', hosted ? hostedDashboardGate(hosted) : requireLocalDashboardAccess);
   app.get('/dashboard/session', (req, res) => {
-    res.json(hosted
-      ? { hosted: true, email: adminOf(hosted, req), publicUrl: hosted.publicUrl, signIn: Boolean(hosted.login) }
-      : { hosted: false });
+    if (!hosted) return res.json({ hosted: false });
+    const admin = adminOf(hosted, req);
+    const email = admin ?? sessionOf(hosted, req)?.email ?? null;
+    res.json({ hosted: true, email, admin: Boolean(admin), publicUrl: hosted.publicUrl, signIn: Boolean(hosted.login) });
   });
+  if (hosted) mountCustomerRoutes(app, hosted);
 
   // Serve dashboard static files
   app.use('/dashboard', express.static(path.join(PUBLIC_DIR)));

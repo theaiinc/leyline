@@ -22,7 +22,7 @@ export async function api<T = unknown>(path: string, init: { method?: string; bo
 }
 
 /** Who is looking: the local desktop/dashboard, or hosted Leyline with its signed-in owner. */
-export type Session = { hosted: boolean; email?: string | null; publicUrl?: string; signIn?: boolean };
+export type Session = { hosted: boolean; email?: string | null; admin?: boolean; publicUrl?: string; signIn?: boolean };
 
 export async function fetchSession(): Promise<Session> {
   try {

@@ -2,14 +2,24 @@ import { handleAsNodeRequest } from 'cloudflare:node';
 import type { Server } from 'node:http';
 import { buildRouter, hostedOptions } from '../src/index';
 import { createServer } from '../src/server';
-import { adminOf, applySettings, type HostedOptions } from '../src/core/hosted';
+import { adminOf, applySettings, isAdminEmail, sessionOf, type HostedOptions } from '../src/core/hosted';
+import { BillingService, parseFrom } from '../src/core/billing-service';
+import { D1BillingStore, type D1BatchDatabase } from '../src/core/billing-store';
+import { PayPalClient, paypalConfigFor } from '../src/core/paypal';
+import type { ProviderMode } from '../src/core/provider-modes';
+import { ViettelSInvoiceProvider } from '../src/core/einvoice-viettel';
+import { accessConfigFromEnv } from '../src/core/cloudflare-access';
+import { freeTierConfig, verifyTurnstile } from '../src/core/self-serve-workspaces';
+// Bundled as data (wrangler.jsonc "rules"): the invoice/receipt font.
+import dejavuRegular from '../src/assets/fonts/DejaVuSans.ttf';
+import dejavuBold from '../src/assets/fonts/DejaVuSans-Bold.ttf';
 import { D1ArcanaCloudStore, D1DocStore, D1LogStore, D1SecretStore, type D1Database } from '../src/core/d1-stores';
 import { arcanaCloudConfigFromEnv, parseArcanaCloudReferences, type SecretStore } from '../src/core/secret-store';
 import { logger } from '../src/core/logger';
 import { fetchBenchmarkSnapshot, mapBenchmarkSnapshot, refreshBenchmarks, type BenchmarkCache, type BenchmarkSnapshot } from '../src/core/benchmarks';
 import type { ModelListSnapshot } from '../src/core/router';
 import type { WorkersAiBinding } from '../src/providers/workers-ai';
-import { dashboardApiRequest, dashboardPageRedirect, legacyDashboardRedirect } from './host-routing';
+import { dashboardApiRequest, dashboardPageRedirect, dashboardRouteRedirect, legacyDashboardRedirect } from './host-routing';
 
 /**
  * Hosted Valefront on Cloudflare Workers. The same Express app as the Node server (src/server.ts), in hosted keys
@@ -37,6 +47,19 @@ interface Env {
   LM_ARENA_URL?: string;
   /** Optional Veil Presidio analyzer endpoint; regex is used when unset. */
   PRESIDIO_ANALYZER_URL?: string;
+  /** Billing email sender ("Valefront Billing <billing@valefront.com>"), on a domain onboarded to Email Sending. */
+  BILLING_FROM?: string;
+  /** Turnstile: public site key (var) and Siteverify secret (secret). */
+  TURNSTILE_SITE_KEY?: string;
+  TURNSTILE_SECRET?: string;
+  /** PayPal and Viettel S-Invoice secrets per mode (PAYPAL_SANDBOX_*, PAYPAL_LIVE_*, …): src/core/provider-modes.ts. */
+  [name: `PAYPAL_${string}`]: string | undefined;
+  /** The billing admin host (default adm.valefront.com) and its Cloudflare Access application. */
+  ADMIN_HOST?: string;
+  CF_ACCESS_TEAM_DOMAIN?: string;
+  CF_ACCESS_AUD?: string;
+  CF_ACCESS_SERVICE_TOKEN_IDS?: string;
+  [name: `VIETTEL_SINVOICE_${string}`]: string | undefined;
 }
 interface Ctx { waitUntil(p: Promise<unknown>): void }
 
@@ -158,6 +181,7 @@ async function build(env: Env): Promise<Built> {
     }
   } });
   hosted.background = keepAlive;
+  configureBilling(hosted, env);
   const email = env.EMAIL;
   if (email) {
     const from = env.LEYLINE_ALERT_FROM || 'Valefront <alerts@notify.theaiinc.com>';
@@ -191,6 +215,44 @@ async function build(env: Env): Promise<Built> {
   return { port, server, hosted, version, stages };
 }
 
+/** Self-serve sign-up, prepaid billing, the admin host (src/core/billing-service.ts, customer-routes.ts, admin-billing.ts). */
+function configureBilling(hosted: HostedOptions, env: Env): void {
+  const vars = env as unknown as Record<string, string | undefined>;
+  // One client per mode, made when first needed (each keeps its own OAuth token). The admin switch picks the mode.
+  const paypal = new Map<ProviderMode, PayPalClient | null>();
+  const sinvoice = new Map<ProviderMode, ViettelSInvoiceProvider | null>();
+  const paypalFor = (mode: ProviderMode) => {
+    if (!paypal.has(mode)) { const cfg = paypalConfigFor(vars, mode); paypal.set(mode, cfg ? new PayPalClient(cfg) : null); }
+    return paypal.get(mode)!;
+  };
+  const sinvoiceFor = (mode: ProviderMode) => {
+    if (!sinvoice.has(mode)) sinvoice.set(mode, ViettelSInvoiceProvider.forMode(vars, mode));
+    return sinvoice.get(mode)!;
+  };
+  const mail = env.EMAIL;
+  const from = parseFrom(env.BILLING_FROM);
+  hosted.billing = new BillingService({
+    // Billing reads and writes the primary: a balance must never be read from a lagging replica.
+    store: new D1BillingStore(env.DB as D1BatchDatabase),
+    fonts: async () => ({ regular: new Uint8Array(dejavuRegular), bold: new Uint8Array(dejavuBold) }),
+    paypal: paypalFor,
+    isAdminWorkspace: (ws) => isAdminEmail(hosted, ws.email),
+    ...(mail && from ? {
+      sendEmail: async (m) => { await (mail.send as unknown as (message: unknown) => Promise<unknown>)(m); },
+      billingFrom: env.BILLING_FROM,
+    } : {}),
+    dashboardUrl: 'https://dash.valefront.com',
+    free: freeTierConfig(vars),
+    einvoice: sinvoiceFor,
+  });
+  hosted.turnstile = env.TURNSTILE_SITE_KEY && env.TURNSTILE_SECRET
+    ? { siteKey: env.TURNSTILE_SITE_KEY, verify: (token, ip) => verifyTurnstile(token, env.TURNSTILE_SECRET, ip) }
+    : null;
+  hosted.adminHost = env.ADMIN_HOST || 'adm.valefront.com';
+  hosted.access = accessConfigFromEnv(vars);
+  hosted.providerEnv = vars;
+}
+
 async function current(env: Env): Promise<Built> {
   if (!built) {
     built = build(env);
@@ -213,6 +275,9 @@ async function current(env: Env): Promise<Built> {
   return b;
 }
 
+/** wrangler.jsonc triggers: the e-invoice retry job. */
+const EINVOICE_CRON = '*/15 * * * *';
+
 const DASHBOARD_FILES = new Set(['/logo.png', '/icon.svg', '/favicon-32.png', '/favicon.ico', '/apple-touch-icon.png']);
 
 /** The dashboard's own files (built into public/ by vite, base /dashboard/). */
@@ -232,6 +297,11 @@ export default {
     liveCtx = ctx;
     if (pending.size) ctx.waitUntil(Promise.allSettled([...pending]));
     const url = new URL(request.url);
+    // The billing admin host: straight to the app, whose own check (behind Cloudflare Access) decides.
+    if (url.hostname === (env.ADMIN_HOST || 'adm.valefront.com')) {
+      const b = await current(env);
+      return handleAsNodeRequest(b.port, request, env, ctx as never);
+    }
     // llm.theaiinc.com is an API compatibility alias only. Keep API callers working there,
     // but send dashboard and authentication traffic to Valefront's canonical dashboard host.
     const legacyRedirect = legacyDashboardRedirect(url);
@@ -239,16 +309,16 @@ export default {
     if (url.pathname === '/' && url.hostname === 'llm.valefront.com') {
       return Response.redirect(new URL('https://dash.valefront.com/').toString(), 301);
     }
-    const dashboardRedirect = dashboardPageRedirect(url);
+    const dashboardRedirect = dashboardPageRedirect(url) ?? dashboardRouteRedirect(url);
     if (dashboardRedirect) return dashboardRedirect;
 
     const asset = assetPath(url.pathname);
     if (asset) {
       if (asset === '/') {
-        // The page itself is for the owner; its scripts and styles hold nothing private.
+        // The page itself is for anyone signed in (customers get their workspace); its scripts and styles hold nothing private.
         const b = await current(env);
         const req = { headers: { cookie: request.headers.get('cookie') ?? undefined, authorization: request.headers.get('authorization') ?? undefined } };
-        if (!adminOf(b.hosted, req as never)) {
+        if (!adminOf(b.hosted, req as never) && !sessionOf(b.hosted, req as never)) {
           return b.hosted.login
             ? Response.redirect(new URL('/auth/login?next=/', url).toString(), 302)
             : new Response('Sign-in is not configured.', { status: 503 });
@@ -298,8 +368,17 @@ export default {
     return out;
   },
 
-  /** Daily: refresh benchmark rankings and drop old per-minute counters. */
-  async scheduled(_event: unknown, env: Env): Promise<void> {
+  /**
+   * Every 15 minutes: issue VAT e-invoices still waiting (S-Invoice newly configured, a Viettel failure, a timeout).
+   * Daily: refresh benchmark rankings and drop old per-minute counters.
+   */
+  async scheduled(event: { cron?: string }, env: Env): Promise<void> {
+    if (event.cron === EINVOICE_CRON) {
+      const b = await current(env);
+      const issued = await b.hosted.billing?.processPendingEinvoices();
+      if (issued) console.log(JSON.stringify({ event: 'einvoice_retry_job', issued }));
+      return;
+    }
     const docs = new D1DocStore(env.DB);
     await Promise.all([
       docs.prune(),
