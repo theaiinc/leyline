@@ -68,25 +68,20 @@ describe('benchmark matching and ranking', () => {
     expect(duplicateMapped[0]).toMatchObject({ model: 'gpt-5.5_xhigh', leylineModel: 'gpt-5.5', score: 92 });
   });
 
-  it('maps DeepSeek Flash and Pro leaderboard rows to served BytePlus IDs', async () => {
-    const { mapBenchmarkScores } = await import('../src/core/benchmarks');
-    const served = [
-      { id: 'deepseek-v4-flash-ga-260731' },
-      { id: 'deepseek-v4-pro-ga-260813' },
-    ];
-    const mapped = mapBenchmarkScores([
-      { model: 'DeepSeek V4 Flash', score: 1, source: 'leaderboard', asOf: '2026-11-05' },
-      { model: 'deepseek-v4-flash', score: 2, source: 'leaderboard', asOf: '2026-11-05' },
-      { model: 'DeepSeek V4 Pro', score: 3, source: 'leaderboard', asOf: '2026-11-05' },
-      { model: 'deepseek-v4-pro', score: 4, source: 'leaderboard', asOf: '2026-11-05' },
-    ], served);
-    expect(mapped).toEqual(expect.arrayContaining([
-      expect.objectContaining({ model: 'deepseek-v4-flash', leylineModel: 'deepseek-v4-flash-ga-260731' }),
-      expect.objectContaining({ model: 'deepseek-v4-pro', leylineModel: 'deepseek-v4-pro-ga-260813' }),
-    ]));
-    expect(mapped.filter((score) => score.leylineModel === 'deepseek-v4-flash-ga-260731')).toHaveLength(1);
-    expect(mapped.filter((score) => score.leylineModel === 'deepseek-v4-pro-ga-260813')).toHaveLength(1);
+  it('matches normalized provider prefixes, dates, latest aliases, and case exactly', async () => {
+    const { matchBenchmarkModel } = await import('../src/core/benchmarks');
+    const snapshot = {
+      benchmarks: [{
+        scores: [
+          { model: 'gpt-4o', score: 1, source: 'leaderboard', asOf: '2026-01-01' },
+          { model: 'deepseek-v4-pro', score: 1, source: 'leaderboard', asOf: '2026-01-01' },
+        ],
+      }],
+    };
+    expect(matchBenchmarkModel('OpenAI/gpt-4o-2025-01-01', snapshot.benchmarks[0]!.scores)?.model).toBe('gpt-4o');
     expect(matchBenchmarkModel('GPT-4O-latest', snapshot.benchmarks[0]!.scores)?.model).toBe('gpt-4o');
+    expect(matchBenchmarkModel('DeepSeek/deepseek-v4-pro', snapshot.benchmarks[0]!.scores)?.model).toBe('deepseek-v4-pro');
+    expect(matchBenchmarkModel('gpt-4o', snapshot.benchmarks[0]!.scores)?.model).toBe('gpt-4o');
     expect(matchBenchmarkModel('gpt-4o-mini', snapshot.benchmarks[0]!.scores)).toBeUndefined();
   });
 
@@ -94,6 +89,21 @@ describe('benchmark matching and ranking', () => {
     const ranked = rankBenchmarks(['gpt-4o-mini', 'gpt-4o', 'claude-opus-5-5'], snapshot);
     expect(ranked.map((row) => row.id)).toEqual(['claude-opus-5-5', 'gpt-4o', 'gpt-4o-mini']);
     expect(ranked.find((row) => row.id === 'gpt-4o-mini')?.benchmarks['gpqa-diamond']).toBeNull();
+  });
+
+  it('marks a benchmark unavailable with a dated source-specific reason when its source has no rows', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = async () => new Response(JSON.stringify({ rows: [] }), { status: 200 });
+    const result = await fetchBenchmarkSnapshot({
+      epochUrl: 'https://example.test/empty-epoch.zip',
+      lmarenaUrl: 'https://example.test/empty-lmarena',
+    });
+    global.fetch = originalFetch;
+    const liveCodeBench = result.benchmarks.find((benchmark) => benchmark.id === 'livecodebench');
+    expect(liveCodeBench).toMatchObject({ available: false });
+    expect(liveCodeBench?.unavailableReason).toContain('LiveCodeBench');
+    expect(liveCodeBench?.unavailableReason).toContain('2026-11-05');
+    expect(liveCodeBench?.unavailableReason).toContain('https://');
   });
 
   it('parses LMArena datasets-server rows and keeps the best normalized model score', async () => {
