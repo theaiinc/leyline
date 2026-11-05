@@ -63,7 +63,7 @@
     // Access application "Valefront billing admin" on adm.valefront.com (allow: LEYLINE_ADMIN_EMAILS).
     "CF_ACCESS_TEAM_DOMAIN": "https://rough-cell-0ce1.cloudflareaccess.com",
     "CF_ACCESS_AUD": "f370c1fed138edae3fed542b2ffa0e862cb36fccc881a2c226dea61e0c4785df",
-    // Free tier (launch, 2026-11-05): 5M tokens (DEFAULT_FREE_TIER_TOKENS) for 30 days on DeepSeek V4 Flash only, at
+    // Free tier (launch, 2026-11-05): 1M tokens at sign-up + 4M unlocked by the first top-up, 30 days, DeepSeek V4 Flash only, at
     // most 250k a day per workspace (so the 5M can be used within the 30 days); 20M a day across all (the default).
     "FREE_TIER_MODELS": "deepseek-v4-flash-ga-260731",
     "FREE_TIER_TOKENS_PER_DAY": "250000"
