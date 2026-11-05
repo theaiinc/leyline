@@ -83,7 +83,7 @@ export function BenchmarksPage({ base }: { base: string }) {
                 const served = benchmark.scores.filter(row => row.leylineModel).sort((a, b) => b.score - a.score)[0];
                 return <button key={benchmark.id} type="button" className="block w-full text-left text-sm hover:underline" onClick={() => setSelected(benchmark.id)}>
                   <span className="font-medium">{benchmark.name}</span>
-                  <span className="ml-2 text-muted-foreground">{served ? `Best here: ${served.leylineModel}` : 'No served model in this snapshot'}</span>
+                  <span className="ml-2 text-muted-foreground">{served ? `Best here: ${served.leylineModel}` : `None of this leaderboard&apos;s models are on Valefront (data from ${benchmark.asOf || data.fetchedAt ? new Date(benchmark.asOf || data.fetchedAt!).toLocaleDateString() : 'unknown date'})`}</span>
                 </button>;
               })}
             </CardContent>
@@ -104,10 +104,10 @@ export function BenchmarksPage({ base }: { base: string }) {
           <CardContent>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
-                <thead><tr className="border-b"><th className="p-2">Model</th><th className="p-2">Score</th><th className="p-2">Valefront</th><th className="p-2">Date</th></tr></thead>
+                <thead><tr className="border-b"><th className="p-2">Model</th><th className="p-2">Score</th><th className="p-2">On Valefront as</th><th className="p-2">Date</th></tr></thead>
                 <tbody>{rows.map(row => <tr key={`${row.model}-${row.asOf}`} className="border-b last:border-0">
                   <td className="p-2 font-medium">{row.model}</td><td className="p-2 tabular-nums">{row.score}</td>
-                  <td className="p-2">{row.leylineModel ? <><span className="text-success">{row.leylineModel}</span>{row.aliases?.length ? <span className="ml-1 text-xs text-muted-foreground">({row.aliases.join(', ')})</span> : null}</> : '—'}</td>
+                  <td className="p-2">{row.leylineModel ? <><span className="text-success">{row.leylineModel}</span>{row.aliases?.length ? <span className="ml-1 text-xs text-muted-foreground">({row.aliases.join(', ')})</span> : null}</> : 'Not available'}</td>
                   <td className="p-2 text-muted-foreground">{row.asOf || chosen.asOf || '—'}</td>
                 </tr>)}</tbody>
               </table>

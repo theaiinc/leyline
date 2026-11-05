@@ -61,6 +61,7 @@ export function normalizeModelId(id: string): string {
     .replace(/\s*\((?:high|medium|low|max|thinking|reasoning|xhigh)\)\s*$/i, '')
     .replace(/[-_](?:xhigh|high|medium|low|unknown|max|thinking|reasoning)(?=$|[-_])/g, '')
     .replace(/[-_]\d{4}[-_]\d{2}[-_]\d{2}(?=$|[-_])/, '')
+    .replace(/[-_]ga-\d{6}(?=$|[-_])/, '')
     .replace(/[-_]\d{8}(?=$|[-_])/, '')
     .replace(/[-_](?:latest|preview|experimental)(?=$|[-_])/g, '')
     .replace(/\s+/g, '-')
