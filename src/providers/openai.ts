@@ -43,6 +43,10 @@ export class OpenAIProvider implements Provider {
     this.unavailableUntil = Date.now() + 15 * 60 * 1000;
   }
 
+  getUnavailableReason(): string | undefined {
+    return Date.now() < this.unavailableUntil ? 'Out of credit' : undefined;
+  }
+
   setApiKey(apiKey: string): void {
     this.apiKey = apiKey;
   }

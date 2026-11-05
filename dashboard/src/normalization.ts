@@ -27,6 +27,7 @@ export type ApiKeyProvider = {
   runtimeConfigurable: boolean;
   runtimeConfig?: RuntimeConfig;
   runtimeReady?: boolean;
+  unavailableReason?: string;
   capabilities: Capability[];
 };
 
@@ -98,6 +99,7 @@ export type ProviderStats = {
   runtimeConfigurable?: boolean;
   runtimeConfig?: RuntimeConfig;
   runtimeReady?: boolean;
+  unavailableReason?: string;
   capabilities: Capability[];
   models: ModelSummary[];
   quota?: { requestsPerMinute: number; requestsPerDay: number };
@@ -382,6 +384,7 @@ function normalizeApiKeyProvider(value: unknown, index: number): ApiKeyProvider 
     runtimeConfigurable: Boolean(raw.runtimeConfigurable),
     runtimeConfig: normalizeRuntimeConfig(raw.runtimeConfig),
     runtimeReady: typeof raw.runtimeReady === 'boolean' ? raw.runtimeReady : undefined,
+    unavailableReason: optionalString(raw.unavailableReason),
     capabilities: normalizeCapabilities(raw.capabilities),
   };
 }
@@ -406,6 +409,7 @@ function normalizeProviderStats(value: unknown, index: number): ProviderStats {
     apiKeyStatus,
     runtimeConfig: normalizeRuntimeConfig(raw.runtimeConfig),
     runtimeReady: typeof raw.runtimeReady === 'boolean' ? raw.runtimeReady : undefined,
+    unavailableReason: optionalString(raw.unavailableReason),
     capabilities: normalizeCapabilities(raw.capabilities),
     models: Array.isArray(raw.models) ? raw.models.map(normalizeModel) : [],
     quota: normalizeQuota(raw.quota),

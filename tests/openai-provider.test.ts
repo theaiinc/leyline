@@ -22,6 +22,24 @@ describe('OpenAIProvider', () => {
     await expect(provider.isAvailable()).resolves.toBe(false);
   });
 
+  it('marks the provider unavailable for 15 minutes and then restores availability', async () => {
+    jest.useFakeTimers();
+    try {
+      const provider = new OpenAIProvider('key');
+      expect(await provider.isAvailable()).toBe(true);
+
+      provider.markUnavailable('insufficient balance');
+      expect(await provider.isAvailable()).toBe(false);
+      expect(provider.getUnavailableReason()).toBe('Out of credit');
+
+      jest.advanceTimersByTime(15 * 60 * 1000);
+      expect(await provider.isAvailable()).toBe(true);
+      expect(provider.getUnavailableReason()).toBeUndefined();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('should call OpenAI chat completions for non-streaming requests', async () => {
     mockedAxios.post.mockResolvedValueOnce({
       data: {

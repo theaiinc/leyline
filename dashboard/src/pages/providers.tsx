@@ -171,7 +171,7 @@ export function ProvidersPage({ d }: { d: Dashboard }) {
               <div className="flex w-full items-center gap-2">
                 <ProviderDot tone={providerTone(provider.name, provider.family)} />
                 <span className="truncate font-medium">{provider.label || provider.name}</span>
-                <ToneBadge tone={s.tone} className="ml-auto">{s.label}</ToneBadge>
+                <ToneBadge tone={s.tone} className="ml-auto">{provider.unavailableReason || s.label}</ToneBadge>
               </div>
               <p className="text-xs text-muted-foreground">{providerDescription(provider.name, provider.family) || sourceLabel(provider.source, storeLabel)}</p>
               {provider.capabilities.some(c => c !== 'chat') ? (

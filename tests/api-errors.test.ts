@@ -1,6 +1,13 @@
-import { chatCompletionErrorResponse, formatProviderError, isRateLimitError } from '../src/core/api-errors';
+import { chatCompletionErrorResponse, formatProviderError, isInsufficientBalanceError, isRateLimitError } from '../src/core/api-errors';
 
 describe('api-errors', () => {
+  it('detects insufficient balance and credit exhaustion errors without classifying unrelated 400s', () => {
+    expect(isInsufficientBalanceError({ response: { status: 402 }, message: 'Payment required' })).toBe(true);
+    expect(isInsufficientBalanceError({ response: { status: 400, data: { error: { message: 'Insufficient balance' } } }, message: 'Bad request' })).toBe(true);
+    expect(isInsufficientBalanceError(new Error('The account is out of credit'))).toBe(true);
+    expect(isInsufficientBalanceError({ response: { status: 400 }, message: 'Invalid model name' })).toBe(false);
+  });
+
   it('detects Leyline and provider rate limit errors', () => {
     expect(isRateLimitError(new Error('Fixed provider AzureOpenAI is rate-limited.'))).toBe(true);
     expect(isRateLimitError({ response: { status: 429 }, message: 'Request failed with status code 429' })).toBe(true);
