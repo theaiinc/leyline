@@ -416,8 +416,10 @@ export class BillingService {
    * What an order received is the sum of its matched transactions (each SePay id counted once): at least the quoted
    * VND credits the order's USD amount (an excess is noted for a refund); less keeps it pending, noted "underpaid by".
    */
-  async applySepay(tx: SePayTransaction, source: 'webhook' | 'poll'): Promise<SepayOutcome> {
-    const { created, row } = await this.store.recordSepayTransaction({ ...tx, source, receivedAt: this.now() });
+  async applySepay(incoming: SePayTransaction, source: 'webhook' | 'poll'): Promise<SepayOutcome> {
+    const { created, row } = await this.store.recordSepayTransaction({ ...incoming, source, receivedAt: this.now() });
+    // Already recorded (perhaps under another id for the same bank transaction): carry on as that record.
+    const tx = created ? incoming : { ...incoming, id: row.id };
     const log = (outcome: string, orderId: string | null = null) => console.log(JSON.stringify({ event: 'sepay_transaction', outcome, source, id: tx.id, orderId }));
     // A replay of one already settled: nothing more to do (an order it counted toward is re-checked below).
     if (!created && row.outcome && row.outcome !== 'underpaid') return { outcome: row.outcome, orderId: row.orderId ?? null, duplicate: true };

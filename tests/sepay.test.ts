@@ -269,6 +269,9 @@ describe('SePay polling', () => {
     // The webhook for the same SePay transaction, late: no second credit.
     expect(await f.service.applySepay(tx(order.quote!.transferContent, 263_850, { id: 777001 }), 'webhook')).toMatchObject({ duplicate: true });
     expect((await f.store.balance(f.ws.id)).cents).toBe(1000);
+    // The same bank transaction under another id (same bank reference, account and amount): not counted again.
+    expect(await f.service.applySepay(tx(order.quote!.transferContent, 263_850, { id: 999001, referenceCode: 'FT9' }), 'webhook')).toMatchObject({ duplicate: true });
+    expect(await f.store.sepayReceived(order.id)).toBe(263_850);
     // Nothing pending: polling doesn't call SePay.
     const before = f.api.calls.length;
     f.clock.now += 60_000;

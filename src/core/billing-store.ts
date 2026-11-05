@@ -349,6 +349,13 @@ export class D1BillingStore {
    * there (a webhook replay, or polling finding one the webhook already brought).
    */
   async recordSepayTransaction(tx: SepayTransactionRow): Promise<{ created: boolean; row: SepayTransactionRow }> {
+    // The same bank transaction under another SePay id (should the webhook's and the API's ids ever differ): the bank's
+    // reference code, account, direction and amount identify it, so it is never counted twice.
+    if (tx.referenceCode) {
+      const same = await this.first<Row>('SELECT * FROM sepay_transactions WHERE reference_code = ? AND account_number = ? AND direction = ? AND amount_vnd = ? AND id <> ?',
+        tx.referenceCode, tx.accountNumber, tx.direction, tx.amountVnd, tx.id);
+      if (same) return { created: false, row: sepayFrom(same) };
+    }
     const r = await this.db.prepare(`INSERT OR IGNORE INTO sepay_transactions (id, source, account_number, direction, amount_vnd, content, reference_code, transaction_date, gateway, order_id, outcome, received_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`)
       .bind(tx.id, tx.source, tx.accountNumber, tx.direction, tx.amountVnd, tx.content.slice(0, 1000), tx.referenceCode ?? null, tx.transactionDate ?? null, tx.gateway ?? null, tx.receivedAt).run();
