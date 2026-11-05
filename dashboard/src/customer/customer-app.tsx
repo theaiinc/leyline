@@ -13,6 +13,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useHashRoute } from '@/hooks/use-hash-route';
 import { cn } from '@/lib/utils';
 import { Turnstile } from './turnstile';
+import { KeyBadge, MintButton, Step, WelcomeHero, friendlyModel } from './welcome';
 
 /** The customer's dashboard: sign-up, their own keys, usage, billing and data. Admins get the owner dashboard. */
 
@@ -95,6 +96,22 @@ export function CustomerApp({ dark, toggleTheme }: { dark: boolean; toggleTheme:
     // Aegis's sign-out page ends the Aegis session too; without it the next sign-in skipped the login.
     const next = res.ok ? ((await res.json().catch(() => null)) as { next?: string } | null)?.next : undefined;
     window.location.href = next || '/auth/login?next=/';
+  }
+
+  if (me && !ready && !error) {
+    // Sign-up gets the whole screen: there is nothing to navigate to yet.
+    return (
+      <div className="min-h-svh bg-[radial-gradient(60rem_30rem_at_20%_-10%,rgba(169,245,207,0.14),transparent),radial-gradient(50rem_30rem_at_100%_0%,rgba(122,166,255,0.12),transparent)]">
+        <header className="mx-auto flex max-w-6xl items-center gap-2 px-4 py-4 md:px-8">
+          <img src={`${import.meta.env.BASE_URL}icon.svg`} alt="" className="size-8" />
+          <span className="font-semibold">Valefront</span>
+          <span className="ml-auto hidden max-w-[16rem] truncate text-xs text-muted-foreground sm:inline">{me.email}</span>
+          <Button variant="ghost" size="icon" onClick={toggleTheme} aria-label="Toggle theme">{dark ? <Sun /> : <Moon />}</Button>
+          <Button variant="ghost" size="sm" onClick={signOut}><LogOut />Sign out</Button>
+        </header>
+        <main className="mx-auto max-w-6xl px-4 pt-4 pb-16 md:px-8 md:pt-8"><GetStarted me={me} reload={load} go={go} /></main>
+      </div>
+    );
   }
 
   return (
@@ -183,7 +200,7 @@ function GetStarted({ me, reload, go }: { me: Me; reload: () => Promise<void>; g
       const out = await api<{ key: string | null; freeGrant: boolean }>('/dashboard/me/workspace', { method: 'POST', body: { acceptTerms: accept, termsVersion: me.termsVersion, turnstileToken: token } });
       setShownKey(out.key);
       setGranted(out.freeGrant);
-      await reload();
+      // Reloaded when they leave the key screen: reloading now would switch to the dashboard and lose the key.
     } catch (err) {
       failToast(err);
       setReset((n) => n + 1);
@@ -194,12 +211,20 @@ function GetStarted({ me, reload, go }: { me: Me; reload: () => Promise<void>; g
 
   if (shownKey) {
     return (<>
-      <PageHeader title="You're in" description={granted ? 'Your workspace is ready, with your free tokens.' : 'Your workspace is ready. Free tokens were already used by this email or account, so add credit to make requests.'} />
-      <Section title="Your API key" description="Shown once: copy it now and keep it secret. You can make more on the API keys page.">
+      <div className="mb-6 flex flex-wrap items-center gap-4">
+        <KeyBadge />
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">You&apos;re in.</h1>
+          <p className="text-sm text-muted-foreground">{granted ? `Your workspace is ready, with ${tokens(me.freeTier.tokens)} free tokens on ${me.freeTier.models.map(friendlyModel).join(', ')}.` : 'Your workspace is ready. This email or account already used its free tokens, so add credit to make requests.'}</p>
+        </div>
+      </div>
+      <div className="mb-4 rounded-2xl border border-[#a9f5cf]/50 bg-[#a9f5cf]/5 p-5">
+        <div className="mb-1 text-sm font-semibold">Your API key</div>
+        <p className="mb-3 text-xs text-muted-foreground">Shown once. Copy it now and keep it secret; you can create more on the API keys page.</p>
         <Code>{shownKey}</Code>
-      </Section>
+      </div>
       <Quickstart me={me} apiKey={shownKey} />
-      <Button onClick={() => go(granted ? 'keys' : 'billing')}>{granted ? 'Go to API keys' : 'Add credit'}</Button>
+      <div className="max-w-xs"><MintButton onClick={() => { void reload().then(() => go(granted ? 'keys' : 'billing')); }}>{granted ? 'Go to my dashboard' : 'Add credit'}</MintButton></div>
     </>);
   }
   if (me.onboarding === 'email_verification') {
@@ -212,20 +237,32 @@ function GetStarted({ me, reload, go }: { me: Me; reload: () => Promise<void>; g
     </>);
   }
   if (me.onboarding === 'terms') {
-    return (<>
-      <PageHeader title="Welcome to Valefront" description="One step: accept the Terms and pass a quick security check. You get your workspace and your first API key." />
-      <Section title="Create your workspace">
-        <div className="grid gap-4">
-          <FreeTierFacts me={me} />
-          <label className="flex items-start gap-2 text-sm">
-            <input type="checkbox" className="mt-1" checked={accept} onChange={(e) => setAccept(e.target.checked)} />
-            <span>I accept the <a className="underline" href={me.termsUrl} target="_blank" rel="noreferrer">Terms of Service</a> and have read the <a className="underline" href={me.privacyUrl} target="_blank" rel="noreferrer">Privacy Policy</a>.</span>
-          </label>
-          <Turnstile siteKey={me.turnstileSiteKey} action="signup" onToken={setToken} resetKey={reset} />
-          <div><Button disabled={!accept || !token || busy} onClick={create}>{busy ? 'Creating…' : 'Create workspace and API key'}</Button></div>
+    const f = me.freeTier;
+    return (
+      <div className="grid items-start gap-10 lg:grid-cols-[1.15fr_1fr]">
+        <WelcomeHero name={me.name} freeTokens={tokens(f.tokens)} freeDays={f.expiresAfterDays} perDay={tokens(f.tokensPerDay)} models={f.models} />
+        <div className="rounded-2xl border bg-card p-5 shadow-[0_20px_60px_-30px_rgba(122,166,255,0.45)] lg:sticky lg:top-8 md:p-6">
+          <div className="text-lg font-semibold">Create your workspace</div>
+          <p className="mt-1 text-sm text-muted-foreground">Three quick steps. Your first API key appears right after.</p>
+          <div className="mt-5 grid gap-3">
+            <Step n={1} done={accept} active={!accept} title="Accept the terms">
+              <label className="flex cursor-pointer items-start gap-2.5 text-sm text-muted-foreground">
+                <input type="checkbox" className="mt-0.5 size-4 accent-[#2f9e6c]" checked={accept} onChange={(e) => setAccept(e.target.checked)} />
+                <span>I accept the <a className="font-medium text-foreground underline underline-offset-2" href={me.termsUrl} target="_blank" rel="noreferrer">Terms of Service</a> and have read the <a className="font-medium text-foreground underline underline-offset-2" href={me.privacyUrl} target="_blank" rel="noreferrer">Privacy Policy</a>.</span>
+              </label>
+            </Step>
+            <Step n={2} done={Boolean(token)} active={accept && !token} title="Quick security check">
+              <p className="mb-2 text-xs text-muted-foreground">Keeps bots from taking free tokens. It usually passes by itself.</p>
+              <Turnstile siteKey={me.turnstileSiteKey} action="signup" onToken={setToken} resetKey={reset} />
+            </Step>
+            <Step n={3} done={false} active={accept && Boolean(token)} title="Get your API key">
+              <MintButton disabled={!accept || !token || busy} onClick={create}>{busy ? 'Creating your workspace…' : 'Create workspace and API key'}</MintButton>
+              <p className="mt-2 text-xs text-muted-foreground">Signed in as {me.email}.</p>
+            </Step>
+          </div>
         </div>
-      </Section>
-    </>);
+      </div>
+    );
   }
   return (<>
     <PageHeader title="Get started" description={<>Signed in as {me.email}.</>} />
