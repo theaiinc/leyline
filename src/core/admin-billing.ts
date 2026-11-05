@@ -14,7 +14,8 @@ import type { HostedOptions } from './hosted';
  *
  *   GET  /billing/                  orders, settings, PayPal mode
  *   GET  /api/orders?status=        orders as JSON (automation, with an Access service token)
- *   POST /orders/:id/mark-paid      WorldFirst transfer arrived: credit, invoice, receipt, email (once)
+ *   POST /orders/:id/mark-paid      WorldFirst transfer arrived (or a SePay one to settle by hand): credit, invoice, receipt, email (once)
+ *   POST /sepay/poll                ask SePay for its latest transactions now (what the 15-minute cron does)
  *   POST /orders/:id/resend-email   send the receipt email again
  *   POST /settings/worldfirst | /settings/legal | /settings/vat | /settings/exchange-rate
  *   POST /providers/:id/mode         Sandbox | Live for PayPal or Viettel S-Invoice (live: type LIVE)
@@ -96,7 +97,8 @@ export function mountAdminBilling(app: Express, opts: HostedOptions): void {
       const billing = opts.billing!;
       const order = await billing.store.order(String(req.params.id));
       if (!order) throw new BillingError('order_not_found', 'Order not found.', 404);
-      if (order.method !== 'worldfirst') throw new BillingError('not_manual', 'Only bank-transfer orders are marked paid by hand; PayPal credits itself.', 409);
+      // SePay credits itself; by hand only for what it can't settle (an underpayment the admin accepts, a mangled reference).
+      if (order.method !== 'worldfirst' && order.method !== 'sepay') throw new BillingError('not_manual', 'Only bank-transfer orders are marked paid by hand; PayPal credits itself.', 409);
       const bankReference = String(req.body?.bankReference ?? '').trim().slice(0, 100) || null;
       const received = typeof req.body?.receivedUsd === 'string' && req.body.receivedUsd.trim() ? decimalToCents(req.body.receivedUsd) : order.totalCents;
       if (received !== order.totalCents) throw new BillingError('amount_mismatch', `The order is for ${formatUsd(order.totalCents)}; received ${received === null ? 'an invalid amount' : formatUsd(received)}. Not marked paid.`, 409);
@@ -192,6 +194,15 @@ export function mountAdminBilling(app: Express, opts: HostedOptions): void {
     }
   });
 
+  router.post('/sepay/poll', async (req, res) => {
+    try {
+      const { credited, seen } = await opts.billing!.pollSepay();
+      back(res, `SePay: ${seen} recent transaction(s) read, ${credited} order(s) credited.`);
+    } catch (err) {
+      fail(req, res, err);
+    }
+  });
+
   router.post('/einvoices/process', async (req, res) => {
     try {
       const issued = await opts.billing!.processPendingEinvoices();
@@ -262,10 +273,26 @@ export function mountAdminBilling(app: Express, opts: HostedOptions): void {
     const note = typeof req.query.note === 'string' ? req.query.note : '';
     res.setHeader('Cache-Control', 'no-store');
     const providers = await providerStatus(billing.store, opts.providerEnv ?? {});
-    res.type('html').send(adminPage({ who: (req as AdminRequest).billingAdmin!, note, status, orders, receiptOf, account, seller, vat, einvoices, fx: fx?.value ?? null, providers }));
+    const sepay = billing.opts.sepay ? {
+      ...billing.opts.sepay.status,
+      account: await billing.opts.sepay.account().catch(() => null),
+      method: methods.sepay,
+      lastWebhookAt: await billing.store.lastSepayWebhookAt(),
+    } : null;
+    res.type('html').send(adminPage({ who: (req as AdminRequest).billingAdmin!, note, status, orders, receiptOf, account, seller, vat, einvoices, fx: fx?.value ?? null, providers, sepay }));
   });
 
   app.use('/billing', (req, res, next) => (isAdminHost(opts, req) ? router(req, res, next) : next()));
+}
+
+function sepaySection(s: Parameters<typeof adminPage>[0]['sepay']): string {
+  const yes = (b: boolean) => (b ? '<strong style="color:#147a3d">yes</strong>' : '<strong style="color:#b42318">no</strong>');
+  if (!s) return '<p>Not configured (set SEPAY_API_TOKEN and/or SEPAY_BANK_ACCOUNT + SEPAY_BANK_BIN, SEPAY_ACCOUNT_NAME, SEPAY_WEBHOOK_KEY). Live only: SePay has no sandbox for bank accounts.</p>';
+  const a = s.account;
+  return `<p>Offered to customers: ${yes(s.method.enabled)}. Account: <strong>${a ? `${esc(a.bankName)} ${esc(a.accountNumber)} (${esc(a.accountName || 'no name')}, bank id ${esc(a.bankId)})` : 'unknown'}</strong>${a ? (s.accountFromEnv ? ' from env' : ' from the SePay API') : ''}.
+API token: ${yes(s.apiToken)} (polling, "check now") · webhook key: ${yes(s.webhookKey)} · last webhook seen: <strong>${s.lastWebhookAt ? esc(new Date(s.lastWebhookAt).toISOString().slice(0, 16).replace('T', ' ')) + ' UTC' : 'never'}</strong> · rate: <strong>${s.method.vndPerUsd ? `${esc(s.method.vndPerUsd)} VND/USD (${esc(s.method.rateDate)})` : 'none'}</strong>.<br>
+<small>Point SePay's webhook (my.sepay.vn &gt; WebHooks) at https://llm.valefront.com/webhooks/sepay, authentication "API Key" with SEPAY_WEBHOOK_KEY, content type JSON. Underpaid, overpaid and late payments are noted on the order below.</small></p>
+<form method="post" action="/billing/sepay/poll" style="margin:8px 0"><button>Check SePay transactions now</button></form>`;
 }
 
 function field(name: string, label: string, value: unknown, extra = ''): string {
@@ -276,6 +303,7 @@ function adminPage(p: {
   who: string; note: string; status?: string; orders: BillingOrder[]; receiptOf: Map<string, import('./billing').Receipt | null>;
   account: import('./billing').BillingAccount | null; seller: import('./billing').LegalSettings; vat: import('./billing').VatSettings;
   einvoices: EInvoice[]; fx: ExchangeRateSetting | null; providers: Awaited<ReturnType<typeof providerStatus>>;
+  sepay: { apiToken: boolean; webhookKey: boolean; accountFromEnv: boolean; account: import('./billing').VndBankAccount | null; method: { enabled: boolean; vndPerUsd: number | null; rateDate: string | null }; lastWebhookAt: number | null } | null;
 }): string {
   const yes = (b: boolean) => (b ? '<strong style="color:#147a3d">yes</strong>' : '<strong style="color:#b42318">no</strong>');
   const prows = p.providers.map((pr) => {
@@ -295,12 +323,12 @@ function adminPage(p: {
   }).join('');
   const rows = p.orders.map((o) => {
     const r = p.receiptOf.get(o.id);
-    const action = o.status === 'pending' && o.method === 'worldfirst'
+    const action = o.status === 'pending' && (o.method === 'worldfirst' || o.method === 'sepay')
       ? `<form method="post" action="/billing/orders/${esc(o.id)}/mark-paid" onsubmit="return confirm('Mark ${esc(o.reference)} paid (${esc(formatUsd(o.totalCents))})?')">
 <input name="receivedUsd" placeholder="Received USD" value="${esc((o.totalCents / 100).toFixed(2))}" size="8"><input name="bankReference" placeholder="Bank transaction ref" size="14"><button>Mark paid</button></form>`
       : r ? `${esc(r.number)} · email ${esc(r.emailStatus ?? 'not sent')} <form method="post" action="/billing/orders/${esc(o.id)}/resend-email" style="display:inline"><button>Resend email</button></form>` : '';
     return `<tr><td>${esc(new Date(o.createdAt).toISOString().slice(0, 16).replace('T', ' '))}</td><td><code>${esc(o.reference)}</code></td><td>${esc(o.buyer.company || o.buyer.name)}<br><small>${esc(o.buyer.email)} · ${esc(o.buyer.country)}</small></td>
-<td>${esc(METHOD_LABELS[o.method])}${o.mode === 'sandbox' ? ' <strong>SANDBOX</strong>' : ''}${o.einvoiceRequest ? '<br><small>VAT invoice requested</small>' : ''}</td><td class="n">${esc(formatUsd(o.amountCents))}<br><small>+VAT ${esc(vatLabel(o.vatRateBp))} = ${esc(formatUsd(o.totalCents))}</small></td><td>${esc(o.status)}${o.paidBy ? `<br><small>${esc(o.paidBy)}</small>` : ''}</td><td>${action}</td></tr>`;
+<td>${esc(METHOD_LABELS[o.method])}${o.mode === 'sandbox' ? ' <strong>SANDBOX</strong>' : ''}${o.einvoiceRequest ? '<br><small>VAT invoice requested</small>' : ''}${o.quote ? `<br><small>${esc(o.quote.vndAmount.toLocaleString('en-US'))} VND at ${esc(o.quote.vndPerUsd)} (${esc(o.quote.rateDate)}), content ${esc(o.quote.transferContent)}</small>` : ''}${o.paymentNote ? `<br><small style="white-space:pre-wrap;color:#8a4b00">${esc(o.paymentNote)}</small>` : ''}</td><td class="n">${esc(formatUsd(o.amountCents))}<br><small>+VAT ${esc(vatLabel(o.vatRateBp))} = ${esc(formatUsd(o.totalCents))}</small></td><td>${esc(o.status)}${o.paidBy ? `<br><small>${esc(o.paidBy)}</small>` : ''}</td><td>${action}</td></tr>`;
   }).join('');
   const a = p.account;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Valefront billing admin</title>
@@ -314,6 +342,7 @@ ${adminNav('billing')}
 ${p.note ? `<p class="note">${esc(p.note)}</p>` : ''}
 <h2>Providers: sandbox or live</h2><p><small>Secrets are Worker secrets (wrangler secret put); this page shows only whether they're set. In sandbox, PayPal is offered to admin workspaces only, and its receipts are marked SANDBOX and numbered apart. A VAT invoice is issued only through S-Invoice in its payment's mode. Every switch is audit-logged with who made it.</small></p>
 <div class="wrap"><table><thead><tr><th>Provider</th><th>Mode</th><th>Sandbox credentials</th><th>Live credentials</th><th></th></tr></thead><tbody>${prows}</tbody></table></div>
+<h2>SePay (Vietnamese bank QR, VND)</h2>${sepaySection(p.sepay)}
 <h2>Orders</h2><p><a href="/billing/">All</a> · <a href="/billing/?status=pending">Pending</a> · <a href="/billing/?status=paid">Paid</a> · <a href="/billing/?status=cancelled">Cancelled</a></p>
 <div class="wrap"><table><thead><tr><th>Created (UTC)</th><th>Reference</th><th>Buyer</th><th>Method</th><th class="n">Credit / total</th><th>Status</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="7">No orders.</td></tr>'}</tbody></table></div>
 <h2>Vietnamese VAT e-invoices (Viettel S-Invoice)</h2><p>Requested invoices wait as pending until S-Invoice is configured in their payment's mode. Exchange rate: <strong>${p.fx ? `${esc(p.fx.vndPerUsd)} VND/USD, set ${esc(p.fx.date)}` : 'not set'}</strong>.</p>

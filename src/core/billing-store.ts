@@ -13,6 +13,7 @@ import {
   type PaymentMethod,
   type Receipt,
   type VatInvoiceDetails,
+  type VndQuote,
 } from './billing';
 
 /**
@@ -69,6 +70,7 @@ function orderFrom(r: Row): BillingOrder {
     currency: 'USD', reference: String(r.reference), status: String(r.status) as BillingOrder['status'],
     buyer: JSON.parse(String(r.buyer)) as BuyerProfile, einvoiceRequest: r.einvoice_request ? (JSON.parse(String(r.einvoice_request)) as VatInvoiceDetails) : null,
     account: r.account ? (JSON.parse(String(r.account)) as BillingAccount) : null,
+    quote: r.quote ? (JSON.parse(String(r.quote)) as VndQuote) : null, paymentNote: str(r.payment_note),
     providerOrderId: str(r.provider_order_id), providerCaptureId: str(r.provider_capture_id),
     createdAt: Number(r.created_at), paidAt: num(r.paid_at), paidBy: str(r.paid_by),
   };
@@ -98,6 +100,30 @@ function ledgerFrom(r: Row): LedgerEntry {
   return {
     id: String(r.id), workspaceId: String(r.workspace_id), amountCents: Number(r.amount_cents), kind: String(r.kind) as LedgerEntry['kind'],
     description: String(r.description), orderId: str(r.order_id), createdAt: Number(r.created_at),
+  };
+}
+
+/** One SePay transaction as stored (sepay_transactions). */
+export type SepayTransactionRow = {
+  id: string;
+  source: 'webhook' | 'poll';
+  accountNumber: string;
+  direction: 'in' | 'out';
+  amountVnd: number;
+  content: string;
+  referenceCode?: string | null;
+  transactionDate?: string | null;
+  gateway?: string | null;
+  orderId?: string | null;
+  outcome?: string | null;
+  receivedAt: number;
+};
+
+function sepayFrom(r: Row): SepayTransactionRow {
+  return {
+    id: String(r.id), source: String(r.source) === 'poll' ? 'poll' : 'webhook', accountNumber: String(r.account_number), direction: String(r.direction) === 'out' ? 'out' : 'in',
+    amountVnd: Number(r.amount_vnd), content: String(r.content), referenceCode: str(r.reference_code), transactionDate: str(r.transaction_date), gateway: str(r.gateway),
+    orderId: str(r.order_id), outcome: str(r.outcome), receivedAt: Number(r.received_at),
   };
 }
 
@@ -253,10 +279,11 @@ export class D1BillingStore {
    * or a retried request makes one order, not two).
    */
   async createOrder(order: BillingOrder, idempotencyKey: string): Promise<{ order: BillingOrder; created: boolean }> {
-    const r = await this.db.prepare(`INSERT INTO billing_orders (id, workspace_id, method, mode, amount_cents, vat_rate_bp, vat_cents, total_cents, currency, reference, status, idempotency_key, buyer, einvoice_request, account, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?) ON CONFLICT(workspace_id, idempotency_key) DO NOTHING`)
+    const r = await this.db.prepare(`INSERT INTO billing_orders (id, workspace_id, method, mode, amount_cents, vat_rate_bp, vat_cents, total_cents, currency, reference, status, idempotency_key, buyer, einvoice_request, account, quote, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?) ON CONFLICT(workspace_id, idempotency_key) DO NOTHING`)
       .bind(order.id, order.workspaceId, order.method, order.mode, order.amountCents, order.vatRateBp, order.vatCents, order.totalCents, order.currency, order.reference,
-        idempotencyKey, JSON.stringify(order.buyer), order.einvoiceRequest ? JSON.stringify(order.einvoiceRequest) : null, order.account ? JSON.stringify(order.account) : null, order.createdAt).run();
+        idempotencyKey, JSON.stringify(order.buyer), order.einvoiceRequest ? JSON.stringify(order.einvoiceRequest) : null, order.account ? JSON.stringify(order.account) : null,
+        order.quote ? JSON.stringify(order.quote) : null, order.createdAt).run();
     const saved = await this.first<Row>('SELECT * FROM billing_orders WHERE workspace_id = ? AND idempotency_key = ?', order.workspaceId, idempotencyKey);
     if (!saved) throw new Error('order not saved');
     return { order: orderFrom(saved), created: Boolean(r.meta.changes) };
@@ -296,6 +323,68 @@ export class D1BillingStore {
   /** Remembers the PayPal order made for this order (once: a second checkout reuses it). */
   async setProviderOrderId(id: string, providerOrderId: string): Promise<void> {
     await this.db.prepare('UPDATE billing_orders SET provider_order_id = ? WHERE id = ? AND provider_order_id IS NULL').bind(providerOrderId, id).run();
+  }
+
+  /** A new VND quote for a pending order (the last one expired). */
+  async setQuote(id: string, quote: VndQuote): Promise<boolean> {
+    const r = await this.db.prepare("UPDATE billing_orders SET quote = ? WHERE id = ? AND status = 'pending'").bind(JSON.stringify(quote), id).run();
+    return Boolean(r.meta.changes);
+  }
+
+  /** Adds a line to an order's payment note (kept to the last 2000 characters). */
+  async addPaymentNote(id: string, line: string): Promise<void> {
+    await this.db.prepare("UPDATE billing_orders SET payment_note = substr(CASE WHEN payment_note IS NULL OR payment_note = '' THEN ? ELSE payment_note || char(10) || ? END, -2000) WHERE id = ?")
+      .bind(line, line, id).run();
+  }
+
+  /** Pending orders of a method made since `since` (SePay polling). */
+  async pendingOrders(method: PaymentMethod, since: number, limit = 100): Promise<BillingOrder[]> {
+    return (await this.all<Row>("SELECT * FROM billing_orders WHERE method = ? AND status = 'pending' AND created_at >= ? ORDER BY created_at DESC LIMIT ?", method, since, limit)).map(orderFrom);
+  }
+
+  // ── SePay transactions ────────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Records a SePay transaction once per SePay id. Returns the stored row: `created` false when it was already
+   * there (a webhook replay, or polling finding one the webhook already brought).
+   */
+  async recordSepayTransaction(tx: SepayTransactionRow): Promise<{ created: boolean; row: SepayTransactionRow }> {
+    // The same bank transaction under another SePay id (should the webhook's and the API's ids ever differ): the bank's
+    // reference code, account, direction and amount identify it, so it is never counted twice.
+    if (tx.referenceCode) {
+      const same = await this.first<Row>('SELECT * FROM sepay_transactions WHERE reference_code = ? AND account_number = ? AND direction = ? AND amount_vnd = ? AND id <> ?',
+        tx.referenceCode, tx.accountNumber, tx.direction, tx.amountVnd, tx.id);
+      if (same) return { created: false, row: sepayFrom(same) };
+    }
+    const r = await this.db.prepare(`INSERT OR IGNORE INTO sepay_transactions (id, source, account_number, direction, amount_vnd, content, reference_code, transaction_date, gateway, order_id, outcome, received_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`)
+      .bind(tx.id, tx.source, tx.accountNumber, tx.direction, tx.amountVnd, tx.content.slice(0, 1000), tx.referenceCode ?? null, tx.transactionDate ?? null, tx.gateway ?? null, tx.receivedAt).run();
+    return { created: Boolean(r.meta.changes), row: (await this.sepayTransaction(tx.id))! };
+  }
+
+  async sepayTransaction(id: string): Promise<SepayTransactionRow | null> {
+    const r = await this.first<Row>('SELECT * FROM sepay_transactions WHERE id = ?', id);
+    return r ? sepayFrom(r) : null;
+  }
+
+  async setSepayOutcome(id: string, orderId: string | null, outcome: string): Promise<void> {
+    await this.db.prepare('UPDATE sepay_transactions SET order_id = ?, outcome = ? WHERE id = ?').bind(orderId, outcome, id).run();
+  }
+
+  /** VND received for an order: its matched incoming transactions that count toward paying it. */
+  async sepayReceived(orderId: string): Promise<number> {
+    const r = await this.first<{ vnd: number }>("SELECT COALESCE(SUM(amount_vnd), 0) AS vnd FROM sepay_transactions WHERE order_id = ? AND direction = 'in' AND outcome IN ('underpaid', 'credited')", orderId);
+    return Number(r?.vnd ?? 0);
+  }
+
+  async sepayTransactionsFor(orderId: string): Promise<SepayTransactionRow[]> {
+    return (await this.all<Row>('SELECT * FROM sepay_transactions WHERE order_id = ? ORDER BY received_at', orderId)).map(sepayFrom);
+  }
+
+  /** When SePay's webhook last reached us (any transaction), for the admin page. */
+  async lastSepayWebhookAt(): Promise<number | null> {
+    const r = await this.first<{ at: number | null }>("SELECT MAX(received_at) AS at FROM sepay_transactions WHERE source = 'webhook'");
+    return r?.at === null || r?.at === undefined ? null : Number(r.at);
   }
 
   async cancelOrder(id: string, workspaceId: string): Promise<boolean> {

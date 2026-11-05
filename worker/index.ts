@@ -6,6 +6,7 @@ import { adminOf, applySettings, isAdminEmail, sessionOf, type HostedOptions } f
 import { BillingService, parseFrom } from '../src/core/billing-service';
 import { D1BillingStore, type D1BatchDatabase } from '../src/core/billing-store';
 import { PayPalClient, paypalConfigFor } from '../src/core/paypal';
+import { SePayClient, sepayConfigFromEnv } from '../src/core/sepay';
 import type { ProviderMode } from '../src/core/provider-modes';
 import { ViettelSInvoiceProvider } from '../src/core/einvoice-viettel';
 import { accessConfigFromEnv } from '../src/core/cloudflare-access';
@@ -65,6 +66,8 @@ interface Env {
   CF_ACCESS_AUD?: string;
   CF_ACCESS_SERVICE_TOKEN_IDS?: string;
   [name: `VIETTEL_SINVOICE_${string}`]: string | undefined;
+  /** SePay (VND bank QR): SEPAY_API_TOKEN, SEPAY_BANK_ACCOUNT, SEPAY_BANK_BIN or _CODE, SEPAY_ACCOUNT_NAME, SEPAY_WEBHOOK_KEY (src/core/sepay.ts). */
+  [name: `SEPAY_${string}`]: string | undefined;
 }
 interface Ctx { waitUntil(p: Promise<unknown>): void }
 
@@ -249,6 +252,7 @@ function configureBilling(hosted: HostedOptions, env: Env): void {
     dashboardUrl: 'https://dash.valefront.com',
     free: freeTierConfig(vars),
     einvoice: sinvoiceFor,
+    sepay: (() => { const cfg = sepayConfigFromEnv(vars); return cfg ? new SePayClient(cfg) : null; })(),
   });
   hosted.turnstile = env.TURNSTILE_SITE_KEY && env.TURNSTILE_SECRET
     ? { siteKey: env.TURNSTILE_SITE_KEY, verify: (token, ip) => verifyTurnstile(token, env.TURNSTILE_SECRET, ip) }
@@ -390,7 +394,8 @@ export default {
   },
 
   /**
-   * Every 15 minutes: issue VAT e-invoices still waiting (S-Invoice newly configured, a Viettel failure, a timeout).
+   * Every 15 minutes: issue VAT e-invoices still waiting (S-Invoice newly configured, a Viettel failure, a timeout),
+   * and look for SePay payments the webhook missed.
    * Daily: refresh benchmark rankings and drop old per-minute counters.
    */
   async scheduled(event: { cron?: string }, env: Env): Promise<void> {
@@ -398,6 +403,8 @@ export default {
       const b = await current(env);
       const issued = await b.hosted.billing?.processPendingEinvoices();
       if (issued) console.log(JSON.stringify({ event: 'einvoice_retry_job', issued }));
+      // SePay payments the webhook missed (only asks SePay when SePay orders are pending).
+      await b.hosted.billing?.pollSepay().catch((err) => console.error('[sepay] cron poll failed', err));
       return;
     }
     const docs = new D1DocStore(env.DB);

@@ -11,6 +11,7 @@ import { QuotaManager } from './core/quota-manager';
 import { config } from './config';
 import { requireClientApiKey } from './core/client-auth';
 import { adminHostGate, mountAdminBilling } from './core/admin-billing';
+import { vndRate } from './core/fx';
 import { mountAdminPartners, mountPartnerInquiryApi } from './core/partner-inquiries';
 import { mountCustomerRoutes } from './core/customer-routes';
 import { adminOf, sessionOf, mountHosted, providersOverBudget, resumeAdminSession, recordUsage, servedBy, requireIssuedKey, resolveModel, sameOrigin, type HostedOptions } from './core/hosted';
@@ -184,7 +185,7 @@ function requireHostedAdmin(hosted: HostedOptions) {
 // sleeping service from an API-surface policy response.
 const EXTERNAL_ROUTES = new Set([
   '/healthz', '/readyz', '/v1/chat/completions', '/v1/route', '/mcp', '/v1/models', '/v1/messages', '/v1/messages/count_tokens',
-  '/v1/embeddings', '/v1/audio/transcriptions', '/v1/audio/speech', '/v1/benchmarks', '/v1/pricing', '/webhooks/paypal',
+  '/v1/embeddings', '/v1/audio/transcriptions', '/v1/audio/speech', '/v1/benchmarks', '/v1/pricing', '/webhooks/paypal', '/webhooks/sepay',
 ]);
 /** Hosted keys mode: the admin page and its sign-in (each is still guarded by its own route). */
 const EXTERNAL_PREFIXES = ['/admin', '/auth/'];
@@ -255,7 +256,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   // The valefront.com "Partner with Valefront" form: its own CORS (valefront.com only), so before the open one.
   if (hosted) mountPartnerInquiryApi(app, hosted);
   app.use(cors({ exposedHeaders: ['Mcp-Session-Id'] }));
-  // The PayPal webhook's signature is checked over the body exactly as it arrived.
+  // The PayPal webhook's signature is checked over the body exactly as it arrived (SePay's key is a header).
   app.use(express.json({ limit: config.bodyLimit, verify: (req, _res, buf) => { if ((req as Request).url?.startsWith('/webhooks/')) (req as Request & { rawBody?: Buffer }).rawBody = Buffer.from(buf); } }));
   // The platform admin host (adm.valefront.com, behind Cloudflare Access): every request there is checked first;
   // the owner's dashboard is served there, and customer billing is administered under /billing.
@@ -447,27 +448,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   let pricingInFlight: Promise<unknown> | undefined;
 
   // Vietnamese law: prices shown to customers in Vietnam are listed in VND, at the day's rate (Steve, 2026-11-05:
-  // "pricing conversion should get live per day"). Vietcombank's published USD selling rate, refreshed every few
-  // hours (its feed allows one request per 5 minutes); a reference rate (open.er-api.com) only if that fails.
-  let dailyFx: { vndPerUsd: number; date: string; source: 'vietcombank' | 'reference'; at: number } | undefined;
-  const vndRate = async (): Promise<{ vnd_per_usd: number; date: string; source: 'vietcombank' | 'reference' } | null> => {
-    if (!dailyFx || Date.now() - dailyFx.at > 3 * 3600_000) {
-      try {
-        const xml = await (await fetch('https://portal.vietcombank.com.vn/Usercontrols/TVPortal.TyGia/pXML.aspx', { signal: AbortSignal.timeout(6000), headers: { 'User-Agent': 'Valefront pricing' } })).text();
-        const sell = Number(/<Exrate CurrencyCode="USD"[^>]*Sell="([\d,.]+)"/.exec(xml)?.[1]?.replace(/,/g, ''));
-        const when = /<DateTime>(\d+)\/(\d+)\/(\d{4})/.exec(xml);
-        if (sell > 1000) dailyFx = { vndPerUsd: Math.round(sell), date: when ? `${when[3]}-${when[1].padStart(2, '0')}-${when[2].padStart(2, '0')}` : new Date().toISOString().slice(0, 10), source: 'vietcombank', at: Date.now() };
-      } catch { /* fall back below */ }
-      if (!dailyFx || Date.now() - dailyFx.at > 3 * 3600_000) {
-        try {
-          const d = await (await fetch('https://open.er-api.com/v6/latest/USD', { signal: AbortSignal.timeout(5000) })).json() as { rates?: Record<string, number>; time_last_update_unix?: number };
-          const v = Number(d.rates?.VND);
-          if (v > 1000) dailyFx = { vndPerUsd: Math.round(v), date: new Date((d.time_last_update_unix ?? Date.now() / 1000) * 1000).toISOString().slice(0, 10), source: 'reference', at: Date.now() };
-        } catch { /* keep the last good one */ }
-      }
-    }
-    return dailyFx ? { vnd_per_usd: dailyFx.vndPerUsd, date: dailyFx.date, source: dailyFx.source } : null;
-  };
+  // "pricing conversion should get live per day"). The same rate quotes SePay bank-QR orders (src/core/fx.ts).
 
   const computePricing = async () => {
     const models = (await Promise.all(router.getProviders().map(async provider => {

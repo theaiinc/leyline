@@ -14,7 +14,8 @@ import type { KeyCaps } from './issued-keys';
  * Every route is scoped to the signed-in account's own workspace (the Aegis subject is the tenant boundary); ids
  * from another workspace are "not found". Writes need the dashboard's own origin.
  *
- * Also the PayPal webhook (/webhooks/paypal), checked with PayPal's signature verification.
+ * Also the PayPal webhook (/webhooks/paypal), checked with PayPal's signature verification, and SePay's
+ * (/webhooks/sepay), checked with its API key.
  */
 
 type CustomerRequest = Request & { customer?: AdminUser; ws?: WorkspaceRecord; rawBody?: Buffer };
@@ -66,6 +67,9 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
     const token = typeof req.body?.turnstileToken === 'string' ? req.body.turnstileToken : '';
     return Boolean(opts.turnstile) && (await opts.turnstile!.verify(token, clientIp(req)));
   };
+  /** An order for its owner; a SePay one with what has arrived toward it so far. */
+  const view = async (order: import('./billing').BillingOrder, approveUrl?: string) =>
+    orderView(order, approveUrl, order.method === 'sepay' ? await opts.billing!.store.sepayReceived(order.id) : 0, opts.billing!.opts.now?.() ?? Date.now());
   const me = [signedIn, billingOn];
   const mine = [signedIn, billingOn, withWorkspace];
   const ws = (req: Request) => (req as CustomerRequest).ws!;
@@ -238,7 +242,7 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
       const replay = idempotencyKey ? await opts.billing!.store.orderByIdempotencyKey(ws(req).id, idempotencyKey) : null;
       if (!replay && !(await turnstileOk(req))) throw new SignupError('turnstile_failed', 'The security check did not pass; try it again.', 403);
       const result = await opts.billing!.createOrder(ws(req), { amountCents, method, idempotencyKey, vatInvoice: req.body?.vatInvoice === true });
-      res.status(201).json(orderView(result.order, result.approveUrl));
+      res.status(201).json(await view(result.order, result.approveUrl));
     } catch (err) {
       errorOut(res, err);
     }
@@ -246,7 +250,24 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
   app.get('/dashboard/me/billing/orders/:id', ...mine, async (req, res) => {
     const order = await opts.billing!.store.order(String(req.params.id));
     if (!order || order.workspaceId !== ws(req).id) return res.status(404).json({ error: { code: 'not_found', message: 'Order not found.' } });
-    res.json(orderView(order));
+    res.json(await view(order));
+  });
+  /** SePay: "I've paid, check now" (asks SePay at most every 15 s per workspace; sooner returns the order as it is). */
+  app.post('/dashboard/me/billing/orders/:id/sepay-check', ...mine, async (req, res) => {
+    try {
+      const { order, checked } = await opts.billing!.checkSepay(ws(req), String(req.params.id));
+      res.json({ ...(await view(order)), checked });
+    } catch (err) {
+      errorOut(res, err);
+    }
+  });
+  /** SePay: a new VND quote for a pending order whose 30 minutes ran out. */
+  app.post('/dashboard/me/billing/orders/:id/sepay-quote', ...mine, async (req, res) => {
+    try {
+      res.json(await view(await opts.billing!.requoteSepay(ws(req), String(req.params.id))));
+    } catch (err) {
+      errorOut(res, err);
+    }
   });
   app.post('/dashboard/me/billing/orders/:id/cancel', ...mine, async (req, res) => {
     const ok = await opts.billing!.store.cancelOrder(String(req.params.id), ws(req).id);
@@ -357,6 +378,19 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
       res.status(500).json({ error: 'retry' });
     }
   });
+
+  // ── SePay webhook ──────────────────────────────────────────────────────────────────────────────────────
+  app.post('/webhooks/sepay', async (req, res) => {
+    if (!opts.billing) return res.status(404).end();
+    try {
+      const out = await opts.billing.handleSepayWebhook(req.headers, req.body);
+      res.status(out.status).json(out.body);
+    } catch (err) {
+      // 5xx: SePay retries (its transaction id keeps a retry from counting twice).
+      console.error('[sepay] webhook failed', err instanceof Error ? err.message : err);
+      res.status(500).json({ success: false, error: 'retry' });
+    }
+  });
 }
 
 /** A key's PII protection as customers see it: 'off', or the mode it runs in. */
@@ -364,7 +398,11 @@ function piiModeOf(caps: KeyCaps): 'off' | 'regex' | 'presidio' {
   return caps.piiRedaction === 'regex' || caps.piiRedaction === 'presidio' ? caps.piiRedaction : 'off';
 }
 
-function orderView(order: import('./billing').BillingOrder, approveUrl?: string) {
+function orderView(order: import('./billing').BillingOrder, approveUrl?: string, receivedVnd = 0, now = Date.now()) {
+  const q = order.quote;
+  // After a part payment, the QR asks for what is left.
+  const leftVnd = q ? Math.max(0, q.vndAmount - receivedVnd) : 0;
+  const qrUrl = q && receivedVnd > 0 ? (() => { const u = new URL(q.qrUrl); u.searchParams.set('amount', String(leftVnd)); return u.toString(); })() : q?.qrUrl;
   return {
     id: order.id,
     method: order.method,
@@ -389,6 +427,23 @@ function orderView(order: import('./billing').BillingOrder, approveUrl?: string)
           'Pay any bank fees on your side (choose "OUR" for the charges) so the full amount arrives.',
           'Your credit is added when the transfer arrives, usually in 1–3 business days. You get a receipt by email.',
         ],
+      },
+    } : {}),
+    ...(order.method === 'sepay' && q ? {
+      sepay: {
+        qrUrl,
+        bankName: q.bank.bankName,
+        bankId: q.bank.bankId,
+        accountNumber: q.bank.accountNumber,
+        accountName: q.bank.accountName,
+        amountVnd: q.vndAmount,
+        receivedVnd,
+        leftVnd,
+        transferContent: q.transferContent,
+        vndPerUsd: q.vndPerUsd,
+        rateDate: q.rateDate,
+        expiresAt: q.expiresAt,
+        expired: now > q.expiresAt,
       },
     } : {}),
     ...(approveUrl ? { approveUrl } : {}),

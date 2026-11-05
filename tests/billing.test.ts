@@ -171,7 +171,7 @@ describe('billing store (D1, real SQL)', () => {
     await f.service.saveProfile(ws, BUYER);
     await expect(f.service.createOrder(ws, { amountCents: 1000, method: 'worldfirst', idempotencyKey: 'nope-0002' })).rejects.toThrow('Bank transfer is not available');
     await expect(f.service.createOrder(ws, { amountCents: 1000, method: 'paypal', idempotencyKey: 'nope-0003' })).rejects.toThrow('PayPal is not available');
-    await expect(f.service.createOrder(ws, { amountCents: 1000, method: 'sepay', idempotencyKey: 'nope-0004' })).rejects.toThrow('not available yet');
+    await expect(f.service.createOrder(ws, { amountCents: 1000, method: 'sepay', idempotencyKey: 'nope-0004' })).rejects.toThrow('Vietnamese bank transfer is not available');
   });
 
   it('deleting a workspace keeps its ledger, invoices and receipts but not its personal data', async () => {
