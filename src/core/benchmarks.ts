@@ -329,7 +329,7 @@ export async function fetchEpochSnapshot(url: string): Promise<BenchmarkSnapshot
     'swe_bench_verified.csv',
     'otis_mock_aime_2024_2025.csv',
     'hle_external.csv',
-    'live_bench_external.csv',
+    'livebench_external.csv',
     'terminalbench_external.csv',
   ]);
   const bytes = new Uint8Array(await response.arrayBuffer());
