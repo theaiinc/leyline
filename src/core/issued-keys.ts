@@ -41,6 +41,8 @@ export type IssuedKey = {
   createdBy: string;
   revokedAt?: number | null;
   lastUsedAt?: number | null;
+  /** A self-serve customer's key: its workspace (usage is charged to its balance). Unset: an owner/internal key. */
+  workspaceId?: string;
 };
 
 export type KeyUsage = {
@@ -69,6 +71,27 @@ export type MonthSpend = {
   byModel?: Record<string, SpendLine & { provider: string; model: string }>;
   /** Daily spend keyed by UTC date, then by provider/model. Older months may not have this field. */
   byDay?: Record<string, Record<string, SpendLine>>;
+  /** Corrections applied to this month's dollars (src/core/spend-reprice.ts), so each is applied once. */
+  adjustments?: SpendAdjustment[];
+};
+
+/** A price correction applied to recorded spend: the matched lines' dollars were multiplied by `ratio`. */
+export type SpendAdjustment = {
+  id: string;
+  at: number;
+  by: string;
+  provider: string;
+  /** Exact model id, or a prefix ending in "*". */
+  model: string;
+  from: Price;
+  to: Price;
+  ratio: number;
+  /** The byModel keys ("provider/model") rescaled. */
+  lines: string[];
+  /** UTC dates corrected; unset: the whole month. */
+  days?: string[];
+  /** Dollars taken off the month's total. */
+  usdDelta: number;
 };
 
 export interface DocStore {
@@ -504,7 +527,8 @@ export class IssuedKeys {
       const day = dayOf(now);
       byDay[day] = { ...(byDay[day] ?? {}) };
       byDay[day][id] = add(byDay[day][id]);
-      return { month, usd: s.usd + usd, requests: s.requests + 1, tokens: (s.tokens ?? 0) + tokens, byProvider, byModel, byDay };
+      // Spread first: fields this doesn't count (adjustments) stay.
+      return { ...s, month, usd: s.usd + usd, requests: s.requests + 1, tokens: (s.tokens ?? 0) + tokens, byProvider, byModel, byDay };
     });
     if (!key) return;
     await update<KeyUsage>(this.store, `usage/${key.id}/${month}`, (cur) => {
