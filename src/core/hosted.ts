@@ -10,6 +10,7 @@ import { estimateBodyTokens } from './content';
 import { DEFAULT_PRICE, IssuedKeys, costUsd, manualPriceOf, modelAllowed, priceOf, type HostedSettings, type IssuedKey, type KeyCaps, type Price } from './issued-keys';
 import type { BenchmarkSnapshot } from './benchmarks';
 import { RequestPiiRedactor } from './pii-redaction';
+import { RepriceRefused, repriceSpend } from './spend-reprice';
 
 function capabilitiesForModel(modelId: string): string[] {
   const id = modelId.toLowerCase();
@@ -146,7 +147,7 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
       return fail(403, 'model_disabled', `The model "${requested}" is turned off here; see /v1/models for what you can use.`);
     }
     const admitAt = Date.now();
-    const refusal = await opts.keys.admit(key, requested, opts.monthlyBudgetUsd ?? null);
+    const refusal = await opts.keys.admit(key, requested, await ownerLimitFor(opts, key));
     (req as WithKey).timings = { lookupMs: admitAt - lookupAt, admitMs: Date.now() - admitAt };
     if (refusal) return fail(refusal.status, refusal.code, refusal.message);
     (req as WithKey).issuedKey = key;
@@ -159,6 +160,32 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
     });
     next();
   };
+}
+
+/**
+ * The workspace lookup self-serve billing provides (opts.billing.store.workspace), typed by its shape only, so this
+ * works before and after billing is part of HostedOptions.
+ */
+type WorkspaceLookup = { billing?: { store: { workspace(id: string): Promise<{ email: string } | null> } } | null };
+
+/**
+ * The monthly limit (monthlyBudgetUsd) this key is held to: it caps what the owner spends, so it applies to
+ * owner/internal keys (no workspace) and the admins' own workspaces only. A customer's workspace pays from its own
+ * credit (checked by billing) and is never refused because of the owner's spend; nor when its workspace can't be
+ * read (billing's own check refuses that).
+ */
+export async function ownerLimitFor(opts: HostedOptions, key: IssuedKey): Promise<number | null> {
+  const limit = opts.monthlyBudgetUsd ?? null;
+  if (limit === null || !key.workspaceId) return limit;
+  const billing = (opts as HostedOptions & WorkspaceLookup).billing;
+  if (!billing) return null;
+  try {
+    const email = (await billing.store.workspace(key.workspaceId))?.email.trim().toLowerCase() ?? '';
+    return email && opts.adminEmails.some((a) => a.trim().toLowerCase() === email) ? limit : null;
+  } catch (err) {
+    console.error('[hosted] workspace lookup for the monthly limit failed', err);
+    return null;
+  }
 }
 
 /** Turned off: the model asked for, or the one an alias maps it to, matches the blocked list. */
@@ -576,6 +603,19 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
     const month = typeof req.query.month === 'string' && /^\d{4}-\d{2}$/.test(req.query.month) ? req.query.month : undefined;
     const [spend, months] = await Promise.all([opts.keys.spend(month), opts.keys.spendMonths()]);
     res.json({ spend, months, monthlyBudgetUsd: opts.monthlyBudgetUsd ?? null });
+  });
+  // Correct dollars recorded at a wrong price (src/core/spend-reprice.ts). A dry run unless dryRun is false.
+  app.post('/admin/api/spend/reprice', guard, async (req, res) => {
+    try {
+      const by = (req as Request & { admin?: string }).admin!;
+      const result = await repriceSpend(opts.keys.docs, req.body, { by });
+      if (!result.dryRun) console.log(JSON.stringify({ event: 'spend_repriced', by, id: result.adjustmentId, month: result.month, provider: result.provider, model: result.model, ratio: result.ratio, usdDelta: result.usdDelta, alreadyApplied: result.alreadyApplied }));
+      res.json(result);
+    } catch (err) {
+      if (err instanceof RepriceRefused) return res.status(err.status).json({ error: err.message });
+      console.error('[hosted] spend reprice failed', err);
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
   app.get('/admin/api/keys', guard, async (_req, res) => {
     res.json({ keys: (await opts.keys.list()).map(view) });
