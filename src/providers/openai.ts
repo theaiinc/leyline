@@ -40,8 +40,7 @@ export class OpenAIProvider implements Provider {
   }
 
   markUnavailable(_reason: string): void {
-    const cooldownMs = 15 * 60 * 1000;
-    this.unavailableUntil = Date.now() + cooldownMs;
+    this.unavailableUntil = Date.now() + 15 * 60 * 1000;
   }
 
   setApiKey(apiKey: string): void {
