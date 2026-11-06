@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile } from 'fs/promises';
 import { dirname, join } from 'path';
 import { GcpToken } from './gcp';
 import { cleanAlertSettings, type AlertSettings } from './alerts';
+import type { TokenPricing } from './types';
 
 /**
  * API keys handed out to people for their coding agents (hosted Leyline). The owner creates each key with its caps
@@ -316,7 +317,33 @@ export type HostedSettings = {
   updatedBy?: string;
 };
 
-export type Price = { input: number; output: number; cachedInput?: number; cacheCreationInput?: number };
+export type Price = TokenPricing & { cacheCreationInput?: number };
+
+/** Whether `at` (ms since the epoch) falls in BytePlus's peak hours: Monday to Friday, 09:00-12:00 and 14:00-18:00 at UTC+8. */
+export function isByteplusPeak(at: number): boolean {
+  const t = new Date(at + 8 * 3_600_000); // read as UTC+8 through the UTC getters
+  const day = t.getUTCDay();
+  if (day === 0 || day === 6) return false;
+  const minutes = t.getUTCHours() * 60 + t.getUTCMinutes();
+  return (minutes >= 9 * 60 && minutes < 12 * 60) || (minutes >= 14 * 60 && minutes < 18 * 60);
+}
+
+/**
+ * The flat price one request pays: the peak-hour price when `at` is in the price's peak hours, else the tier its
+ * prompt length falls in (the highest tier whose aboveTokens the prompt exceeds), else the base price. A flat price
+ * comes back as it is.
+ */
+export function priceAt(price: Price, usage: { prompt_tokens?: number } | undefined, at: number = Date.now()): Price {
+  const { promptTiers, peak, ...base } = price;
+  if (!promptTiers?.length && !peak) return price;
+  if (peak && peak.schedule === 'byteplus-utc8-workday' && isByteplusPeak(at)) {
+    return { ...base, input: peak.input, output: peak.output, ...(peak.cachedInput !== undefined ? { cachedInput: peak.cachedInput } : {}) };
+  }
+  const prompt = Math.max(0, usage?.prompt_tokens ?? 0);
+  const tier = (promptTiers ?? []).filter((t) => prompt > t.aboveTokens).sort((a, b) => b.aboveTokens - a.aboveTokens)[0];
+  if (tier) return { ...base, input: tier.input, output: tier.output, ...(tier.cachedInput !== undefined ? { cachedInput: tier.cachedInput } : {}) };
+  return base;
+}
 export const DEFAULT_PRICE: Price = { input: 10, output: 40 };
 
 function cleanPrice(p: unknown): Price | null {
@@ -375,7 +402,8 @@ export function priceOf(settings: Pick<HostedSettings, 'prices' | 'defaultPrice'
   return manualPriceOf(settings.prices, model) ?? published ?? settings.defaultPrice;
 }
 
-export function costUsd(price: Price, usage: { prompt_tokens?: number; completion_tokens?: number; cached_tokens?: number; cache_creation_input_tokens?: number } | undefined): number {
+export function costUsd(raw: Price, usage: { prompt_tokens?: number; completion_tokens?: number; cached_tokens?: number; cache_creation_input_tokens?: number } | undefined, at: number = Date.now()): number {
+  const price = priceAt(raw, usage, at);
   const prompt = Math.max(0, usage?.prompt_tokens ?? 0);
   const cached = Math.min(prompt, Math.max(0, usage?.cached_tokens ?? 0));
   const cacheCreation = Math.max(0, usage?.cache_creation_input_tokens ?? 0);
