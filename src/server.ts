@@ -1161,7 +1161,20 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   // OpenAI Responses API (OpenAI Codex CLI speaks only this): translated to a chat request and routed exactly like
   // /v1/chat/completions above (same auth, admission, aliases, PII redaction, billing and spend), the result
   // translated back (src/core/responses.ts). Stateless: previous_response_id is refused with a 400.
-  app.post('/v1/responses', authMiddleware, async (req, res) => {
+  // Out of credit on /v1/responses answers 429 insufficient_quota (OpenAI's code), which Codex shows at once; a 402
+  // it retries five times first (about 7 s of "Reconnecting…"). Same message; only the status and code differ.
+  const responsesQuota: express.RequestHandler = (_req, res, next) => {
+    const json = res.json.bind(res);
+    res.json = ((body: any) => {
+      if (res.statusCode === 402) {
+        res.status(429);
+        body = { error: { ...(body?.error && typeof body.error === 'object' ? body.error : { message: String(body?.error ?? 'Insufficient credit') }), type: 'insufficient_quota', code: 'insufficient_quota' } };
+      }
+      return json(body);
+    }) as typeof res.json;
+    next();
+  };
+  app.post('/v1/responses', responsesQuota, authMiddleware, async (req, res) => {
     await apiKeyInitialization;
     const invalid = (status: number, message: string, code: string, param: string | null = null) =>
       res.status(status).json({ error: { message, type: 'invalid_request_error', code, param } });
