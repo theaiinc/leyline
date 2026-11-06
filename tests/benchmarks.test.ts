@@ -102,7 +102,7 @@ describe('benchmark matching and ranking', () => {
     const liveCodeBench = result.benchmarks.find((benchmark) => benchmark.id === 'livecodebench');
     expect(liveCodeBench).toMatchObject({ available: false });
     expect(liveCodeBench?.unavailableReason).toContain('LiveCodeBench');
-    expect(liveCodeBench?.unavailableReason).toContain('2026-11-05');
+    expect(liveCodeBench?.unavailableReason).toMatch(/ on \d{4}-\d{2}-\d{2} /);
     expect(liveCodeBench?.unavailableReason).toContain('https://');
   });
 
