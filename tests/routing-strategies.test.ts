@@ -362,4 +362,19 @@ describe('routing strategies: free tokens', () => {
     expect(paid.status).toBe(200);
     expect(paid.headers['x-valefront-route']).toBe('cheapest; model=seed-2-0-lite-260428; reason=lowest-blended-price');
   });
+
+  it('plain auto on a customer key with no default uses Balanced: only what Valefront sells, never the pool\'s auto list', async () => {
+    clearStrategyCaches();
+    const h = hostedBilling({ hosted: { prices: { 'seed-2-0-lite-260428': { input: 5, output: 15 }, 'gpt-5.5': { input: 1, output: 2 } } } });
+    const cookie = cookieFor('sub-a', 'auto@example.com');
+    const key = (await request(h.app).post('/dashboard/me/workspace').set('Cookie', cookie).set('Origin', ORIGIN).set('CF-Connecting-IP', '203.0.113.12')
+      .send({ acceptTerms: true, termsVersion: TERMS_VERSION, turnstileToken: 'ok-token' })).body.key as string;
+    const ws = (await h.store.workspaceBySub('sub-a'))!;
+    await h.store.addAdjustment(ws.id, 1000, 'test credit', 'test:route-auto');
+    for (const model of ['auto', 'auto-vision']) {
+      const res = await chat(h.app, key, model);
+      expect(res.status).toBe(200);
+      expect(res.headers['x-valefront-route']).toMatch(/^balanced; model=seed-2-0-lite-260428;/);
+    }
+  });
 });
