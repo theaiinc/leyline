@@ -720,6 +720,22 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
       res.status(404).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
+  // Owner keys onto an admin's own workspace (dash shows them there); never onto a customer's: those are charged.
+  app.post('/admin/api/keys/:id/workspace', guard, async (req, res) => {
+    const workspaceId = typeof req.body?.workspaceId === 'string' ? req.body.workspaceId.trim() : '';
+    const billing = (opts as HostedOptions & WorkspaceLookup).billing;
+    if (!workspaceId || !billing) return res.status(400).json({ error: 'workspaceId is required (and billing must be on)' });
+    try {
+      const ws = await billing.store.workspace(workspaceId);
+      if (!ws || ws.deletedAt) return res.status(404).json({ error: `no workspace ${workspaceId}` });
+      if (!isAdminEmail(opts, ws.email)) return res.status(403).json({ error: 'only an admin\'s own workspace can take owner keys (a customer workspace would be charged for them)' });
+      const record = await opts.keys.assignWorkspace(String(req.params.id), workspaceId);
+      console.log(JSON.stringify({ event: 'key_assigned_workspace', id: record.id, workspaceId, by: (req as Request & { admin?: string }).admin }));
+      res.json({ record: view(record) });
+    } catch (err) {
+      res.status(409).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
   app.delete('/admin/api/keys/:id', guard, async (req, res) => {
     try {
       const record = await opts.keys.revoke(String(req.params.id));

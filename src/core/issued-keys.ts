@@ -499,6 +499,27 @@ export class IssuedKeys {
     return out;
   }
 
+  /**
+   * Put an owner-issued key (no workspace yet) into a workspace, so it shows on that workspace's dashboard. The key
+   * itself (hash, caps, usage) is unchanged and keeps working. Only for a workspace an admin owns (the caller checks):
+   * those are never charged, so nothing about how the key is billed changes.
+   */
+  async assignWorkspace(id: string, workspaceId: string): Promise<IssuedKey> {
+    const out = await update<IssuedKey>(this.store, `keys/${id}`, (cur) => {
+      if (!cur) throw new Error(`no key ${id}`);
+      if (cur.revokedAt) throw new Error(`key ${id} is revoked`);
+      if (cur.workspaceId && cur.workspaceId !== workspaceId) throw new Error(`key ${id} already belongs to workspace ${cur.workspaceId}`);
+      return { ...cur, workspaceId };
+    });
+    try {
+      await this.store.put(`wskeys/${workspaceId}/${id}`, { id }, '0');
+    } catch {
+      // Already indexed (a repeat): fine.
+    }
+    this.cache.clear();
+    return out;
+  }
+
   async revoke(id: string): Promise<IssuedKey> {
     const out = await update<IssuedKey>(this.store, `keys/${id}`, (cur) => {
       if (!cur) throw new Error(`no key ${id}`);
