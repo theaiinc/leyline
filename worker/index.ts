@@ -175,7 +175,10 @@ async function build(env: Env): Promise<Built> {
   // Refresh missing/stale lists during Worker startup so a cold instance can advertise served models.
   await router.reindexStale();
   mark('router');
-  const hosted = hostedOptions(docs, { sharedMinute: true, watch: false, benchmarks: async () => {
+  const hosted = hostedOptions(docs, { sharedMinute: true, watch: false });
+  // Set after hostedOptions: passed in as its `benchmarks` option (which expects {fetch}), this function was replaced
+  // by hostedOptions' own, which matched scores against no models (every row "Not available").
+  hosted.benchmarks = async () => {
     const cache = benchmarkCache(docs, env);
     const cached = await cache.get();
     const stale = !cached || Date.now() - cached.fetchedAt >= 24 * 60 * 60 * 1000;
@@ -196,7 +199,7 @@ async function build(env: Env): Promise<Built> {
       console.error('[benchmarks] request refresh failed', error instanceof Error ? error.message : error);
       return cached;
     }
-  } });
+  };
   hosted.background = keepAlive;
   configureBilling(hosted, env);
   const email = env.EMAIL;

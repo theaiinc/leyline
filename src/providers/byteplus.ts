@@ -77,6 +77,11 @@ export const BYTEPLUS_BENCHMARK_ALIASES: Record<string, string[]> = {
   'seed-2-0-lite-260428': ['doubao-seed-2.0-lite-260428', 'seed-2.0-lite'],
   'seed-2-0-mini-260428': ['doubao-seed-2.0-mini-260428', 'seed-2.0-mini'],
   'deepseek-v4-flash-ga-260731': ['deepseek-v4-flash-0731', 'deepseek-v4-flash'],
+  'deepseek-v4-pro-ga-260813': ['deepseek-v4-pro-0813', 'deepseek-v4-pro'],
+  'deepseek-v4-1-flash-261017': ['deepseek-v4.1-flash-1017', 'deepseek-v4.1-flash'],
+  'dola-seed-2-1-turbo-260628': ['doubao-seed-2.1-turbo-260628'],
+  'glm-5-3-flash-260828': ['glm-5.3-flash'],
+  'glm-5-2-260617': ['glm-5.2'],
 };
 
 /** Whether a BytePlus chat model reads images (its catalog entry lists 'vision'); unknown models: no. */
