@@ -29,8 +29,21 @@ export function SideNav({ entries, current, go }: { entries: NavEntry[]; current
       <item.icon className="size-4" />{item.label}
     </button>
   );
+  // Phones: every page as one flat row of tabs (no collapsed groups to open), the current one scrolled into view.
+  const flat = entries.flatMap((e) => (isGroup(e) ? e.items : [e]));
   return (
-    <nav className="flex gap-1 overflow-x-auto px-2 pb-2 md:flex-col md:overflow-visible md:pb-0">
+    <>
+    <nav aria-label="Pages" className="flex gap-1 overflow-x-auto px-2 pb-2 [scrollbar-width:none] md:hidden [&::-webkit-scrollbar]:hidden">
+      {flat.map((item) => (
+        <button key={item.id} type="button" onClick={() => go(item.id)} aria-current={current === item.id ? 'page' : undefined}
+          ref={current === item.id ? (el) => el?.scrollIntoView({ block: 'nearest', inline: 'center' }) : undefined}
+          className={cn('flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-colors',
+            current === item.id ? 'border-transparent bg-accent font-medium text-accent-foreground' : 'text-muted-foreground')}>
+          <item.icon className="size-4" />{item.label}
+        </button>
+      ))}
+    </nav>
+    <nav className="hidden gap-1 px-2 md:flex md:flex-col">
       {entries.map((e) => {
         if (!isGroup(e)) return button(e);
         const expanded = open[e.group] ?? false;
@@ -46,5 +59,6 @@ export function SideNav({ entries, current, go }: { entries: NavEntry[]; current
         );
       })}
     </nav>
+    </>
   );
 }
