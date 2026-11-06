@@ -33,13 +33,14 @@ export function friendlyModel(id: string): string {
 export function RoutingArt({ className }: { className?: string }) {
   const id = useId().replace(/:/g, '');
   const providers = [
-    { y: 46, label: 'BytePlus' },
-    { y: 110, label: 'Azure OpenAI' },
-    { y: 174, label: 'DeepSeek' },
-    { y: 238, label: '+ more' },
+    // Valefront resells BytePlus ModelArk (Steve, 2026-11-06): the model families it serves, not other providers.
+    { y: 46, label: 'Seed' },
+    { y: 110, label: 'DeepSeek' },
+    { y: 174, label: 'Seedream' },
+    { y: 238, label: 'Seedance' },
   ];
   return (
-    <svg viewBox="0 0 520 284" className={className} role="img" aria-label="Your app sends one request to Valefront, which routes it to the right provider.">
+    <svg viewBox="0 0 520 284" className={className} role="img" aria-label="Your app sends one request to Valefront, which routes it to the right model.">
       <defs>
         <radialGradient id={`glow${id}`} cx="50%" cy="50%" r="50%">
           <stop offset="0%" stopColor={MINT} stopOpacity="0.35" />
@@ -82,8 +83,8 @@ export function RoutingArt({ className }: { className?: string }) {
               <animateMotion dur={`${2.2 + i * 0.35}s`} begin={`${0.4 * i}s`} repeatCount="indefinite"><mpath href={`#out${id}${i}`} /></animateMotion>
             </circle>
             <rect x="396" y={p.y - 17} width="116" height="34" rx="10" className="fill-card stroke-border" strokeWidth="1.5" />
-            <circle cx="412" cy={p.y} r="4" fill={i === 0 ? MINT : BLUE} opacity={i === 3 ? 0.4 : 0.9} />
-            <text x="424" y={p.y + 4} className={i === 3 ? 'fill-muted-foreground' : 'fill-foreground'} fontSize="12" fontWeight="500">{p.label}</text>
+            <circle cx="412" cy={p.y} r="4" fill={i === 0 ? MINT : BLUE} opacity={0.9} />
+            <text x="424" y={p.y + 4} className="fill-foreground" fontSize="12" fontWeight="500">{p.label}</text>
           </g>
         );
       })}
@@ -113,7 +114,7 @@ export function WelcomeHero({ name, freeTokens, bonusTokens, freeDays, perDay, m
         <span className="bg-gradient-to-r from-[#2f9e6c] to-[#3b6fd8] bg-clip-text text-transparent dark:from-[#a9f5cf] dark:to-[#7aa6ff]">one API key away.</span>
       </h1>
       <p className="mt-3 max-w-xl text-sm leading-relaxed text-muted-foreground">
-        Valefront routes each request to the right model across providers, with automatic fallback. Point the OpenAI or Anthropic SDK you already use at it.
+        Valefront routes each request to the right model: Seed, DeepSeek, Seedream and Seedance on BytePlus ModelArk. Point the OpenAI or Anthropic SDK you already use at it.
       </p>
       <RoutingArt className="mt-6 w-full max-w-xl" />
       <div className="mt-6 grid gap-3 sm:grid-cols-3">

@@ -11,6 +11,7 @@ import { PageHeader } from '@/components/common';
 import { apiUrl } from '@/api';
 import type { Dashboard } from '@/hooks/use-dashboard';
 import type { Capability } from '@/normalization';
+import { MediaPlayground } from '@/pages/media-playground';
 
 export function PlaygroundPage({ d }: { d: Dashboard }) {
   const providers = d.stats.providers;
@@ -142,6 +143,7 @@ export function PlaygroundPage({ d }: { d: Dashboard }) {
               </Button>
             ))}
             </div>
+            {mode !== 'chat' ? <MediaPlayground kind={mode} authHeaders={d.session?.hosted ? {} : { Authorization: `Bearer ${d.stats.clientAuth?.apiKey || ''}` }} /> : <>
             <form onSubmit={send} className="grid gap-4">
               <div className="flex flex-wrap gap-2">
                 <Select value={activeProvider?.name || ''} onValueChange={setProviderName}>
@@ -165,12 +167,10 @@ export function PlaygroundPage({ d }: { d: Dashboard }) {
             </div>
           </form>
           {error ? <Alert variant="destructive" className="mt-4"><AlertDescription>{error}</AlertDescription></Alert> : null}
-          {mediaUrl && mode === 'image' ? <img src={mediaUrl} alt="Generated image" className="mt-4 max-h-[32rem] rounded-lg border" /> : null}
-          {mediaUrl && mode === 'video' ? <video src={mediaUrl} controls className="mt-4 max-h-[32rem] w-full rounded-lg border" /> : null}
-          {sending && mode === 'video' ? <p className="mt-4 text-sm text-muted-foreground">Generating the video; this usually takes 30 seconds to a few minutes…</p> : null}
           {answer ? <pre className="mt-4 rounded-lg border bg-muted/50 p-4 text-sm whitespace-pre-wrap">{answer}</pre> : null}
           {usage ? <div className="mt-4 rounded-lg border p-4 text-sm grid gap-1"><strong>Run usage</strong><span>Served by {usage.servedModel}</span><span>{usage.input.toLocaleString()} input · {usage.output.toLocaleString()} output{usage.cached ? ` · ${usage.cached.toLocaleString()} cached` : ''}</span><span>Charged {usage.cost === undefined ? 'price not published' : formatUsd(usage.cost)} · {latency ?? 0}ms</span><span>Playground session total: {formatUsd(sessionTotal)}</span></div> : null}
           <p className="mt-4 text-sm"><a className="underline" href="#calculator">Open cost calculator</a></p>
+          </>}
         </CardContent>
       </Card>
     </>

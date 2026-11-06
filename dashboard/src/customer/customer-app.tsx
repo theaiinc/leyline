@@ -5,6 +5,7 @@ import { CalculatorPage } from '@/pages/calculator';
 import { toast } from 'sonner';
 import { api, apiUrl } from '@/api';
 import { CopyButton, PageHeader } from '@/components/common';
+import { AppShell } from '@/components/app-shell';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -137,24 +138,8 @@ export function CustomerApp({ dark, toggleTheme }: { dark: boolean; toggleTheme:
   }
 
   return (
-    <div className="min-h-svh md:grid md:grid-cols-[15rem_1fr]">
-      <aside className="border-b bg-sidebar md:sticky md:top-0 md:flex md:h-svh md:flex-col md:border-r md:border-b-0">
-        <div className="flex items-center gap-2 px-4 py-3 md:py-5">
-          <img src={`${import.meta.env.BASE_URL}icon.svg`} alt="" className="size-8" />
-          <div className="leading-tight"><div className="font-semibold">Valefront</div><div className="max-w-[10rem] truncate text-xs text-muted-foreground">{me?.email ?? ''}</div></div>
-          <div className="ml-auto flex md:hidden">
-            <Button variant="ghost" size="icon" onClick={toggleTheme} aria-label="Toggle theme">{dark ? <Sun /> : <Moon />}</Button>
-            <Button variant="ghost" size="icon" onClick={signOut} aria-label="Sign out"><LogOut /></Button>
-          </div>
-        </div>
-        {ready ? <SideNav entries={NAV} current={current} go={go} /> : null}
-        <div className="mt-auto hidden p-3 md:flex md:gap-1">
-          <Button variant="ghost" size="icon" onClick={toggleTheme} aria-label="Toggle theme">{dark ? <Sun /> : <Moon />}</Button>
-          <Button variant="ghost" size="sm" className="ml-auto" onClick={signOut}><LogOut />Sign out</Button>
-        </div>
-      </aside>
-      <main className="min-w-0 px-4 py-6 md:px-8 md:py-8">
-        <div className={cn("mx-auto", current === "billing" ? "max-w-6xl" : "max-w-4xl")}>
+    <AppShell area="Dashboard" email={me?.email ?? ''} nav={ready ? NAV : null} current={current} go={go} dark={dark} toggleTheme={toggleTheme}
+      onSignOut={signOut} wide={current === 'billing'}>
           {error ? <Card><CardContent className="text-sm text-destructive">{error}</CardContent></Card>
             : !me ? <div className="grid gap-4"><Skeleton className="h-8 w-48" /><Skeleton className="h-40" /></div>
               : current === 'keys' ? <KeysPage me={me} />
@@ -163,9 +148,7 @@ export function CustomerApp({ dark, toggleTheme }: { dark: boolean; toggleTheme:
                   : current === 'billing' ? <BillingPage me={me} reload={load} />
                     : current === 'data' ? <DataPage me={me} />
                       : <GetStarted me={me} reload={load} go={go} />}
-        </div>
-      </main>
-    </div>
+    </AppShell>
   );
 }
 

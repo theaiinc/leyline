@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Activity, Calculator, CreditCard, FlaskConical, Handshake, KeyRound, LayoutDashboard, Layers, LogOut, Moon, RefreshCw, Route, Server, Sun, Wallet } from 'lucide-react';
-import { SideNav, navIds, type NavEntry } from '@/components/side-nav';
+import { navIds, type NavEntry } from '@/components/side-nav';
+import { AppShell } from '@/components/app-shell';
 import { Card, CardContent } from '@/components/ui/card';
 import { PageHeader } from '@/components/common';
 import { Button } from '@/components/ui/button';
@@ -97,51 +98,25 @@ export function App() {
     window.location.href = next || '/auth/login?next=/';
   }
 
+  const canSignOut = hosted && d.session?.signIn && d.session.email !== 'token';
   return (
-    <div className="min-h-svh md:grid md:grid-cols-[15rem_1fr]">
-      <aside className="border-b bg-sidebar md:sticky md:top-0 md:flex md:h-svh md:flex-col md:border-r md:border-b-0">
-        <div className="flex items-center gap-2 px-4 py-3 md:py-5">
-          <img src={`${import.meta.env.BASE_URL}icon.svg`} alt="" className="size-8" />
-          <div className="leading-tight">
-            <div className="font-semibold">Valefront</div>
-            <div className="text-xs text-muted-foreground">{hosted ? 'Admin' : 'Local router'}</div>
-          </div>
-          <div className="ml-auto flex md:hidden">
-            <Button variant="ghost" size="icon" onClick={toggleTheme} aria-label="Toggle theme">{dark ? <Sun /> : <Moon />}</Button>
-            {hosted && d.session?.signIn && d.session.email !== 'token' ? <Button variant="ghost" size="icon" onClick={signOut} aria-label="Sign out"><LogOut /></Button> : null}
-          </div>
-        </div>
-        <SideNav entries={nav} current={current} go={goTo} />
-        <div className="mt-auto hidden p-3 md:block">
-          <Separator className="mb-3" />
-          {hosted ? (
-            <div className="mb-2 truncate px-1 text-xs text-muted-foreground" title={d.session?.email ?? ''}>{d.session?.email === 'token' ? 'Admin token' : d.session?.email}</div>
-          ) : null}
-          <div className="flex gap-1">
-            <Button variant="ghost" size="icon" onClick={toggleTheme} aria-label="Toggle theme">{dark ? <Sun /> : <Moon />}</Button>
-            <Button variant="ghost" size="icon" onClick={() => void d.refreshAll()} aria-label="Refresh"><RefreshCw /></Button>
-            {hosted && d.session?.signIn && d.session.email !== 'token' ? <Button variant="ghost" size="sm" className="ml-auto" onClick={signOut}><LogOut />Sign out</Button> : null}
-          </div>
-        </div>
-      </aside>
-
-      <main className="min-w-0 px-4 py-6 md:px-8 md:py-8">
-        <div className="mx-auto max-w-6xl">
-          {d.waiting ? <div className="mb-4"><ToneBadge tone="warning">Waiting for the Valefront API…</ToneBadge></div> : null}
-          {current === 'benchmarks' ? <BenchmarksPage base={d.session?.hosted ? (d.session.publicUrl || window.location.origin) : d.stats.tunnel?.publicBaseUrl?.replace(/\/v1$/, '') || apiUrl('')} /> : null}
-          {!d.status ? (
-            <div className="grid gap-4"><Skeleton className="h-8 w-48" /><Skeleton className="h-28" /><Skeleton className="h-64" /></div>
-          ) : current === 'overview' ? <OverviewPage d={d} go={go} />
-            : current === 'providers' ? <ProvidersPage d={d} />
-              : current === 'routing' ? <RoutingPage d={d} />
-                : current === 'keys' ? <KeysPage d={d} />
-                  : current === 'spending' ? <SpendingPage />
-                  : current === 'offered' ? <OfferedPage d={d} />
-                    : current === 'playground' ? <PlaygroundPage d={d} />
-                      : current === 'calculator' ? <CalculatorPage />
-                      : <ActivityPage d={d} />}
-        </div>
-      </main>
-    </div>
+    <AppShell area={hosted ? 'Admin' : 'Local'} email={hosted ? (d.session?.email === 'token' ? 'Admin token' : d.session?.email) : null}
+      nav={nav} current={current} go={goTo} dark={dark} toggleTheme={toggleTheme} wide
+      onSignOut={canSignOut ? signOut : undefined} onRefresh={() => void d.refreshAll()}
+      banner={d.waiting ? <div className="mb-4"><ToneBadge tone="warning">Waiting for the Valefront API…</ToneBadge></div> : null}>
+      {current === 'benchmarks' ? <BenchmarksPage base={d.session?.hosted ? (d.session.publicUrl || window.location.origin) : d.stats.tunnel?.publicBaseUrl?.replace(/\/v1$/, '') || apiUrl('')} /> : null}
+      {!d.status ? (
+        <div className="grid gap-4"><Skeleton className="h-8 w-48" /><Skeleton className="h-28" /><Skeleton className="h-64" /></div>
+      ) : current === 'overview' ? <OverviewPage d={d} go={go} />
+        : current === 'providers' ? <ProvidersPage d={d} />
+          : current === 'routing' ? <RoutingPage d={d} />
+            : current === 'keys' ? <KeysPage d={d} />
+              : current === 'spending' ? <SpendingPage />
+                : current === 'offered' ? <OfferedPage d={d} />
+                  : current === 'playground' ? <PlaygroundPage d={d} />
+                    : current === 'calculator' ? <CalculatorPage />
+                      : current === 'benchmarks' ? null
+                        : <ActivityPage d={d} />}
+    </AppShell>
   );
 }
