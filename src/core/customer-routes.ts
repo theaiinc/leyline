@@ -141,7 +141,7 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
   const keyView = (k: Awaited<ReturnType<HostedOptions['keys']['listForWorkspace']>>[number]) => ({
     id: k.id, name: k.name, prefix: k.prefix, createdAt: k.createdAt, revokedAt: k.revokedAt ?? null, lastUsedAt: k.lastUsedAt ?? null,
     piiProtection: piiModeOf(k.caps),
-    usage: { month: k.usage.month, requests: k.usage.requests, promptTokens: k.usage.promptTokens, completionTokens: k.usage.completionTokens, byModel: k.usage.byModel, addons: k.usage.addons ?? {} },
+    usage: { month: k.usage.month, requests: k.usage.requests, promptTokens: k.usage.promptTokens, completionTokens: k.usage.completionTokens, byModel: k.usage.byModel, addons: k.usage.addons ?? {}, promotions: k.usage.promotions ?? {} },
   });
   /** The PII protection add-on as the dashboard offers it: price and the modes this server has. */
   const piiOffer = () => ({ id: PII_ADDON_ID, name: PII_ADDON_NAME, unit: 'per 1M input tokens', price: piiPricePerMTokens(), currency: 'USD', modes: customerPiiModes() });
@@ -214,6 +214,15 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
   app.get('/dashboard/me/billing', ...mine, async (req, res) => {
     try {
       res.json({ ...(await opts.billing!.overview(ws(req))), email: ws(req).email });
+    } catch (err) {
+      errorOut(res, err);
+    }
+  });
+  /** A promo code (campaigns.ts): { code }. The workspace pays the campaign's promo prices until it ends. */
+  app.post('/dashboard/me/billing/promo-code', ...mine, async (req, res) => {
+    try {
+      const result = await opts.billing!.redeemPromoCode(ws(req), req.body?.code);
+      res.status(result.already ? 200 : 201).json({ ...result, promotions: await opts.billing!.promotions(ws(req)) });
     } catch (err) {
       errorOut(res, err);
     }

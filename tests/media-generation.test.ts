@@ -86,6 +86,17 @@ describe('POST /v1/images/generations', () => {
     expect((await h.store.balance(h.ws.id)).availableMicros).toBe(10_000_000 - 60_000);
   });
 
+  it('in a campaign: charged the promo price per image (the response still shows the official cost)', async () => {
+    const h = await setup();
+    await h.store.addAdjustment(h.ws.id, 1000, 'test credit', 'test:media-promo');
+    await h.campaigns.create({ name: 'Images week', type: 'automatic', code: null, status: 'active', startsAt: 0, endsAt: Date.UTC(2100, 0), models: ['seedream-4-0-250828'],
+      discount: { kind: 'price', prices: { 'seedream-4-0-250828': { perImage: 0.02 } } }, maxRedemptions: null, oncePerWorkspace: true }, 'owner');
+    const res = await request(h.app).post('/v1/images/generations').set(h.auth).send({ model: 'seedream-4-0-250828', prompt: 'a leaf', n: 2 });
+    expect(res.body).toMatchObject({ cost: 0.06 });
+    await h.settle();
+    expect((await h.store.balance(h.ws.id)).availableMicros).toBe(10_000_000 - 40_000);
+  });
+
   it('WaveSpeed is not sold to customer keys (Valefront resells BytePlus only): 404, no provider call', async () => {
     const h = await setup();
     await h.store.addAdjustment(h.ws.id, 1000, 'test credit', 'test:media-ws');
@@ -135,6 +146,19 @@ describe('videos', () => {
 
     const other = await h.keys.create({ name: 'other', by: h.ws.email, workspaceId: h.ws.id });
     expect((await request(h.app).get(`/v1/videos/${id}`).set('Authorization', `Bearer ${other.key}`)).status).toBe(404);
+  });
+
+  it('in a campaign: a finished video is charged at the promo rate', async () => {
+    const h = await setup();
+    await h.store.addAdjustment(h.ws.id, 1000, 'test credit', 'test:video-promo');
+    await h.campaigns.create({ name: 'Video week', type: 'automatic', code: null, status: 'active', startsAt: 0, endsAt: Date.UTC(2100, 0), models: ['seedance-1-0-pro-fast-251015'],
+      discount: { kind: 'percent', percentBp: 4000 }, maxRedemptions: null, oncePerWorkspace: true }, 'owner');
+    const created = await request(h.app).post('/v1/videos').set(h.auth).send({ model: 'seedance-1-0-pro-fast-251015', prompt: 'waves' });
+    Object.assign(h.up.tasks.get('cgt-1'), { status: 'succeeded', content: { video_url: 'https://ark.example/v.mp4' }, usage: { completion_tokens: 246_000, total_tokens: 246_000 } });
+    await request(h.app).get(`/v1/videos/${created.body.id}`).set(h.auth);
+    await h.settle();
+    // $0.246 official, 40% off: $0.1476.
+    expect((await h.store.balance(h.ws.id)).availableMicros).toBe(10_000_000 - 147_600);
   });
 
   it('a failed video costs nothing', async () => {

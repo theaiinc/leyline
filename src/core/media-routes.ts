@@ -5,7 +5,7 @@ import type { AudioFile, EmbeddingResult, ImageGenerationResult, Provider, Speec
 import { randomBytes } from 'crypto';
 import type { DocStore } from './issued-keys';
 import { imageCostUsd, mediaModel, videoCostUsd, type MediaKind } from './media-catalog';
-import { resolveModel, servedBy, type HostedOptions } from './hosted';
+import { resolveModel, servedBy, type HostedOptions, type MediaChargeBasis } from './hosted';
 import { chatCompletionErrorResponse, formatProviderError } from './api-errors';
 import {
   CapabilityError, TRANSCRIPTION_FORMATS, embeddingToBase64, estimateAudioSeconds, estimateTextTokens, formatTranscription,
@@ -34,7 +34,8 @@ export type MediaRouteOptions = {
   /** Startup (provider keys) finished. */
   ready: Promise<unknown>;
   /** Count a finished request (hosted keys, tenant logs). */
-  record: (req: Request, model: string, usage: { prompt_tokens?: number; completion_tokens?: number }, usd?: number) => void;
+  /** `media`: an image or video generation (what was made), so a promotion can price it. */
+  record: (req: Request, model: string, usage: { prompt_tokens?: number; completion_tokens?: number }, usd?: number, media?: MediaChargeBasis) => void;
   bodyLimit: string;
   /** Where video jobs and their one-time charges are kept (hosted: the key store); unset: this process only. */
   jobs?: DocStore;
@@ -237,7 +238,7 @@ export function mountMediaRoutes(app: Express, router: Router, opts: MediaRouteO
       if (data.length === 0) return fail(res, 502, 'no_image', 'The provider returned no image; nothing was charged.');
       const cost = imageCostUsd(m, data.length, size);
       asRequested(req, m.id);
-      opts.record(req, m.id, { prompt_tokens: 0, completion_tokens: 0 }, cost);
+      opts.record(req, m.id, { prompt_tokens: 0, completion_tokens: 0 }, cost, { kind: 'image', model: m, count: data.length, ...(size ? { size } : {}) });
       return res.json({ created: Math.floor(Date.now() / 1000), model: m.id, provider, data, cost, usage: { images: data.length } });
     } catch (error) {
       sendError(res, '/v1/images/generations', error);
@@ -308,7 +309,8 @@ export function mountMediaRoutes(app: Express, router: Router, opts: MediaRouteO
       if (first) {
         servedBy(req)(job.provider, job.model);
         asRequested(req, job.model);
-        opts.record(req, job.model, { prompt_tokens: 0, completion_tokens: v.tokens }, cost);
+        const resolution = v.resolution ?? job.resolution;
+        opts.record(req, job.model, { prompt_tokens: 0, completion_tokens: v.tokens }, cost, { kind: 'video', model: m, tokens: v.tokens, ...(resolution ? { resolution } : {}) });
       }
       return res.json(videoView(job, v, cost));
     } catch (error) {

@@ -5,17 +5,26 @@ import { Label } from '@/components/ui/label';
 import { PageHeader } from '@/components/common';
 import { apiUrl } from '@/api';
 import { costForTokens, formatUsd, type ModelPrice } from '@/lib/cost';
+import { priceUsd, promoUntil, type PricingPromotion } from '@/lib/promotions';
 
-type PricingModel = { id: string; name?: string; provider?: string; input?: number; output?: number; cachedInput?: number; free_tier?: boolean; source?: string };
-type CalcPrice = ModelPrice & { name: string; provider?: string; free: boolean; source?: string };
+type PricingModel = { id: string; name?: string; provider?: string; input?: number; output?: number; cachedInput?: number; free_tier?: boolean; source?: string; promotion?: PricingPromotion };
+/** `official` is set while a promotion lowers the price: input/output are then the promo prices. */
+type CalcPrice = ModelPrice & { name: string; provider?: string; free: boolean; source?: string; official?: { input: number; output: number }; promotion?: { name: string; endsAt: string } };
 
 /** /v1/pricing lists models as an array ({id, name, provider, input, output, free_tier}); older servers sent an object by id. */
 export function pricesFrom(data: { models?: PricingModel[] | Record<string, Omit<PricingModel, 'id'>>; free_tier?: { models?: string[] } }): CalcPrice[] {
   const rows: PricingModel[] = Array.isArray(data.models) ? data.models : Object.entries(data.models ?? {}).map(([id, v]) => ({ id, ...v }));
   const freeIds = new Set(data.free_tier?.models ?? []);
-  return rows.flatMap((m) => typeof m.input === 'number' && typeof m.output === 'number' && m.id
-    ? [{ model: m.id, name: m.name || m.id, provider: m.provider, input: m.input, output: m.output, cachedInput: m.cachedInput, free: Boolean(m.free_tier) || freeIds.has(m.id), source: m.source }]
-    : []);
+  return rows.flatMap((m) => {
+    if (typeof m.input !== 'number' || typeof m.output !== 'number' || !m.id) return [];
+    const base: CalcPrice = { model: m.id, name: m.name || m.id, provider: m.provider, input: m.input, output: m.output, cachedInput: m.cachedInput, free: Boolean(m.free_tier) || freeIds.has(m.id), source: m.source };
+    // A live automatic promotion (/v1/pricing): priced at the promo price, the official one shown struck through.
+    const p = m.promotion;
+    if (p && typeof p.input === 'number' && typeof p.output === 'number') {
+      return [{ ...base, input: p.input, output: p.output, cachedInput: p.cached_input ?? base.cachedInput, official: { input: m.input, output: m.output }, promotion: { name: p.name, endsAt: p.ends_at } }];
+    }
+    return [base];
+  });
 }
 
 export function CalculatorPage() {
@@ -60,9 +69,17 @@ export function CalculatorPage() {
         <div><Label htmlFor="calc-input">Input tokens / request</Label><Input id="calc-input" type="number" min="0" value={inputTokens} onChange={e => setInputTokens(Number(e.target.value) || 0)} /></div>
         <div><Label htmlFor="calc-output">Output tokens / request</Label><Input id="calc-output" type="number" min="0" value={outputTokens} onChange={e => setOutputTokens(Number(e.target.value) || 0)} /></div>
         <div><Label htmlFor="calc-requests">Requests / day</Label><Input id="calc-requests" type="number" min="0" value={requests} onChange={e => setRequests(Number(e.target.value) || 0)} /></div>
-        <div className="grid gap-2"><Label>Models</Label>{prices.map(price => <label key={price.model} title={price.model} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={selected.includes(price.model)} onChange={e => setSelected(current => e.target.checked ? [...current, price.model] : current.filter(model => model !== price.model))} /><span>{price.name}</span>{price.provider ? <span className="text-xs text-muted-foreground">{price.provider}</span> : null}{price.free ? <span className="rounded-full bg-emerald-500/10 px-1.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-300">free tier</span> : null}</label>)}</div>
+        <div className="grid gap-2"><Label>Models</Label>{prices.map(price => <label key={price.model} title={price.model} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={selected.includes(price.model)} onChange={e => setSelected(current => e.target.checked ? [...current, price.model] : current.filter(model => model !== price.model))} /><span>{price.name}</span>{price.provider ? <span className="text-xs text-muted-foreground">{price.provider}</span> : null}{price.free ? <span className="rounded-full bg-emerald-500/10 px-1.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-300">free tier</span> : null}{price.official ? <span className="rounded-full bg-amber-500/10 px-1.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">promo</span> : null}</label>)}</div>
       </CardContent></Card>
-      <div className="grid content-start gap-4 md:grid-cols-2">{results.map(result => <Card key={result.price?.model}><CardHeader><CardTitle title={result.price?.model}>{result.price?.name}</CardTitle><CardDescription>{result.price?.provider ? `${result.price.provider} · ` : ''}Input ${result.price?.input ?? 0}/M · Output ${result.price?.output ?? 0}/M tokens</CardDescription></CardHeader><CardContent className="grid gap-2 text-sm"><div>Per request <strong>{formatUsd(result.request)}</strong></div><div>Per day <strong>{formatUsd(result.daily)}</strong></div><div>Per 30 days <strong>{formatUsd(result.monthly)}</strong></div><div className="text-muted-foreground">{result.freeDays === null ? 'Not in the free tier: paid from credit.' : <>Free tokens cover {result.freeShare < 1 ? <><strong className="text-foreground">{Math.round(result.freeShare * 100)}% of each day</strong> (the daily free limit) for </> : null}<strong className="text-foreground">{result.freeDays >= 30 ? 'the whole 30 days' : `about ${Math.max(0, Math.floor(result.freeDays * 10) / 10)} days`}</strong> at this volume.</>}</div>{result.price?.source ? <a className="text-xs text-muted-foreground underline" href={result.price.source} target="_blank" rel="noreferrer">Provider price</a> : null}</CardContent></Card>)}</div>
+      <div className="grid content-start gap-4 md:grid-cols-2">{results.map(result => <Card key={result.price?.model}><CardHeader><CardTitle title={result.price?.model}>{result.price?.name}</CardTitle><CardDescription>{result.price?.provider ? `${result.price.provider} · ` : ''}{result.price ? <PriceLine price={result.price} /> : null}</CardDescription></CardHeader><CardContent className="grid gap-2 text-sm">{result.price?.promotion ? <div className="rounded-md bg-emerald-500/10 px-2 py-1 text-xs text-emerald-700 dark:text-emerald-300">{result.price.promotion.name}: promotion price {promoUntil(result.price.promotion.endsAt)}; the official price after.</div> : null}<div>Per request <strong>{formatUsd(result.request)}</strong></div><div>Per day <strong>{formatUsd(result.daily)}</strong></div><div>Per 30 days <strong>{formatUsd(result.monthly)}</strong></div><div className="text-muted-foreground">{result.freeDays === null ? 'Not in the free tier: paid from credit.' : <>Free tokens cover {result.freeShare < 1 ? <><strong className="text-foreground">{Math.round(result.freeShare * 100)}% of each day</strong> (the daily free limit) for </> : null}<strong className="text-foreground">{result.freeDays >= 30 ? 'the whole 30 days' : `about ${Math.max(0, Math.floor(result.freeDays * 10) / 10)} days`}</strong> at this volume.</>}</div>{result.price?.source ? <a className="text-xs text-muted-foreground underline" href={result.price.source} target="_blank" rel="noreferrer">Provider price</a> : null}</CardContent></Card>)}</div>
     </div>
   </>;
+}
+
+/** Input/output per 1M tokens; during a promotion the official price struck through, then the promo price. */
+function PriceLine({ price }: { price: CalcPrice }) {
+  const one = (official: number | undefined, now: number) => official !== undefined && official !== now
+    ? <><span className="line-through">{priceUsd(official)}</span> <strong className="text-foreground">{priceUsd(now)}</strong></>
+    : <>{priceUsd(now)}</>;
+  return <>Input {one(price.official?.input, price.input)}/M · Output {one(price.official?.output, price.output)}/M tokens</>;
 }

@@ -21,6 +21,8 @@ type Spend = {
   byProvider?: Record<string, Line>;
   byModel?: Record<string, Line & { provider: string; model: string }>;
   byDay?: Record<string, Record<string, Line>>;
+  /** Promotions given (src/core/campaigns.ts): kept beside the model lines, which stay at the official price. */
+  promotions?: Record<string, { name: string; requests: number; tokens: number; officialUsd: number; discountUsd: number }>;
 };
 type SpendResponse = { spend: Spend; months: string[]; monthlyBudgetUsd: number | null };
 const DAILY_DATA_START = '2026-10-21';
@@ -243,6 +245,27 @@ export function SpendingPage() {
                 </CardContent>
               </Card>
 
+              {Object.keys(spend.promotions ?? {}).length ? (
+                <Card className="gap-3 xl:col-span-2">
+                  <CardHeader><CardTitle>Promotions</CardTitle><CardDescription>Discounts customers got from campaigns. The lines above stay at the official price (what providers are paid); customers were charged official minus discount.</CardDescription></CardHeader>
+                  <CardContent className="overflow-x-auto px-0">
+                    <Table>
+                      <TableHeader><TableRow><TableHead className="pl-6">Campaign</TableHead><TableHead className="text-right">Requests</TableHead><TableHead className="text-right">Official price</TableHead><TableHead className="text-right">Discount</TableHead><TableHead className="pr-6 text-right">Charged</TableHead></TableRow></TableHeader>
+                      <TableBody>
+                        {Object.entries(spend.promotions ?? {}).sort((a, b) => b[1].discountUsd - a[1].discountUsd).map(([id, p]) => (
+                          <TableRow key={id}>
+                            <TableCell className="pl-6 font-medium">{p.name}</TableCell>
+                            <TableCell className="text-right tabular-nums">{fmt(p.requests)}</TableCell>
+                            <TableCell className="text-right tabular-nums">{money(p.officialUsd)}</TableCell>
+                            <TableCell className="text-right tabular-nums">−{money(p.discountUsd)}</TableCell>
+                            <TableCell className="pr-6 text-right tabular-nums">{money(Math.max(0, p.officialUsd - p.discountUsd))}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </CardContent>
+                </Card>
+              ) : null}
               {current && byKey.length ? (
                 <Card className="gap-3 xl:col-span-2">
                   <CardHeader><CardTitle>By access key</CardTitle><CardDescription>This month; the owner's playground isn't a key, so it shows only in the totals.</CardDescription></CardHeader>

@@ -31,6 +31,7 @@ import {
 } from './core/pricing';
 import { generateInstanceId } from './core/instance-naming';
 import { publicAddons } from './core/addons';
+import { pricingPromotions } from './core/admin-campaigns';
 import {
   ApiKeyPersistenceMode,
   ApiKeySource,
@@ -489,12 +490,35 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     };
   };
 
+  // Promotions (live automatic campaigns, src/core/campaigns.ts) are read apart from the 5-minute model cache, at most
+  // once a minute, so one that starts or ends shows within a minute. Display only: charges look campaigns up themselves.
+  let promotionsCache: { value: Awaited<ReturnType<typeof pricingPromotions>>; expiresAt: number } | undefined;
+  type PricingValue = Awaited<ReturnType<typeof computePricing>>;
+  const withPromotions = async (value: PricingValue): Promise<PricingValue & { promotions?: unknown[] }> => {
+    const campaigns = hosted?.billing?.opts.campaigns;
+    if (!campaigns) return value;
+    const now = Date.now();
+    try {
+      if (!promotionsCache || promotionsCache.expiresAt <= now) {
+        const sold = MEDIA_MODELS.filter((m) => isSoldMediaModel(m.id));
+        promotionsCache = { value: await pricingPromotions(campaigns, now, value.models, sold), expiresAt: now + 60_000 };
+      }
+    } catch (err) {
+      console.error('[pricing] promotions unavailable', err);
+      return value;
+    }
+    const { list, byModel } = promotionsCache.value;
+    const tag = <T extends { id: string }>(m: T) => (byModel.has(m.id) ? { ...m, promotion: byModel.get(m.id) } : m);
+    return { ...value, models: value.models.map(tag), media: value.media.map(tag), promotions: list };
+  };
+
   app.get('/v1/pricing', async (_req, res) => {
     const now = Date.now();
     const cached = pricingCache;
     if (cached && cached.expiresAt > now) {
-      res.set('Cache-Control', 'public, max-age=300');
-      res.json(cached.value);
+      const out = await withPromotions(cached.value as PricingValue);
+      res.set('Cache-Control', `public, max-age=${out.promotions?.length ? 60 : 300}`);
+      res.json(out);
       return;
     }
 
@@ -508,9 +532,9 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
           pricingInFlight = undefined;
         });
     }
-    const value = await pricingInFlight;
-    res.set('Cache-Control', 'public, max-age=300');
-    res.json(value);
+    const out = await withPromotions(await pricingInFlight as PricingValue);
+    res.set('Cache-Control', `public, max-age=${out.promotions?.length ? 60 : 300}`);
+    res.json(out);
   });
 
   const mcpHandler = createMcpHttpHandler(router);
@@ -1165,8 +1189,8 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     ready: apiKeyInitialization,
     bodyLimit: config.bodyLimit,
     ...(hosted ? { jobs: hosted.keys.docs } : {}),
-    record: (req, model, usage, usd) => {
-      if (hosted) recordUsage(hosted, req, usage, 0, usd);
+    record: (req, model, usage, usd, media) => {
+      if (hosted) recordUsage(hosted, req, usage, 0, usd, media);
       const tenant = (req as Request & { tenant?: AegisTenant }).tenant;
       if (tenant) console.log(JSON.stringify({ event: 'tenant_usage', clientId: tenant.clientId, model, promptTokens: usage.prompt_tokens ?? 0, completionTokens: usage.completion_tokens ?? 0, ...(usd !== undefined ? { usd } : {}) }));
     },

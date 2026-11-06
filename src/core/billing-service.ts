@@ -33,6 +33,7 @@ import type { FreeTierConfig } from './self-serve-workspaces';
 import { PII_ADDON_ID, PII_ADDON_NAME, piiFeeMicros, piiPricePerMTokens } from './addons';
 import { vndRate as publishedVndRate, type VndRate } from './fx';
 import { SePayError, referencesIn, transactionFromWebhook, transferContentFor, type SePayClient, type SePayTransaction } from './sepay';
+import { bestCampaign, publicCampaign, toMicros, type Campaign, type ChargeBasis, type D1CampaignStore } from './campaigns';
 
 /** One email with attachments, as the Worker's Email Sending binding takes it. */
 export type BillingEmail = {
@@ -65,6 +66,8 @@ export type BillingServiceOptions = {
   sepay?: SePayClient | null;
   /** The day's VND rate: the one /v1/pricing publishes (fx.ts), unless a test gives another. */
   vndRate?: () => Promise<VndRate | null>;
+  /** Promotions (campaigns.ts, made on adm); unset: none, everything at the official price. */
+  campaigns?: D1CampaignStore | null;
   /** Hook for the Bookkeeper service, which will later take over rendering and sharing receipts. */
   onReceiptIssued?: (receipt: Receipt) => Promise<void>;
   now?: () => number;
@@ -74,6 +77,15 @@ export const SETTINGS = { account: 'worldfirst_account', legal: 'legal', vat: 'v
 
 /** VND per USD for e-invoices in USD (Vietnamese law wants the rate on the invoice); set on the admin host. */
 export type ExchangeRateSetting = { vndPerUsd: number; date: string };
+
+/**
+ * What charge() did, in micro-dollars: officialMicros is the payable part at the official price, chargedMicros what
+ * was taken from the balance, discountMicros = officialMicros - chargedMicros exactly (0 without a campaign).
+ */
+export type ChargeResult = { officialMicros: number; chargedMicros: number; discountMicros: number; campaign: { id: string; name: string } | null; freeTokens: number };
+
+/** A workspace may get a promo code wrong this many times an hour. */
+export const PROMO_CODE_ATTEMPTS_PER_HOUR = 10;
 
 export type Admission = { mode: 'free' | 'paid' } | { refusal: { status: number; code: string; message: string } };
 
@@ -734,25 +746,86 @@ export class BillingService {
   /**
    * After a request: free tokens first (for a free-tier model, while the grant lasts), the rest from the balance.
    * usd is null when the model has no real price: nothing is charged (and it's logged), never the default price.
+   * With `basis` (what the request was), a live campaign covering the model (automatic, or one this workspace
+   * redeemed) lowers the charge to its promo price; the lowest one wins. Campaigns that can't be read are logged
+   * and the official price is charged: a promotion is never applied by guesswork.
    */
-  async charge(ws: WorkspaceRecord, input: { model: string; tokens: number; usd: number | null }): Promise<void> {
+  async charge(ws: WorkspaceRecord, input: { model: string; tokens: number; usd: number | null; basis?: ChargeBasis }): Promise<ChargeResult> {
     const tokens = Math.max(0, Math.round(input.tokens));
+    const none = (freeTokens = 0): ChargeResult => ({ officialMicros: 0, chargedMicros: 0, discountMicros: 0, campaign: null, freeTokens });
     let payable = 1;
+    let freeTokens = 0;
     if (this.isFreeModel(input.model) && tokens > 0) {
       const grant = await this.store.grant(ws.id);
       const now = this.now();
       if (grant && now < grant.expiresAt && grant.usedTokens < grant.tokens) {
-        const free = Math.min(tokens, grant.tokens - grant.usedTokens);
-        await this.store.addFreeUsage(ws.id, new Date(now).toISOString().slice(0, 10), free);
-        payable = (tokens - free) / tokens;
+        freeTokens = Math.min(tokens, grant.tokens - grant.usedTokens);
+        await this.store.addFreeUsage(ws.id, new Date(now).toISOString().slice(0, 10), freeTokens);
+        payable = (tokens - freeTokens) / tokens;
       }
     }
-    if (payable <= 0) return;
+    if (payable <= 0) return none(freeTokens);
     if (input.usd === null) {
       console.log(JSON.stringify({ event: 'unpriced_customer_usage', workspaceId: ws.id, model: input.model, tokens }));
-      return;
+      return none(freeTokens);
     }
-    await this.store.chargeUsage(ws.id, Math.ceil(input.usd * payable * 1_000_000));
+    const officialMicros = toMicros(input.usd * payable);
+    let chargedMicros = officialMicros;
+    let campaign: Campaign | null = null;
+    if (input.basis && this.opts.campaigns && officialMicros > 0) {
+      try {
+        const best = bestCampaign(await this.opts.campaigns.applicable(ws.id, this.now()), input.model, input.basis, officialMicros, payable);
+        if (best) { chargedMicros = best.micros; campaign = best.campaign; }
+      } catch (err) {
+        console.error(JSON.stringify({ event: 'campaign_lookup_failed', workspaceId: ws.id, model: input.model, error: err instanceof Error ? err.message : String(err) }));
+      }
+    }
+    await this.store.chargeUsage(ws.id, chargedMicros);
+    return { officialMicros, chargedMicros, discountMicros: officialMicros - chargedMicros, campaign: campaign ? { id: campaign.id, name: campaign.name } : null, freeTokens };
+  }
+
+  // ── promotions ────────────────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * A promo code entered on dash Billing. Codes are case-insensitive; a workspace gets at most
+   * PROMO_CODE_ATTEMPTS_PER_HOUR wrong ones an hour (guessing is slowed down, and every attempt is audited).
+   */
+  async redeemPromoCode(ws: WorkspaceRecord, rawCode: unknown): Promise<{ campaign: ReturnType<typeof publicCampaign>; already: boolean }> {
+    const campaigns = this.opts.campaigns;
+    if (!campaigns) throw new BillingError('promotions_unavailable', 'Promo codes are not available right now.', 503);
+    if (ws.suspendedAt) throw new BillingError('workspace_suspended', 'This workspace is suspended.', 403);
+    const code = String(rawCode ?? '').trim().toUpperCase().slice(0, 64);
+    if (!code) throw new BillingError('invalid_code', 'Enter a promo code.');
+    const now = this.now();
+    if (await campaigns.rejectedSince(ws.id, now - 3_600_000) >= PROMO_CODE_ATTEMPTS_PER_HOUR) {
+      throw new BillingError('too_many_attempts', 'Too many promo codes tried; try again in an hour.', 429);
+    }
+    const { outcome, campaign } = await campaigns.redeem(code, ws.id, now);
+    const reject = async (status: number, message: string) => {
+      await this.store.audit({ type: 'promo_code.rejected', workspaceId: ws.id, meta: { outcome, ...(campaign ? { campaignId: campaign.id } : {}) } });
+      throw new BillingError(`promo_code_${outcome}`, message, status);
+    };
+    if (outcome === 'not_found') return reject(404, 'That promo code is not valid.');
+    if (outcome === 'ended') return reject(410, 'That promotion has ended.');
+    if (outcome === 'full') return reject(409, 'That promo code has been used the most times it can be.');
+    if (outcome === 'already' && campaign!.oncePerWorkspace) throw new BillingError('promo_code_already', 'This workspace already redeemed that promo code; it applies until the promotion ends.', 409);
+    if (outcome === 'redeemed') await this.store.audit({ type: 'promo_code.redeemed', workspaceId: ws.id, meta: { campaignId: campaign!.id } });
+    return { campaign: publicCampaign(campaign!), already: outcome === 'already' };
+  }
+
+  /** Promotions this workspace has: live automatic ones, and active codes it redeemed (until they end; `live` once started). */
+  async promotions(ws: WorkspaceRecord) {
+    const campaigns = this.opts.campaigns;
+    if (!campaigns) return { available: false, campaigns: [] };
+    const now = this.now();
+    try {
+      const [redeemed, live] = await Promise.all([campaigns.redeemedBy(ws.id, now), campaigns.liveAutomatic(now)]);
+      const shown = [...live, ...redeemed.filter((c) => c.status === 'active')];
+      return { available: true, campaigns: shown.map((c) => ({ ...publicCampaign(c), live: c.startsAt <= now && now < c.endsAt })) };
+    } catch (err) {
+      console.error('[billing] promotions lookup failed', err);
+      return { available: true, campaigns: [] };
+    }
   }
 
   /**
@@ -793,6 +866,7 @@ export class BillingService {
         bonusTokens: this.opts.free.bonusTokens ?? 0, bonusUnlocked: grant.tokens >= this.opts.free.tokens + (this.opts.free.bonusTokens ?? 0) } : null,
       methods,
       vat,
+      promotions: await this.promotions(ws),
     };
   }
 }

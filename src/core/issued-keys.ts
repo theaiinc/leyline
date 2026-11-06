@@ -63,7 +63,16 @@ export type KeyUsage = {
   byDay?: Record<string, Record<string, SpendLine>>;
   /** Paid add-ons (src/core/addons.ts) by id, e.g. "pii-protection": requests protected, input tokens, dollars charged. */
   addons?: Record<string, { requests: number; tokens: number; usd: number }>;
+  /** Promotions (campaigns.ts) by campaign id: see PromotionLine. */
+  promotions?: Record<string, PromotionLine>;
 };
+
+/**
+ * What a promotion took off this month: requests and tokens it covered, their official-price cost (officialUsd) and
+ * the discount (discountUsd); charged = officialUsd - discountUsd. Kept beside the model lines, not in them: the
+ * model lines (and the month's usd) stay at the official price, which is what Valefront pays the provider.
+ */
+export type PromotionLine = { name: string; requests: number; tokens: number; officialUsd: number; discountUsd: number };
 
 /** Spend, requests and tokens for one provider or model. */
 export type SpendLine = { usd: number; requests: number; tokens: number; cachedTokens?: number };
@@ -79,6 +88,8 @@ export type MonthSpend = {
   byModel?: Record<string, SpendLine & { provider: string; model: string }>;
   /** Daily spend keyed by UTC date, then by provider/model. Older months may not have this field. */
   byDay?: Record<string, Record<string, SpendLine>>;
+  /** Promotions given this month, by campaign id (see PromotionLine). */
+  promotions?: Record<string, PromotionLine>;
   /** Corrections applied to this month's dollars (src/core/spend-reprice.ts), so each is applied once. */
   adjustments?: SpendAdjustment[];
 };
@@ -675,6 +686,29 @@ export class IssuedKeys {
       await this.store.increment(`usage/${key.id}/${month}`, emptyUsage(month), usageAdds);
     } else {
       await update<KeyUsage>(this.store, `usage/${key.id}/${month}`, (cur) => applyIncrements(structuredClone(cur ?? emptyUsage(month)) as Record<string, unknown>, usageAdds) as KeyUsage);
+    }
+  }
+
+  /**
+   * Count a promotion's discount on a request already counted by record() (at the official price): its own line under
+   * `promotions` in the month's spend and the key's usage. Totals (usd, requests, tokens) don't change.
+   */
+  async recordPromotion(key: IssuedKey | null, campaign: { id: string; name: string }, tokens: number, officialUsd: number, discountUsd: number): Promise<void> {
+    const month = monthOf(this.now());
+    const path = ['promotions', campaign.id];
+    const adds: Increment[] = [[[...path, 'requests'], 1], [[...path, 'tokens'], Math.max(0, Math.round(tokens))], [[...path, 'officialUsd'], officialUsd], [[...path, 'discountUsd'], discountUsd]];
+    const sets: Array<[string[], string]> = [[[...path, 'name'], campaign.name]];
+    const spendInit: MonthSpend = { month, usd: 0, requests: 0 };
+    if (this.store.increment) {
+      await this.store.increment(`spend/${month}`, spendInit, adds, sets);
+    } else {
+      await update<MonthSpend>(this.store, `spend/${month}`, (cur) => applyIncrements(structuredClone(cur ?? spendInit) as Record<string, unknown>, adds, sets) as MonthSpend);
+    }
+    if (!key) return;
+    if (this.store.increment) {
+      await this.store.increment(`usage/${key.id}/${month}`, emptyUsage(month), adds, sets);
+    } else {
+      await update<KeyUsage>(this.store, `usage/${key.id}/${month}`, (cur) => applyIncrements(structuredClone(cur ?? emptyUsage(month)) as Record<string, unknown>, adds, sets) as KeyUsage);
     }
   }
 
