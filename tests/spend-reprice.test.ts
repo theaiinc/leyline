@@ -266,7 +266,8 @@ describe('the monthly limit is the owner\'s, not customers\'', () => {
   });
 
   it('a customer workspace key is never refused because of the owner\'s spend; an admin\'s own workspace is', async () => {
-    const over = { monthlyBudgetUsd: 1, prices, billing: billing({ ws_customer: 'buyer@example.org', ws_owner: 'Owner@Example.com' }) } as unknown as Partial<HostedOptions>;
+    // gemini-2.5-pro counts as sold here: this is about the monthly limit, not the catalog.
+    const over = { monthlyBudgetUsd: 1, prices, soldModel: () => true, billing: billing({ ws_customer: 'buyer@example.org', ws_owner: 'Owner@Example.com' }) } as unknown as Partial<HostedOptions>;
     const { app: a, keys } = app(over);
     await overLimit(keys);
     expect((await chat(a, await inWorkspace(keys, 'ws_customer'))).status).toBe(200);
