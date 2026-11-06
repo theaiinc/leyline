@@ -167,7 +167,9 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
         return fail(503, 'billing_unavailable', 'Valefront could not check your balance just now; try again.');
       }
       if (!ws || ws.deletedAt) return fail(401, 'key_revoked', 'This API key has been revoked.');
-      if (!isAdminEmail(opts, ws.email)) {
+      // Every dash workspace is a customer account, an admin's too: adm (the shared pool) and dash are separate accounts
+      // under one email (Steve, 2026-11-06), so a workspace pays from its own credit like any customer.
+      {
         const target = resolveModel(opts.aliases, requested);
         const routerPicks = !requested || requested === 'auto' || requested === 'auto-vision';
         if (!routerPicks && !realPrice(opts, target) && !isMediaModel(target)) {
@@ -701,8 +703,10 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
-  app.get('/admin/api/keys', guard, async (_req, res) => {
-    res.json({ keys: (await opts.keys.list()).map(view) });
+  // adm manages the shared pool only: customers' keys belong to their workspaces (dash), never listed here.
+  app.get('/admin/api/keys', guard, async (req, res) => {
+    const all = (await opts.keys.list()).map(view);
+    res.json({ keys: req.query.all === '1' ? all : all.filter((k) => !k.workspaceId) });
   });
   app.post('/admin/api/keys', guard, async (req, res) => {
     try {
@@ -721,17 +725,18 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
       res.status(404).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
-  // Owner keys onto an admin's own workspace (dash shows them there); never onto a customer's: those are charged.
-  app.post('/admin/api/keys/:id/workspace', guard, async (req, res) => {
-    const workspaceId = typeof req.body?.workspaceId === 'string' ? req.body.workspaceId.trim() : '';
+  // A key put on an admin's workspace goes back to the shared pool (only for admins' own workspaces' keys).
+  app.post('/admin/api/keys/:id/pool', guard, async (req, res) => {
     const billing = (opts as HostedOptions & WorkspaceLookup).billing;
-    if (!workspaceId || !billing) return res.status(400).json({ error: 'workspaceId is required (and billing must be on)' });
     try {
-      const ws = await billing.store.workspace(workspaceId);
-      if (!ws || ws.deletedAt) return res.status(404).json({ error: `no workspace ${workspaceId}` });
-      if (!isAdminEmail(opts, ws.email)) return res.status(403).json({ error: 'only an admin\'s own workspace can take owner keys (a customer workspace would be charged for them)' });
-      const record = await opts.keys.assignWorkspace(String(req.params.id), workspaceId);
-      console.log(JSON.stringify({ event: 'key_assigned_workspace', id: record.id, workspaceId, by: (req as Request & { admin?: string }).admin }));
+      const cur = (await opts.keys.list()).find((k) => k.id === String(req.params.id));
+      if (!cur) return res.status(404).json({ error: 'no such key' });
+      if (cur.workspaceId) {
+        const ws = billing ? await billing.store.workspace(cur.workspaceId) : null;
+        if (!ws || !isAdminEmail(opts, ws.email)) return res.status(403).json({ error: "a customer's key stays with its workspace" });
+      }
+      const record = await opts.keys.returnToPool(cur.id);
+      console.log(JSON.stringify({ event: 'key_returned_to_pool', id: record.id, by: (req as Request & { admin?: string }).admin }));
       res.json({ record: view(record) });
     } catch (err) {
       res.status(409).json({ error: err instanceof Error ? err.message : String(err) });

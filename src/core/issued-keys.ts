@@ -500,22 +500,18 @@ export class IssuedKeys {
   }
 
   /**
-   * Put an owner-issued key (no workspace yet) into a workspace, so it shows on that workspace's dashboard. The key
-   * itself (hash, caps, usage) is unchanged and keeps working. Only for a workspace an admin owns (the caller checks):
-   * those are never charged, so nothing about how the key is billed changes.
+   * Back to the shared pool: an owner key that was put on an admin's workspace (2026-11-06) leaves it. The key itself
+   * (hash, caps, usage) is unchanged and keeps working. adm and dash are separate: adm manages only shared-pool keys.
    */
-  async assignWorkspace(id: string, workspaceId: string): Promise<IssuedKey> {
+  async returnToPool(id: string): Promise<IssuedKey> {
+    let from: string | undefined;
     const out = await update<IssuedKey>(this.store, `keys/${id}`, (cur) => {
       if (!cur) throw new Error(`no key ${id}`);
-      if (cur.revokedAt) throw new Error(`key ${id} is revoked`);
-      if (cur.workspaceId && cur.workspaceId !== workspaceId) throw new Error(`key ${id} already belongs to workspace ${cur.workspaceId}`);
-      return { ...cur, workspaceId };
+      from = cur.workspaceId;
+      const { workspaceId: _ws, ...rest } = cur;
+      return rest as IssuedKey;
     });
-    try {
-      await this.store.put(`wskeys/${workspaceId}/${id}`, { id }, '0');
-    } catch {
-      // Already indexed (a repeat): fine.
-    }
+    if (from) await this.store.delete?.(`wskeys/${from}/${id}`);
     this.cache.clear();
     return out;
   }

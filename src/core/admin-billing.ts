@@ -311,7 +311,7 @@ function adminPage(p: {
     const to = pr.mode === 'live' ? 'sandbox' : 'live';
     const form = `<form method="post" action="/billing/providers/${esc(pr.id)}/mode"${to === 'live' ? ` onsubmit="return this.confirm.value==='LIVE' || (alert('Type LIVE to switch to live.'), false)"` : ''}><input type="hidden" name="mode" value="${to}">${to === 'live' ? '<input name="confirm" placeholder="Type LIVE" size="9" autocomplete="off">' : ''}<button>Switch to ${to}</button></form>`;
     const check = pr.id === 'sinvoice' ? (['sandbox', 'live'] as const).map((m) => `<form method="post" action="/billing/providers/sinvoice/check"><input type="hidden" name="mode" value="${m}"><button>Check ${m} template/series</button></form>`).join('') : '';
-    return `<tr><td>${esc(pr.label)}</td><td><strong>${pr.mode === 'live' ? 'LIVE' : 'SANDBOX'}</strong></td><td>${creds('sandbox')}</td><td>${creds('live')}</td><td>${form}${check}</td></tr>`;
+    return `<tr><td data-label="Provider"><strong>${esc(pr.label)}</strong></td><td data-label="Mode"><strong>${pr.mode === 'live' ? 'LIVE' : 'SANDBOX'}</strong></td><td data-label="Sandbox credentials">${creds('sandbox')}</td><td data-label="Live credentials">${creds('live')}</td><td data-label="Switch">${form}${check}</td></tr>`;
   }).join('');
   const erows = p.einvoices.map((e) => {
     const actions = e.status === 'failed' ? `<form method="post" action="/billing/einvoices/${esc(e.id)}/retry"><button>Retry</button></form>`
@@ -336,19 +336,19 @@ function adminPage(p: {
 table{width:100%;border-collapse:collapse;background:#fff}td,th{padding:6px;border-bottom:1px solid #e3e5ea;text-align:left;vertical-align:top}.n{text-align:right}
 form.settings{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:8px;background:#fff;padding:12px;border:1px solid #e3e5ea;border-radius:8px}
 label{display:flex;flex-direction:column;font-size:12px;color:#555}input,textarea{font:inherit;padding:5px;border:1px solid #ccd;border-radius:6px}button{font:inherit;padding:5px 10px;border-radius:6px;border:1px solid #889;background:#eef;cursor:pointer}
-.note{padding:8px 12px;background:#fff6d6;border:1px solid #e8d48a;border-radius:8px}.wrap{overflow-x:auto}.adminnav{margin-bottom:8px}</style></head><body><main>
+.note{padding:8px 12px;background:#fff6d6;border:1px solid #e8d48a;border-radius:8px}.wrap{overflow-x:auto}.adminnav{margin-bottom:8px}@media (max-width:720px){main{padding:12px}table.stack,table.stack tbody,table.stack tr,table.stack td{display:block;width:auto}table.stack thead{display:none}table.stack tr{background:#fff;border:1px solid #e3e5ea;border-radius:8px;margin:0 0 10px;padding:6px 2px}table.stack td{border:0;padding:4px 10px;text-align:left}table.stack td[data-label]::before{content:attr(data-label);display:block;font-size:11px;font-weight:600;color:#667;text-transform:uppercase;letter-spacing:.02em}form.settings{grid-template-columns:1fr}input,button{font-size:16px}}small{overflow-wrap:anywhere}</style></head><body><main>
 ${adminNav('billing')}
 <h1>Valefront billing admin</h1><p>Signed in through Cloudflare Access as <strong>${esc(p.who)}</strong>. WorldFirst bank transfer: <strong>${a ? 'configured' : 'not configured'}</strong> (no sandbox). Every payment gets a receipt; VAT e-invoices only for buyers in Vietnam who ask.</p>
 ${p.note ? `<p class="note">${esc(p.note)}</p>` : ''}
 <h2>Providers: sandbox or live</h2><p><small>Secrets are Worker secrets (wrangler secret put); this page shows only whether they're set. In sandbox, PayPal is offered to admin workspaces only, and its receipts are marked SANDBOX and numbered apart. A VAT invoice is issued only through S-Invoice in its payment's mode. Every switch is audit-logged with who made it.</small></p>
-<div class="wrap"><table><thead><tr><th>Provider</th><th>Mode</th><th>Sandbox credentials</th><th>Live credentials</th><th></th></tr></thead><tbody>${prows}</tbody></table></div>
+<div class="wrap"><table class="stack"><thead><tr><th>Provider</th><th>Mode</th><th>Sandbox credentials</th><th>Live credentials</th><th></th></tr></thead><tbody>${prows}</tbody></table></div>
 <h2>SePay (Vietnamese bank QR, VND)</h2>${sepaySection(p.sepay)}
 <h2>Orders</h2><p><a href="/billing/">All</a> · <a href="/billing/?status=pending">Pending</a> · <a href="/billing/?status=paid">Paid</a> · <a href="/billing/?status=cancelled">Cancelled</a></p>
-<div class="wrap"><table><thead><tr><th>Created (UTC)</th><th>Reference</th><th>Buyer</th><th>Method</th><th class="n">Credit / total</th><th>Status</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="7">No orders.</td></tr>'}</tbody></table></div>
+<div class="wrap"><table class="stack"><thead><tr><th>Created (UTC)</th><th>Reference</th><th>Buyer</th><th>Method</th><th class="n">Credit / total</th><th>Status</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="7">No orders.</td></tr>'}</tbody></table></div>
 <h2>Vietnamese VAT e-invoices (Viettel S-Invoice)</h2><p>Requested invoices wait as pending until S-Invoice is configured in their payment's mode. Exchange rate: <strong>${p.fx ? `${esc(p.fx.vndPerUsd)} VND/USD, set ${esc(p.fx.date)}` : 'not set'}</strong>.</p>
 <form class="settings" method="post" action="/billing/settings/exchange-rate">${field('vndPerUsd', 'VND per 1 USD (for invoices issued from now)', p.fx?.vndPerUsd ?? '', 'required')}<div><button>Save rate and issue pending</button></div></form>
 <form method="post" action="/billing/einvoices/process" style="margin:8px 0"><button>Run the retry job now</button></form>
-<div class="wrap"><table><thead><tr><th>Paid</th><th>Buyer</th><th class="n">Total</th><th>Status</th><th></th></tr></thead><tbody>${erows || '<tr><td colspan="5">No VAT invoices requested.</td></tr>'}</tbody></table></div>
+<div class="wrap"><table class="stack"><thead><tr><th>Paid</th><th>Buyer</th><th class="n">Total</th><th>Status</th><th></th></tr></thead><tbody>${erows || '<tr><td colspan="5">No VAT invoices requested.</td></tr>'}</tbody></table></div>
 <h2>WorldFirst receiving account (USD)</h2><form class="settings" method="post" action="/billing/settings/worldfirst">
 ${field('accountName', 'Account name', a?.accountName, 'required')}${field('accountNumber', 'Account number', a?.accountNumber, 'required')}${field('bankName', 'Bank name', a?.bankName, 'required')}
 ${field('swiftCode', 'SWIFT/BIC', a?.swiftCode, 'required')}${field('routingNumber', 'Routing number (ACH/ABA)', a?.routingNumber)}${field('bankAddress', 'Bank address', a?.bankAddress)}
