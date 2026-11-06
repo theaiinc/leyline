@@ -1,4 +1,5 @@
 import type { Express, NextFunction, Request, Response } from 'express';
+import { ROUTING_STRATEGIES, isRoutingStrategy } from './routing-strategies';
 import { cookie } from './admin-login';
 import { BillingError, type PaymentMethod } from './billing';
 import { receiptHtml } from './billing-documents';
@@ -141,6 +142,7 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
   const keyView = (k: Awaited<ReturnType<HostedOptions['keys']['listForWorkspace']>>[number]) => ({
     id: k.id, name: k.name, prefix: k.prefix, createdAt: k.createdAt, revokedAt: k.revokedAt ?? null, lastUsedAt: k.lastUsedAt ?? null,
     piiProtection: piiModeOf(k.caps),
+    routingStrategy: k.caps.routingStrategy ?? null,
     usage: { month: k.usage.month, requests: k.usage.requests, promptTokens: k.usage.promptTokens, completionTokens: k.usage.completionTokens, byModel: k.usage.byModel, addons: k.usage.addons ?? {}, promotions: k.usage.promotions ?? {} },
   });
   /** The PII protection add-on as the dashboard offers it: price and the modes this server has. */
@@ -167,6 +169,27 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
       const { key, record } = await opts.keys.create({ name, caps, by: (req as CustomerRequest).customer!.email, workspaceId: ws(req).id });
       await opts.billing!.store.audit({ type: 'api_key.created', workspaceId: ws(req).id, meta: { keyId: record.id, ...(pii !== 'off' ? { piiProtection: pii } : {}) } });
       res.status(201).json({ key, record: { id: record.id, name: record.name, prefix: record.prefix, createdAt: record.createdAt, piiProtection: piiModeOf(record.caps) } });
+    } catch (err) {
+      errorOut(res, err);
+    }
+  });
+  /**
+   * The chat routing strategy one of your keys uses for `model: "auto"`: { strategy: 'cheapest' | 'best' | 'fastest'
+   * | 'balanced' | null } (null: auto routes as before). Only this cap changes. Another workspace's key is "not found".
+   */
+  app.put('/dashboard/me/keys/:id/routing', ...mine, async (req, res) => {
+    try {
+      const record = await opts.keys.get(String(req.params.id));
+      if (!record || record.workspaceId !== ws(req).id) return res.status(404).json({ error: { code: 'not_found', message: 'Key not found.' } });
+      if (record.revokedAt) throw new BillingError('key_revoked', 'This key is revoked.', 409);
+      const strategy = req.body?.strategy ?? null;
+      if (strategy !== null && !isRoutingStrategy(strategy)) {
+        throw new BillingError('unknown_routing_strategy', `Send { "strategy": ${ROUTING_STRATEGIES.map((s) => `"${s}"`).join(' | ')} | null }.`, 400);
+      }
+      const { routingStrategy: _previous, ...rest } = record.caps;
+      const saved = await opts.keys.setCaps(record.id, strategy ? { ...rest, routingStrategy: strategy } : rest);
+      await opts.billing!.store.audit({ type: 'api_key.routing_strategy', workspaceId: ws(req).id, meta: { keyId: record.id, strategy } });
+      res.json({ id: saved.id, routingStrategy: saved.caps.routingStrategy ?? null });
     } catch (err) {
       errorOut(res, err);
     }

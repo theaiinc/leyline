@@ -1,3 +1,4 @@
+import { isRouterPick } from './routing-strategies';
 import { randomUUID } from 'crypto';
 import {
   BillingError,
@@ -87,7 +88,7 @@ export type ChargeResult = { officialMicros: number; chargedMicros: number; disc
 /** A workspace may get a promo code wrong this many times an hour. */
 export const PROMO_CODE_ATTEMPTS_PER_HOUR = 10;
 
-export type Admission = { mode: 'free' | 'paid' } | { refusal: { status: number; code: string; message: string } };
+export type Admission = { mode: 'free' | 'paid'; /** Free mode: the workspace also has a balance above 0. */ paid?: boolean } | { refusal: { status: number; code: string; message: string } };
 
 /** A SePay quote is good for this long; after that the customer gets a new one (the rate moves daily). */
 export const SEPAY_QUOTE_MS = 30 * 60_000;
@@ -723,7 +724,7 @@ export class BillingService {
     if (opts.piiProtection && !paid) {
       return { refusal: { status: 402, code: 'insufficient_credit', message: `PII protection is on for this key and needs credit: its fee is charged from your balance (free tokens don't cover it), and your balance is $0.00. Add credit at ${ADD_CREDIT_URL}, or turn PII protection off for this key.` } };
     }
-    const routerPicks = !model || model === 'auto' || model === 'auto-vision';
+    const routerPicks = isRouterPick(model);
     const freeLeft = grant && now < grant.expiresAt && grant.usedTokens < grant.tokens;
     if (freeLeft && (routerPicks || this.isFreeModel(model))) {
       const day = new Date(now).toISOString().slice(0, 10);
@@ -736,7 +737,7 @@ export class BillingService {
         if (paid) return { mode: 'paid' };
         return { refusal: { status: 429, code: 'free_daily_token_cap', message: `This workspace has used its ${this.opts.free.tokensPerDay.toLocaleString('en-US')} free tokens for today; it resets at 00:00 UTC. Add credit at ${ADD_CREDIT_URL} to keep going now.` } };
       }
-      return { mode: 'free' };
+      return { mode: 'free', paid };
     }
     if (paid) return { mode: 'paid' };
     const why = freeLeft ? `Free tokens cover only ${this.opts.free.models.join(', ')}.` : grant ? 'Your free tokens are used up or expired.' : 'Your balance is $0.00.';

@@ -40,7 +40,18 @@ export type KeyCaps = {
   models?: string[] | null;
   piiRedaction?: 'off' | 'regex' | 'presidio' | null;
   piiAllowlist?: string[] | null;
+  /** Chat routing strategy for requests that say `auto` (unset: auto routes as before). */
+  routingStrategy?: RoutingStrategy | null;
 };
+
+export type RoutingStrategy = 'cheapest' | 'best' | 'fastest' | 'balanced';
+/** The strategies a key can default to, as the dashboards offer them (src/core/routing-strategies.ts). */
+export const ROUTING_STRATEGY_OPTIONS: Array<{ value: RoutingStrategy; label: string; hint: string }> = [
+  { value: 'cheapest', label: 'Cheapest', hint: 'lowest price (input and output weighed 3:1)' },
+  { value: 'best', label: 'Best', hint: 'highest benchmark score' },
+  { value: 'fastest', label: 'Fastest', hint: 'lowest recent median latency' },
+  { value: 'balanced', label: 'Balanced', hint: 'half price, half benchmark score' },
+];
 
 export type IssuedKey = {
   id: string;

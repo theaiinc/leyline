@@ -1,3 +1,4 @@
+import { isRouterPick, isRoutingStrategy, type RoutingStrategy } from './routing-strategies';
 import { createHash, randomBytes } from 'crypto';
 import { mkdir, readFile, writeFile } from 'fs/promises';
 import { dirname, join } from 'path';
@@ -27,6 +28,8 @@ export type KeyCaps = {
   piiRedaction?: 'off' | 'regex' | 'presidio';
   /** Regexes whose matches must remain usable by operational tools. */
   piiAllowlist?: string[] | null;
+  /** Routing strategy for chat requests that say `auto` (an `auto:<strategy>` in the request wins). */
+  routingStrategy?: RoutingStrategy;
 };
 
 export type IssuedKey = {
@@ -565,7 +568,7 @@ export class IssuedKeys {
 
   async admit(key: IssuedKey, model: string, budgetUsd: number | null = null): Promise<Refusal | null> {
     if (key.revokedAt) return { status: 401, code: 'key_revoked', message: 'This API key has been revoked.' };
-    if (model && model !== 'auto' && model !== 'auto-vision' && !modelAllowed(key.caps, model)) {
+    if (!isRouterPick(model) && !modelAllowed(key.caps, model)) {
       return { status: 403, code: 'model_not_allowed', message: `This key may not use the model "${model}".` };
     }
     const now = this.now();
@@ -754,5 +757,6 @@ export function cleanCaps(c: KeyCaps): KeyCaps {
     models: models && models.length ? models : null,
     ...(piiRedaction ? { piiRedaction } : {}),
     piiAllowlist,
+    ...(isRoutingStrategy(c.routingStrategy) ? { routingStrategy: c.routingStrategy } : {}),
   };
 }

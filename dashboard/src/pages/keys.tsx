@@ -10,7 +10,7 @@ import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { CodeBlock, EmptyState, PageHeader, SecretValue, ToneBadge, fmt, when } from '@/components/common';
-import { api, type HostedSettings, type IssuedKey, type KeyCaps } from '@/api';
+import { api, ROUTING_STRATEGY_OPTIONS, type HostedSettings, type IssuedKey, type KeyCaps, type RoutingStrategy } from '@/api';
 import type { Dashboard } from '@/hooks/use-dashboard';
 
 export const money = (usd: number) => `$${usd < 1 && usd > 0 ? usd.toFixed(4) : usd.toFixed(2)}`;
@@ -22,10 +22,11 @@ function capText(c: KeyCaps): string {
   if (c.requestsPerMinute) parts.push(`${fmt(c.requestsPerMinute)} req/min`);
   if (c.usdPerMonth) parts.push(`$${c.usdPerMonth}/mo`);
   if (c.models?.length) parts.push(c.models.join(', '));
+  if (c.routingStrategy) parts.push(`auto → ${c.routingStrategy}`);
   return parts.length ? parts.join(' · ') : 'No limits';
 }
 
-type CapForm = { usdPerMonth: string; tokensPerMonth: string; requestsPerDay: string; requestsPerMinute: string; models: string; piiRedaction: 'off' | 'regex' | 'presidio'; piiAllowlist: string };
+type CapForm = { usdPerMonth: string; tokensPerMonth: string; requestsPerDay: string; requestsPerMinute: string; models: string; piiRedaction: 'off' | 'regex' | 'presidio'; piiAllowlist: string; routingStrategy: RoutingStrategy | '' };
 const toForm = (c: KeyCaps = {}): CapForm => ({
   usdPerMonth: c.usdPerMonth ? String(c.usdPerMonth) : '',
   tokensPerMonth: c.tokensPerMonth ? String(c.tokensPerMonth) : '',
@@ -34,12 +35,13 @@ const toForm = (c: KeyCaps = {}): CapForm => ({
   models: (c.models ?? []).join(', '),
   piiRedaction: c.piiRedaction ?? 'off',
   piiAllowlist: (c.piiAllowlist ?? []).join(', '),
+  routingStrategy: c.routingStrategy ?? '',
 });
 const fromForm = (f: CapForm): KeyCaps => {
   const n = (v: string) => (v.trim() ? Number(v) : null);
   const models = f.models.split(',').map(s => s.trim()).filter(Boolean);
   const piiAllowlist = f.piiAllowlist.split(',').map(s => s.trim()).filter(Boolean);
-  return { usdPerMonth: f.usdPerMonth.trim() ? Number(f.usdPerMonth) : null, tokensPerMonth: n(f.tokensPerMonth), requestsPerDay: n(f.requestsPerDay), requestsPerMinute: n(f.requestsPerMinute), models: models.length ? models : null, piiRedaction: f.piiRedaction, piiAllowlist: piiAllowlist.length ? piiAllowlist : null };
+  return { usdPerMonth: f.usdPerMonth.trim() ? Number(f.usdPerMonth) : null, tokensPerMonth: n(f.tokensPerMonth), requestsPerDay: n(f.requestsPerDay), requestsPerMinute: n(f.requestsPerMinute), models: models.length ? models : null, piiRedaction: f.piiRedaction, piiAllowlist: piiAllowlist.length ? piiAllowlist : null, ...(f.routingStrategy ? { routingStrategy: f.routingStrategy } : {}) };
 };
 
 function CapFields({ value, onChange, offered }: { value: CapForm; onChange: (v: CapForm) => void; offered: string[] }) {
@@ -63,6 +65,14 @@ function CapFields({ value, onChange, offered }: { value: CapForm; onChange: (v:
         <Label htmlFor="pii-allowlist">PII allowlist patterns</Label>
         <Input id="pii-allowlist" placeholder="example.com, ^https://internal\\.example/" value={value.piiAllowlist} onChange={set('piiAllowlist')} />
         <p className="text-xs text-muted-foreground">Comma-separated regular expressions. Matching values pass through unchanged; use only patterns agents must act on.</p>
+      </div>
+      <div className="grid gap-1.5 sm:col-span-2">
+        <Label htmlFor="routing-strategy">Routing for <code className="font-mono">auto</code></Label>
+        <select id="routing-strategy" className="h-10 rounded-md border bg-background px-3 text-sm" value={value.routingStrategy} onChange={e => onChange({ ...value, routingStrategy: e.target.value as CapForm['routingStrategy'] })}>
+          <option value="">Default (as before)</option>
+          {ROUTING_STRATEGY_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}: {o.hint}</option>)}
+        </select>
+        <p className="text-xs text-muted-foreground">Chat requests with <code className="font-mono">model: "auto"</code> use this strategy; a request naming <code className="font-mono">auto:cheapest</code>, <code className="font-mono">auto:best</code>, <code className="font-mono">auto:fastest</code> or <code className="font-mono">auto:balanced</code> wins.</p>
       </div>
       <div className="grid gap-1.5 sm:col-span-2">
         <Label htmlFor="cap-models">Models</Label>

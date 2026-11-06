@@ -480,6 +480,18 @@ export class Router {
     return matches;
   }
 
+  /**
+   * The chat providers that enable or list `model` (only those; no fall-through to every provider), in priority
+   * order. Routing strategies use it to keep to models some provider actually serves.
+   */
+  async chatProvidersFor(model: string): Promise<Provider[]> {
+    const out: Provider[] = [];
+    for (const provider of this.providers.filter(servesChat)) {
+      if (this.enabledModelsFor(provider)?.includes(model) || await this.providerListsModel(provider, model)) out.push(provider);
+    }
+    return out;
+  }
+
   // ── Embeddings, transcription, speech ───────────────────────────
 
   /** Providers that serve `model` for a capability: by name, or because they list it (gateways). */

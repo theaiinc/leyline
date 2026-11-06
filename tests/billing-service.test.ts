@@ -205,8 +205,8 @@ describe('credit gate', () => {
   it('free tokens on free-tier models; otherwise a balance above zero; 402 with where to add credit', async () => {
     const f = billingFixture();
     const ws = await workspace(f.store);
-    expect(await f.service.admit(ws, 'seed-2-0-lite-260428')).toEqual({ mode: 'free' });
-    expect(await f.service.admit(ws, 'auto')).toEqual({ mode: 'free' });
+    expect(await f.service.admit(ws, 'seed-2-0-lite-260428')).toEqual({ mode: 'free', paid: false });
+    expect(await f.service.admit(ws, 'auto')).toEqual({ mode: 'free', paid: false });
     const refused = await f.service.admit(ws, 'gpt-5.5');
     expect(refused).toMatchObject({ refusal: { status: 402, code: 'insufficient_credit' } });
     expect((refused as { refusal: { message: string } }).refusal.message).toContain('Add credit at https://dash.valefront.com/billing');

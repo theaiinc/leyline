@@ -16,16 +16,33 @@ import { MEDIA_PRICING_SOURCES, mediaModel, mediaModelsOf, videoDuration, videoR
 // Official ModelArk pricing source; media requests must use an explicit entry and never fall back to a default price.
 const BYTEPLUS_PRICING_SOURCE = 'https://www.byteplus.com/en/product/modelark/pricing';
 
-const BYTEPLUS_CATALOG: Array<ModelDetail & { pricing: { input: number; output: number } }> = [
-  { id: 'seed-2-0-lite-260428', name: 'Seed 2.0 Lite', pricing: { input: 0.25, output: 2.0 } },
-  { id: 'seed-2-0-mini-260428', name: 'Dola Seed 2.0 Mini', pricing: { input: 0.1, output: 0.4 } },
-  { id: 'deepseek-v4-flash-ga-260731', name: 'DeepSeek V4 Flash', pricing: { input: 0.14, output: 0.28 } },
+const BYTEPLUS_CATALOG: Array<ModelDetail & { pricing: { input: number; output: number } }> = ([
+  // capabilities: what each chat model reads (Seed 2.0 is multimodal; DeepSeek V4 Flash reads text only). Routing
+  // strategies (src/core/routing-strategies.ts) send a request with images only to models listing 'vision'.
+  { id: 'seed-2-0-lite-260428', name: 'Seed 2.0 Lite', capabilities: ['chat', 'vision'], pricing: { input: 0.25, output: 2.0 } },
+  { id: 'seed-2-0-mini-260428', name: 'Dola Seed 2.0 Mini', capabilities: ['chat', 'vision'], pricing: { input: 0.1, output: 0.4 } },
+  { id: 'deepseek-v4-flash-ga-260731', name: 'DeepSeek V4 Flash', capabilities: ['chat'], pricing: { input: 0.14, output: 0.28 } },
   // TODO: confirm official prices for DeepSeek V4.1 Flash and GLM-5.3 Flash from BytePlus console/docs.
-].map((model) => ({ ...model, source: BYTEPLUS_PRICING_SOURCE }));
+] as Array<ModelDetail & { pricing: { input: number; output: number } }>).map((model) => ({ ...model, source: BYTEPLUS_PRICING_SOURCE }));
 
 export const BYTEPLUS_CATALOG_PRICING = Object.fromEntries(
   BYTEPLUS_CATALOG.map(({ id, pricing }) => [id, pricing]),
 );
+
+/**
+ * Names benchmark sources list BytePlus chat models under (Epoch AI: "doubao-seed-2.0-lite-260428",
+ * "deepseek-v4-flash-0731"), for the best and balanced routing strategies.
+ */
+export const BYTEPLUS_BENCHMARK_ALIASES: Record<string, string[]> = {
+  'seed-2-0-lite-260428': ['doubao-seed-2.0-lite-260428', 'seed-2.0-lite'],
+  'seed-2-0-mini-260428': ['doubao-seed-2.0-mini-260428', 'seed-2.0-mini'],
+  'deepseek-v4-flash-ga-260731': ['deepseek-v4-flash-0731', 'deepseek-v4-flash'],
+};
+
+/** Whether a BytePlus chat model reads images (its catalog entry lists 'vision'); unknown models: no. */
+export function byteplusChatModelReadsImages(model: string): boolean {
+  return BYTEPLUS_CATALOG.some((m) => m.id === model && (m.capabilities ?? []).includes('vision'));
+}
 
 export class BytePlusProvider extends OpenAIProvider {
   name = 'BytePlus';
