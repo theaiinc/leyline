@@ -198,6 +198,7 @@ export async function buildRouter(secretStore: SecretStore, opts: { workersAi?: 
     tierConfig: config.tierModels,
     singleModel: config.singleModel,
     enabledModels,
+    onlyListedModels: config.hosted.enabled,
   });
 
   if (!process.env.LLM_API_BASE_URL) {

@@ -81,3 +81,21 @@ describe('keys still loading', () => {
   });
 });
 
+
+describe('a model nobody lists', () => {
+  const ask = (router: Router) => router.route({ model: 'glm-unlisted', messages: [{ role: 'user', content: 'hi' }] });
+
+  it('is tried on every provider by default (self-hosted Leyline)', async () => {
+    const { router } = setup();
+    const res = await ask(router);
+    expect(res.choices[0]!.message.content).toBe('A');
+  });
+
+  it('is refused with 503 when only listed models may be served (hosted), not answered by another model', async () => {
+    const router = new Router({ quotaManager: new QuotaManager(), onlyListedModels: true });
+    router.addProvider(new ListingProvider('A', 'a-1', ['a-1']));
+    await expect(ask(router)).rejects.toMatchObject({ status: 503 });
+    const ok = await router.route({ model: 'a-1', messages: [{ role: 'user', content: 'hi' }] });
+    expect(ok.choices[0]!.message.content).toBe('A');
+  });
+});
