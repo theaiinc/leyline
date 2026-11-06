@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { BookOpen, Calculator, ChevronDown, CreditCard, Gift, Database, KeyRound, Landmark, LogOut, Moon, Plug, QrCode, ShieldCheck, Sun, Wallet } from 'lucide-react';
+import { BookOpen, Calculator, FlaskConical, ChevronDown, CreditCard, Gift, Database, KeyRound, Landmark, LogOut, Moon, Plug, QrCode, ShieldCheck, Sun, Wallet } from 'lucide-react';
 import { SideNav, navIds, type NavEntry } from '@/components/side-nav';
 import { CalculatorPage } from '@/pages/calculator';
 import { YourProvidersPage } from '@/pages/your-providers';
+import { CustomerPlaygroundPage } from './customer-playground';
 import { toast } from 'sonner';
 import { api, apiUrl, ROUTING_STRATEGY_OPTIONS, type RoutingStrategy } from '@/api';
 import { CopyButton, PageHeader } from '@/components/common';
@@ -92,6 +93,7 @@ const NAV: NavEntry[] = [
   { id: 'get-started', label: 'Get started', icon: BookOpen },
   { id: 'keys', label: 'API keys', icon: KeyRound },
   { id: 'providers', label: 'Your providers', icon: Plug },
+  { id: 'playground', label: 'Playground', icon: FlaskConical },
   // Money in one place: balance, credit, receipts and VAT invoices; what was spent; what it would cost.
   { group: 'Billing', icon: Wallet, items: [
     { id: 'billing', label: 'Billing', icon: CreditCard },
@@ -151,6 +153,7 @@ export function CustomerApp({ dark, toggleTheme }: { dark: boolean; toggleTheme:
             : !me ? <div className="grid gap-4"><Skeleton className="h-8 w-48" /><Skeleton className="h-40" /></div>
               : current === 'keys' ? <KeysPage me={me} />
                 : current === 'providers' ? <YourProvidersPage />
+                : current === 'playground' ? <CustomerPlaygroundPage />
                 : current === 'spending' ? <UsagePage me={me} />
                 : current === 'calculator' ? <CalculatorPage />
                   : current === 'billing' ? <BillingPage me={me} reload={load} />
