@@ -966,6 +966,28 @@ export class Router {
       throw new Error('All providers failed or are rate-limited.');
   }
 
+  /**
+   * Send a request to a provider that isn't registered here (a workspace's own provider, built for this request:
+   * src/core/workspace-providers.ts), exactly as a forced provider: the same request preparation, checks and log
+   * entry, no fallback to any other provider. `onServed` is told the provider's name.
+   */
+  async routeVia(provider: Provider, request: CompletionRequest, opts?: Pick<RouteOptions, 'onServed'>): Promise<CompletionResponse> {
+    const start = Date.now();
+    const requestId = Math.random().toString(36).substring(7);
+    const routedRequest = await this.prepareRoutedRequest(request);
+    opts?.onServed?.(provider.name, routedRequest.model);
+    return this.runForcedProvider(provider, routedRequest, requestId, start);
+  }
+
+  /** Streaming counterpart of `routeVia`. */
+  async *routeStreamVia(provider: Provider, request: CompletionRequest, opts?: Pick<RouteOptions, 'onServed'>): AsyncGenerator<StreamChunk, void, unknown> {
+    const start = Date.now();
+    const requestId = Math.random().toString(36).substring(7);
+    const routedRequest = await this.prepareRoutedRequest(request);
+    opts?.onServed?.(provider.name, routedRequest.model);
+    yield* this.runForcedProviderStream(provider, routedRequest, requestId, start);
+  }
+
   /** Execute a single non-streaming request against an explicitly forced provider — no fallback. */
   private async runForcedProvider(
     provider: Provider,

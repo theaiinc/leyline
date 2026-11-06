@@ -155,6 +155,11 @@ export class D1BillingStore {
     return r ? workspaceFrom(r) : null;
   }
 
+  /** Workspaces signed up with this email (any case), newest first; deleted ones too (adm's lookup). */
+  async workspacesByEmail(email: string): Promise<WorkspaceRecord[]> {
+    return (await this.all<Row>('SELECT * FROM workspaces WHERE lower(email) = lower(?) ORDER BY created_at DESC', email.trim())).map(workspaceFrom);
+  }
+
   /** Whether a free grant was ever given to this email or Aegis account (hashes). */
   async grantUsed(emailHash: string, subHash: string): Promise<boolean> {
     return Boolean(await this.first('SELECT 1 AS x FROM free_grants WHERE email_hash = ? OR sub_hash = ?', emailHash, subHash));

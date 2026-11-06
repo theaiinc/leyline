@@ -13,6 +13,7 @@ import { ViettelSInvoiceProvider } from '../src/core/einvoice-viettel';
 import { accessConfigFromEnv } from '../src/core/cloudflare-access';
 import { freeTierConfig, verifyTurnstile } from '../src/core/self-serve-workspaces';
 import { D1PartnerInquiryStore, PartnerInquiries } from '../src/core/partner-inquiries';
+import { D1WorkspaceProviderStore, WorkspaceProviders } from '../src/core/workspace-providers';
 // Bundled as data (wrangler.jsonc "rules"): the invoice/receipt font.
 import dejavuRegular from '../src/assets/fonts/DejaVuSans.ttf';
 import dejavuBold from '../src/assets/fonts/DejaVuSans-Bold.ttf';
@@ -283,6 +284,9 @@ function configureBilling(hosted: HostedOptions, env: Env): void {
     to: env.PARTNER_INQUIRY_TO,
     adminUrl: `https://${hosted.adminHost}`,
   });
+  // Customers' own providers (BYOK; worker/migrations/0007), keys sealed under LEYLINE_STORE_KEY. On the primary:
+  // a change shows on every instance within WorkspaceProviders' 30 s cache, never later because of a replica.
+  hosted.workspaceProviders = new WorkspaceProviders(new D1WorkspaceProviderStore(env.DB, env.LEYLINE_STORE_KEY));
   hosted.access = accessConfigFromEnv(vars);
   hosted.providerEnv = vars;
 }

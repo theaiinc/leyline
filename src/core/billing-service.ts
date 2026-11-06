@@ -745,6 +745,20 @@ export class BillingService {
   }
 
   /**
+   * A request to one of the workspace's own providers (BYOK, src/core/workspace-providers.ts): billed by that provider,
+   * so no model price and no credit is needed. The workspace must still be in good standing, and PII protection,
+   * Valefront's add-on, still needs credit for its fee.
+   */
+  async admitByok(ws: WorkspaceRecord, opts: { piiProtection?: boolean } = {}): Promise<{ refusal?: { status: number; code: string; message: string } }> {
+    if (ws.deletedAt) return { refusal: { status: 401, code: 'key_revoked', message: 'This API key has been revoked.' } };
+    if (ws.suspendedAt) return { refusal: { status: 403, code: 'workspace_or_key_suspended', message: 'This workspace or API key is suspended.' } };
+    if (opts.piiProtection && (await this.store.balance(ws.id)).availableMicros <= 0) {
+      return { refusal: { status: 402, code: 'insufficient_credit', message: `PII protection is on for this key and needs credit: its fee is charged from your balance, also on your own providers, and your balance is $0.00. Add credit at ${ADD_CREDIT_URL}, or turn PII protection off for this key.` } };
+    }
+    return {};
+  }
+
+  /**
    * After a request: free tokens first (for a free-tier model, while the grant lasts), the rest from the balance.
    * usd is null when the model has no real price: nothing is charged (and it's logged), never the default price.
    * With `basis` (what the request was), a live campaign covering the model (automatic, or one this workspace

@@ -17,7 +17,8 @@ import { vndRate } from './core/fx';
 import { mountAdminPartners, mountPartnerInquiryApi } from './core/partner-inquiries';
 import { mountCustomerRoutes } from './core/customer-routes';
 import { routeByPlan, routeHeader, streamByPlan, strategyErrorResponse, type RoutePlan } from './core/routing-strategies';
-import { chatRoutePlan, adminOf, sessionOf, mountHosted, providersOverBudget, resumeAdminSession, recordUsage, servedBy, requireIssuedKey, resolveModel, sameOrigin, type HostedOptions } from './core/hosted';
+import { chatRoutePlan, adminOf, sessionOf, mountHosted, providersOverBudget, resumeAdminSession, recordUsage, requestModel, routerFor, servedBy, requireIssuedKey, sameOrigin, type HostedOptions } from './core/hosted';
+import { poolCredentials } from './core/workspace-providers';
 import { createRequireAegisToken, AegisTenant } from './core/aegis-auth';
 import { chatCompletionErrorResponse, formatProviderError, hydrateAxiosError } from './core/api-errors';
 import { normalizeCompletionRequest } from './core/normalize-request';
@@ -1049,8 +1050,8 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
   app.post('/v1/chat/completions', authMiddleware, async (req, res) => {
     await apiKeyInitialization;
     let request = normalizeCompletionRequest(req.body);
-    // Hosted: a requested model can be an alias for what the owner's providers serve.
-    if (hosted) request.model = resolveModel(hosted.aliases, request.model);
+    // Hosted: a requested model can be an alias for what the owner's providers serve (never for a workspace's own model).
+    if (hosted) request.model = requestModel(hosted, req, request.model);
     const pii = (req as Request & { pii?: import('./core/pii-redaction').RequestPiiRedactor }).pii;
     if (pii) request = await pii.redact(request);
 
@@ -1096,7 +1097,8 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
         res.setHeader('Connection', 'keep-alive');
 
         const routeAt = Date.now();
-        const stream = plan ? streamByPlan(router, request, plan, routeOptions, setRoute) : await router.routeStream(request, routeOptions);
+        const via = routerFor(router, req);
+        const stream = plan ? streamByPlan(via, request, plan, routeOptions, setRoute) : await via.routeStream(request, routeOptions);
         const routeMs = Date.now() - routeAt;
         // The same, for the caller: Server-Timing goes out with the headers, before the first chunk.
         const t = (req as { timings?: { lookupMs: number; admitMs: number } }).timings;
@@ -1151,7 +1153,8 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
         logTenantUsage(req, request.model, streamUsage, streamChars);
 
       } else {
-        const response = plan ? await routeByPlan(router, request, plan, routeOptions, setRoute) : await router.route(request, routeOptions);
+        const via = routerFor(router, req);
+        const response = plan ? await routeByPlan(via, request, plan, routeOptions, setRoute) : await via.route(request, routeOptions);
         const hydrated = pii ? { ...response, choices: response.choices?.map((choice) => ({
           ...choice,
           message: choice.message ? {
@@ -1212,7 +1215,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     const tools = translated.tools;
     const asked = request.model;
     if (request.messages.length === 0) return invalid(400, 'input is required: at least one message.', 'missing_required_parameter', 'input');
-    if (hosted) request.model = resolveModel(hosted.aliases, request.model);
+    if (hosted) request.model = requestModel(hosted, req, request.model);
     const pii = (req as Request & { pii?: import('./core/pii-redaction').RequestPiiRedactor }).pii;
     if (pii) request = await pii.redact(request);
     const echo = { model: asked, request: req.body as ResponsesRequest };
@@ -1234,7 +1237,8 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       const out = new ResponsesStream(echo, tools);
       try {
         const routeAt = Date.now();
-        const stream = plan ? streamByPlan(router, request, plan, routeOptions, setRoute) : await router.routeStream(request, routeOptions);
+        const via = routerFor(router, req);
+        const stream = plan ? streamByPlan(via, request, plan, routeOptions, setRoute) : await via.routeStream(request, routeOptions);
         // The SSE headers go out with the first event, so a provider that fails before its first chunk still gets a
         // plain JSON error with its status.
         const send = (events: ReturnType<ResponsesStream['push']>) => {
@@ -1291,7 +1295,8 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     }
 
     try {
-      const response = plan ? await routeByPlan(router, request, plan, routeOptions, setRoute) : await router.route(request, routeOptions);
+      const via = routerFor(router, req);
+      const response = plan ? await routeByPlan(via, request, plan, routeOptions, setRoute) : await via.route(request, routeOptions);
       const hydrated = pii ? { ...response, choices: response.choices?.map((choice) => ({
         ...choice,
         message: choice.message ? {
@@ -1358,7 +1363,16 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     },
   });
 
-  if (hosted) mountHosted(app, router, hosted);
+  if (hosted) {
+    // adm's from-pool copy (hosted.ts): a pool provider's live settings, after its key has loaded (env, D1 or Arcana).
+    hosted.poolProvider ??= async (name) => {
+      await apiKeyInitialization;
+      await (app.locals.background as Promise<unknown> | undefined);
+      const provider = router.getProviders().find((p) => p.name === name);
+      return provider ? poolCredentials(provider, router.exportModelLists()[name]?.ids ?? []) : null;
+    };
+    mountHosted(app, router, hosted);
+  }
 
   app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
     const payloadError = err as { type?: string; status?: number; message?: string };

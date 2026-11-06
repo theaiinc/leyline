@@ -158,6 +158,11 @@ export function medianLatencies(entries: LogEntry[], models: string[], minSample
 export type RankInputs = {
   /** Eligible models with their prices. */
   prices: Map<string, Price>;
+  /**
+   * Eligible models without a known price (a workspace's own provider that publishes none): never in cheapest or
+   * balanced (both rank by price); in best and fastest by their score or latency, after the priced ones on a tie.
+   */
+  unpriced?: string[];
   benchmarks?: BenchmarkSnapshot | null;
   /** Other names benchmarks list a model under (model id -> names). */
   benchmarkAliases?: Record<string, string[]>;
@@ -176,21 +181,26 @@ export function rankModels(strategy: RoutingStrategy, inputs: RankInputs): Ranki
   const byPrice = (a: string, b: string) => micro(blended.get(a)!) - micro(blended.get(b)!)
     || micro(inputs.prices.get(a)!.output) - micro(inputs.prices.get(b)!.output) || a.localeCompare(b);
   const cheapest = [...ids].sort(byPrice);
+  // Models without a price come after every priced one on a tie, then by id.
+  const unpriced = (inputs.unpriced ?? []).filter((id) => !inputs.prices.has(id)).sort((a, b) => a.localeCompare(b));
+  const anyOrder = (a: string, b: string) => (inputs.prices.has(a) && inputs.prices.has(b) ? byPrice(a, b)
+    : Number(!inputs.prices.has(a)) - Number(!inputs.prices.has(b)) || a.localeCompare(b));
+  const all = [...ids, ...unpriced];
 
   if (strategy === 'cheapest') return { models: cheapest, reason: 'lowest-blended-price' };
 
   if (strategy === 'best') {
-    const quality = qualityScores(ids, inputs.benchmarks, inputs.benchmarkAliases);
-    if (quality.size === 0) return { models: cheapest, reason: 'no-benchmarks-cheapest' };
-    const scored = ids.filter((id) => quality.has(id)).sort((a, b) => quality.get(b)! - quality.get(a)! || byPrice(a, b));
-    return { models: [...scored, ...cheapest.filter((id) => !quality.has(id))], reason: 'top-benchmark-score' };
+    const quality = qualityScores(all, inputs.benchmarks, inputs.benchmarkAliases);
+    if (quality.size === 0) return { models: [...cheapest, ...unpriced], reason: 'no-benchmarks-cheapest' };
+    const scored = all.filter((id) => quality.has(id)).sort((a, b) => quality.get(b)! - quality.get(a)! || anyOrder(a, b));
+    return { models: [...scored, ...cheapest.filter((id) => !quality.has(id)), ...unpriced.filter((id) => !quality.has(id))], reason: 'top-benchmark-score' };
   }
 
   if (strategy === 'fastest') {
-    const latency = medianLatencies(inputs.logs ?? [], ids);
-    if (latency.size === 0) return { models: cheapest, reason: 'no-latency-data-cheapest' };
-    const timed = ids.filter((id) => latency.has(id)).sort((a, b) => latency.get(a)! - latency.get(b)! || byPrice(a, b));
-    return { models: [...timed, ...cheapest.filter((id) => !latency.has(id))], reason: 'lowest-median-latency' };
+    const latency = medianLatencies(inputs.logs ?? [], all);
+    if (latency.size === 0) return { models: [...cheapest, ...unpriced], reason: 'no-latency-data-cheapest' };
+    const timed = all.filter((id) => latency.has(id)).sort((a, b) => latency.get(a)! - latency.get(b)! || anyOrder(a, b));
+    return { models: [...timed, ...cheapest.filter((id) => !latency.has(id)), ...unpriced.filter((id) => !latency.has(id))], reason: 'lowest-median-latency' };
   }
 
   // balanced
@@ -214,8 +224,10 @@ export function rankModels(strategy: RoutingStrategy, inputs: RankInputs): Ranki
 export type StrategyEnv = {
   /** Chat models offered here that this key may use (already without blocked and media models). */
   offered(): Promise<string[]>;
-  /** The model's real price (set by hand, or published), or undefined: unpriced models are never picked. */
+  /** The model's real price (set by hand, or published), or undefined: unpriced models are never picked… */
   price(model: string): Price | undefined;
+  /** …unless this says so (a workspace's own model): then by best and fastest only (RankInputs.unpriced). */
+  unpricedOk?(model: string): boolean;
   /** Some provider that isn't over budget and reports available serves the model. */
   served(model: string): Promise<boolean>;
   /** The model reads images (and other non-text parts). */
@@ -232,21 +244,25 @@ export type RoutePlan = { strategy: RoutingStrategy; models: string[]; reason: s
 export async function planStrategy(strategy: RoutingStrategy, request: CompletionRequest, env: StrategyEnv): Promise<RoutePlan> {
   const needsVision = requestHasNonTextContent(request.messages);
   const prices = new Map<string, Price>();
+  const unpriced: string[] = [];
+  const takesUnpriced = strategy === 'best' || strategy === 'fastest';
   for (const model of await env.offered()) {
-    if (prices.has(model)) continue;
+    if (prices.has(model) || unpriced.includes(model)) continue;
     const price = env.price(model);
-    if (!price || !Number.isFinite(price.input) || !Number.isFinite(price.output)) continue;
+    const priced = !!price && Number.isFinite(price.input) && Number.isFinite(price.output);
+    if (!priced && !(takesUnpriced && env.unpricedOk?.(model))) continue;
     if (needsVision && !env.readsImages(model)) continue;
     if (!(await env.served(model))) continue;
-    prices.set(model, price);
+    if (priced) prices.set(model, price!);
+    else unpriced.push(model);
   }
-  if (prices.size === 0) throw new NoEligibleModelError(strategy, needsVision);
+  if (prices.size === 0 && unpriced.length === 0) throw new NoEligibleModelError(strategy, needsVision);
   const needsBenchmarks = strategy === 'best' || strategy === 'balanced';
   const [benchmarks, logs] = await Promise.all([
     needsBenchmarks ? env.benchmarks?.().catch(() => null) ?? null : null,
     strategy === 'fastest' ? env.recentLogs?.().catch(() => []) ?? [] : [],
   ]);
-  const ranking = rankModels(strategy, { prices, benchmarks, logs, benchmarkAliases: env.benchmarkAliases });
+  const ranking = rankModels(strategy, { prices, unpriced, benchmarks, logs, benchmarkAliases: env.benchmarkAliases });
   return { strategy, ...ranking };
 }
 
