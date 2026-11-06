@@ -1,3 +1,4 @@
+import { formatScore } from '@/lib/score';
 import { useEffect, useState } from 'react';
 import { Activity, Gauge, KeyRound, Server } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -93,7 +94,7 @@ function BenchmarkLeaders({ base }: { base: string }) {
       </div>
     </CardHeader>
     <CardContent className="space-y-2">
-      {scores.slice(0, 8).map(item => <div key={item.model} className="flex items-center justify-between gap-3 text-sm"><span className="truncate">{item.model}</span><span className="shrink-0 text-right tabular-nums">{item.score === null ? 'not benchmarked' : `${item.score} · ${item.source}`}</span></div>)}
+      {scores.slice(0, 8).map(item => <div key={item.model} className="flex items-center justify-between gap-3 text-sm"><span className="truncate">{item.model}</span><span className="shrink-0 text-right tabular-nums">{item.score === null ? 'not benchmarked' : `${formatScore(item.score)} · ${item.source}`}</span></div>)}
       {benchmark.attribution ? <p className="pt-2 text-xs text-muted-foreground">{benchmark.attribution}</p> : null}
     </CardContent>
   </Card>;

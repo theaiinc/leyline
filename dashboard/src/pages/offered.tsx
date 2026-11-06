@@ -236,7 +236,7 @@ export function OfferedPage({ d }: { d: Dashboard }) {
                 <span className="text-xs text-muted-foreground">
                   {publishedTotal
                     ? `${publishedTotal.toLocaleString()} models priced automatically: ${Object.entries(settings?.publishedPrices ?? {}).map(([p, n]) => `${p} ${n}`).join(', ')}. Updated with each provider's model list.`
-                    : 'llmapi.ai and OpenRouter publish prices with their model lists; none loaded yet.'}
+                    : 'Providers that publish prices (BytePlus, llmapi.ai, OpenRouter) send them with their model lists; none loaded yet.'}
                 </span>
               </span>
               <Switch checked={usePublished} onCheckedChange={setUsePublished} aria-label="Use providers' published prices" />

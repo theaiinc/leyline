@@ -1,3 +1,4 @@
+import { formatScore } from '@/lib/score';
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowUpDown, ExternalLink } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -115,7 +116,7 @@ export function BenchmarksPage({ base }: { base: string }) {
               <table className="w-full text-left text-sm">
                 <thead><tr className="border-b"><th className="p-2">Model</th><th className="p-2">Score</th><th className="p-2">On Valefront as</th><th className="p-2">Date</th></tr></thead>
                 <tbody>{rows.map(row => <tr key={`${row.model}-${row.asOf}`} className="border-b last:border-0">
-                  <td className="p-2 font-medium">{row.model}</td><td className="p-2 tabular-nums">{row.score}</td>
+                  <td className="p-2 font-medium">{row.model}</td><td className="p-2 tabular-nums">{formatScore(row.score)}</td>
                   <td className="p-2">{row.leylineModel ? <><span className="text-success">{row.leylineModel}</span>{row.aliases?.length ? <span className="ml-1 text-xs text-muted-foreground">({row.aliases.join(', ')})</span> : null}</> : 'Not available'}</td>
                   <td className="p-2 text-muted-foreground">{row.asOf || chosen.asOf || '—'}</td>
                 </tr>)}</tbody>
