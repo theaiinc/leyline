@@ -33,9 +33,8 @@ const DETAILS: Record<string, { description: string; unit: string; group: string
   aime: { description: 'Competition mathematics problems.', unit: 'accuracy; higher is better', group: 'Reasoning, maths and science' },
   livebench: { description: 'Mixed, contamination-resistant tasks.', unit: 'score; higher is better', group: 'General chat quality' },
   'terminal-bench': { description: 'Agentic command-line work.', unit: 'accuracy; higher is better', group: 'Agents and tools' },
-  livecodebench: { description: 'Fresh coding problems.', unit: 'pass@1; higher is better', group: 'Coding' },
   'lmarena-text-elo': { description: 'Human preference in blind chats.', unit: 'Elo; higher is better (confidence intervals apply)', group: 'General chat quality' },
-  'intelligence-index': { description: 'Artificial Analysis composite intelligence score.', unit: 'index; higher is better', group: 'General chat quality' },
+  'intelligence-index': { description: "Epoch AI's Capabilities Index (ECI): one score combining many benchmarks.", unit: 'index; higher is better', group: 'General chat quality' },
 };
 
 const GROUPS = ['Coding', 'Agents and tools', 'Reasoning, maths and science', 'General chat quality'];
@@ -99,6 +98,8 @@ export function BenchmarksPage({ base }: { base: string }) {
             <CardDescription>{DETAILS[chosen.id]?.description ?? 'Benchmark results.'} {DETAILS[chosen.id]?.unit ?? 'Higher is better.'}</CardDescription>
             <div className="flex flex-wrap gap-2">
               {data.benchmarks.map(item => <Button key={item.id} variant={item.id === chosen.id ? 'default' : 'outline'} size="sm" onClick={() => setSelected(item.id)}>{item.name}</Button>)}
+            </div>
+            <div className="flex flex-wrap items-center gap-4 pt-1">
               <div className="flex items-center gap-2" aria-label="Model filter">
                 <span className="text-xs text-muted-foreground">Models</span>
                 <Button variant={onlyServed ? 'default' : 'outline'} size="sm" onClick={() => setOnlyServed(value => !value)}>{onlyServed ? 'Valefront only' : 'All models'}</Button>
