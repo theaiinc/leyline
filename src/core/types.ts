@@ -31,6 +31,8 @@ export interface CompletionRequest {
   user?: string;
   parallel_tool_calls?: boolean;
   reasoning_effort?: string;
+  /** Optional per-request routing strategy; the `auto:<strategy>` model syntax remains supported too. */
+  strategy?: RoutingStrategy;
   [key: string]: unknown;
 }
 
@@ -184,13 +186,72 @@ export function servesChat(provider: Provider): boolean {
   return !provider.capabilities || provider.capabilities.includes('chat');
 }
 
+export type RoutingStrategy = 'cheapest' | 'fastest' | 'best' | 'balanced' | 'custom';
+
+export interface RoutingWeights {
+  quality: number;
+  price: number;
+  speed: number;
+}
+
+export interface RouteCandidate {
+  provider: string;
+  model: string;
+  /** Published USD per million tokens; absent means the model is not price-eligible. */
+  price?: { input: number; output: number };
+  /** Recent median latency in milliseconds. */
+  latencyMs?: number;
+  /** Recent median time to first token in milliseconds. */
+  ttftMs?: number;
+  /** Benchmark score for this request kind, normalized to 0..1. */
+  qualityScore?: number;
+  /** Registration/custom-order position. */
+  order: number;
+  available: boolean;
+  breakerPaused?: boolean;
+}
+
+export interface RouteSelection {
+  candidate: RouteCandidate;
+  strategy: RoutingStrategy;
+  reason: string;
+}
+
+export interface RoutingConfig {
+  /** Existing installations retain registration order by default. */
+  strategy?: RoutingStrategy;
+  /** Ordered provider/model entries used by the custom strategy. */
+  customOrder?: string[];
+  /** Weights displayed and applied by the balanced strategy. */
+  weights?: RoutingWeights;
+}
+
+/** Resolve the most specific configured strategy without treating an absent value as a new default. */
+export function resolveRoutingStrategy(
+  requestStrategy?: string,
+  keyStrategy?: RoutingStrategy,
+  accountStrategy?: RoutingStrategy,
+): RoutingStrategy {
+  const requested = requestStrategy?.replace(/^auto:/, '') as RoutingStrategy | undefined;
+  if (requested && ['cheapest', 'fastest', 'best', 'balanced', 'custom'].includes(requested)) return requested;
+  return keyStrategy ?? accountStrategy ?? 'custom';
+}
+
 export interface RouteOptions {
   /** Bypass routing/candidate selection and force this exact provider name. */
   forceProvider?: string;
+  /** Strategy selected for this request; request selection takes precedence over key/account config. */
+  strategy?: string;
+  /** Strategy configured on the access key. */
+  keyStrategy?: RoutingStrategy;
+  /** Account-level fallback strategy. */
+  accountStrategy?: RoutingStrategy;
   /** Told which provider and model served the request (the last one tried, when an earlier one failed). */
   onServed?: (provider: string, model: string) => void;
   /** Providers not to use for this request (at their monthly spend limit, hosted.ts). */
   excludeProviders?: string[];
+  /** Called with the selected strategy and human-readable explanation for activity/headers. */
+  onRoute?: (selection: RouteSelection) => void;
 }
 
 export interface ApiKeyConfigurableProvider extends Provider {

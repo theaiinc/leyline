@@ -11,6 +11,9 @@ import {
   TierConfig,
   Capability,
   servesChat,
+  RouteCandidate,
+  RouteSelection,
+  resolveRoutingStrategy,
 } from './types';
 import { CapabilityError, errorStatus } from './media';
 import { QuotaManager } from './quota-manager';
@@ -21,6 +24,7 @@ import { maybeCompress } from './compress';
 import { formatProviderError, hydrateAxiosError } from './api-errors';
 import { ensureMessageArray } from './normalize-request';
 import { requestHasNonTextContent } from './content';
+import { selectRoute } from './routing-strategies';
 
 type UsageSnapshot = {
   prompt_tokens?: number;
@@ -199,6 +203,11 @@ function resolveTierModel(tier: string, tierConfig: TierConfig): string | null {
 }
 
 // ── Router ─────────────────────────────────────────────────────────
+
+export interface Router {
+  route(request: CompletionRequest, opts?: RouteOptions): Promise<CompletionResponse>;
+  routeStream(request: CompletionRequest, opts?: RouteOptions): AsyncGenerator<StreamChunk, void, unknown>;
+}
 
 export class Router {
   private providers: Provider[] = [];
@@ -590,7 +599,7 @@ export class Router {
       `${excluded.join(', ')} reached ${excluded.length > 1 ? 'their' : 'its'} spending limit for the month; it resets on the 1st (UTC).`);
   }
 
-  async route(request: CompletionRequest, opts?: RouteOptions): Promise<CompletionResponse> {
+  public async route(request: CompletionRequest, opts?: RouteOptions): Promise<CompletionResponse> {
     const start = Date.now();
     const requestId = Math.random().toString(36).substring(7);
 
@@ -614,33 +623,19 @@ export class Router {
         logger.log({ requestId, provider: provider.name, model, status: 'rate_limited', error: 'Quota exceeded' });
         throw new Error(`Fixed provider ${provider.name} is rate-limited.`);
       }
-
       try {
-        const isAvailable = await provider.isAvailable();
-        if (!isAvailable) {
-          throw new Error(`Fixed provider ${provider.name} reported unavailable.`);
-        }
-
+        if (!(await provider.isAvailable())) throw new Error(`Fixed provider ${provider.name} reported unavailable.`);
         if (!providerAcceptsContent(provider, routedRequest, model)) throw unsupportedContent([provider.name], model);
-
-        console.log(`[Router] Single-model mode: routing to ${provider.name} with model: ${model}`);
         await this.keyReady(provider);
         const response = await provider.complete({ ...routedRequest, model });
-        opts?.onServed?.(provider.name, model);
         this.quotaManager.incrementUsage(provider.name);
-        logger.log({
-          requestId,
-          provider: provider.name,
-          model,
-          status: 'success',
-          duration: Date.now() - start,
-          usage: response.usage,
-        });
+        logger.log({ requestId, provider: provider.name, model, status: 'success', duration: Date.now() - start, usage: response.usage });
+        opts?.onServed?.(provider.name, model);
         return response;
-      } catch (error: any) {
-        logger.log({ requestId, provider: provider.name, model, status: 'error', error: error.message, duration: Date.now() - start });
+      } catch (error) {
+        const originalError = error instanceof Error ? error.message : String(error);
         const hydrated = await hydrateAxiosError(error);
-        console.error(`[Router] Error with fixed provider ${provider.name}:`, formatProviderError(hydrated));
+        logger.log({ requestId, provider: provider.name, model, status: 'error', error: originalError, duration: Date.now() - start });
         throw hydrated;
       }
     }
@@ -649,103 +644,113 @@ export class Router {
     const cannotRead: string[] = [];
     let attempted = false;
     const overBudget: string[] = [];
-    for (const provider of await this.candidateProviders(request.model)) {
+    const autoRequest = request.model === 'auto' || request.model === 'auto-vision' || request.model.startsWith('auto:');
+    const requestedStrategy = opts?.strategy
+      ?? (routedRequest as CompletionRequest & { strategy?: string }).strategy
+      ?? (routedRequest as CompletionRequest & { headers?: Record<string, string> }).headers?.['X-Valefront-Strategy']
+      ?? (routedRequest as CompletionRequest & { headers?: Record<string, string> }).headers?.['x-valefront-strategy']
+      ?? (request.model.startsWith('auto:') ? request.model : undefined);
+    const strategy = resolveRoutingStrategy(requestedStrategy, opts?.keyStrategy, opts?.accountStrategy);
+    const providers = await this.candidateProviders(autoRequest ? 'auto' : request.model);
+    const autoEntries = autoRequest
+      ? await Promise.all(providers.map(async (provider, order) => ({
+          provider,
+          autoModel: await this.autoModelFor(provider, routedRequest),
+          order,
+        })))
+      : providers.map((provider, order) => ({ provider, autoModel: null, order }));
+    const selections = autoRequest
+      ? selectRoute(
+          autoEntries
+            .filter((entry): entry is typeof entry & { autoModel: string } => entry.autoModel !== null)
+            .map(entry => ({
+              provider: entry.provider.name,
+              model: entry.autoModel,
+              order: entry.order,
+              available: true,
+            })),
+          strategy,
+        )
+      : [];
+    const orderedEntries = autoRequest
+      ? selections
+          .map(selection => ({
+            selection,
+            entry: autoEntries.find(entry => entry.provider.name === selection.candidate.provider && entry.autoModel === selection.candidate.model),
+          }))
+          .filter((item): item is { selection: typeof selections[number]; entry: (typeof autoEntries)[number] } => Boolean(item.entry))
+      : autoEntries.map(entry => ({ selection: undefined, entry }));
+    for (const { selection, entry } of orderedEntries) {
+      const provider = entry.provider;
       if (opts?.excludeProviders?.includes(provider.name)) {
         overBudget.push(provider.name);
         continue;
       }
-      const autoModel = (request.model === 'auto' || request.model === 'auto-vision') ? await this.autoModelFor(provider, routedRequest) : null;
-      if ((request.model === 'auto' || request.model === 'auto-vision') && autoModel === null) {
-        console.log(`[Router] Skipping ${provider.name} — no models enabled for routing.`);
-        continue;
-      }
 
       if (!this.quotaManager.checkQuota(provider.name)) {
-        logger.log({ requestId, provider: provider.name, model: request.model, status: 'rate_limited', error: 'Quota exceeded' });
-        console.warn(`[Router] Skipping ${provider.name} due to quota limit.`);
+        overBudget.push(provider.name);
         continue;
       }
 
-      console.log(`[Router] Attempting to route to ${provider.name}...`);
-      let effectiveModel = request.model;
+      const model = entry.autoModel ?? routedRequest.model;
+      if (!providerAcceptsContent(provider, routedRequest, model)) {
+        cannotRead.push(provider.name);
+        continue;
+      }
+
       try {
-        effectiveModel = (request.model === 'auto' || request.model === 'auto-vision') ? autoModel! : request.model;
         const isAvailable = await provider.isAvailable();
-        if (!isAvailable) {
-            logger.log({
-                requestId,
-                provider: provider.name,
-                model: effectiveModel,
-                status: 'error',
-                error: `${provider.name} reported unavailable`,
-                duration: Date.now() - start,
-            });
-            console.warn(`[Router] ${provider.name} reported unavailable.`);
-            continue;
-        }
-
-        const canHandle = await providerCanHandle(provider, routedRequest, effectiveModel);
-        if (!canHandle) {
-          logger.log({
-            requestId,
-            provider: provider.name,
-            model: effectiveModel,
-            status: 'error',
-            error: `${provider.name} does not support model ${effectiveModel}`,
-            duration: Date.now() - start,
-          });
-          console.warn(`[Router] Skipping ${provider.name} — model ${effectiveModel} not supported`);
-          continue;
-        }
-
-        if (!providerAcceptsContent(provider, routedRequest, effectiveModel)) {
-          cannotRead.push(provider.name);
-          logger.log({ requestId, provider: provider.name, model: effectiveModel, status: 'error', error: `${provider.name} can't read images for ${effectiveModel}`, duration: Date.now() - start });
-          console.warn(`[Router] Skipping ${provider.name} — can't read the request's images with ${effectiveModel}`);
-          continue;
-        }
-
-        console.log(`[Router] Routing to ${provider.name} with model: ${effectiveModel}`);
+        if (!isAvailable) continue;
         attempted = true;
-
         await this.keyReady(provider);
-        const response = await provider.complete({ ...routedRequest, model: effectiveModel });
-        const normalizedUsage = normalizeUsage(response.usage);
-        const normalizedResponse: CompletionResponse = normalizedUsage
-          ? {
-              ...response,
-              usage: {
-                prompt_tokens: normalizedUsage.prompt_tokens ?? response.usage?.prompt_tokens ?? 0,
-                completion_tokens: normalizedUsage.completion_tokens ?? response.usage?.completion_tokens ?? 0,
-                total_tokens: normalizedUsage.total_tokens ?? response.usage?.total_tokens ?? 0,
-                ...(normalizedUsage.cached_tokens === undefined ? {} : { cached_tokens: normalizedUsage.cached_tokens }),
-                ...(normalizedUsage.cache_creation_input_tokens === undefined ? {} : { cache_creation_input_tokens: normalizedUsage.cache_creation_input_tokens }),
-              },
-            }
-          : response;
-        opts?.onServed?.(provider.name, effectiveModel);
+        if (selection) opts?.onRoute?.(selection);
+        const response = await provider.complete({ ...routedRequest, model });
+        if (selection) {
+          const responseWithHeaders = response as typeof response & { headers?: Record<string, string> };
+          responseWithHeaders.headers = {
+            ...responseWithHeaders.headers,
+            'X-Valefront-Route': `${strategy}: ${selection.reason}`,
+          };
+        }
         this.quotaManager.incrementUsage(provider.name);
         logger.log({
-            requestId,
-            provider: provider.name,
-            model: effectiveModel,
-            status: 'success',
-            duration: Date.now() - start,
-            usage: normalizedUsage,
+          requestId,
+          provider: provider.name,
+          model,
+          status: 'success',
+          duration: Date.now() - start,
+          usage: response.usage,
+          ...(selection ? { strategy, routeReason: selection.reason } : {}),
         });
-        console.log(`[Router] Successfully routed to ${provider.name}.`);
-        return normalizedResponse;
+        opts?.onServed?.(provider.name, model);
+        return response;
       } catch (error: any) {
-        logger.log({ requestId, provider: provider.name, model: effectiveModel, status: 'error', error: error.message, duration: Date.now() - start });
-        console.error(`[Router] Error with ${provider.name}:`, error.message);
-      }
-    }
+        const hydrated = await hydrateAxiosError(error);
+        const responseError = hydrated && typeof hydrated === 'object'
+          ? (hydrated as any).response?.data?.error
+          : undefined;
+        const errorMessage = typeof responseError === 'string'
+          ? responseError
+          : hydrated instanceof Error
+            ? hydrated.message
+            : String(hydrated);
+        logger.log({
+          requestId,
+          provider: provider.name,
+          model,
+          status: 'error',
+          error: errorMessage,
+          duration: Date.now() - start,
+        });
+        console.error(`[Router] Error with ${provider.name}:`, formatProviderError(hydrated));
+      } 
+    } 
     if (!attempted && cannotRead.length) throw unsupportedContent(cannotRead, request.model);
     if (!attempted && overBudget.length) throw this.budgetRefusal(overBudget);
     throw new Error('All providers failed or are rate-limited.');
   }
 
-  async *routeStream(request: CompletionRequest, opts?: RouteOptions): AsyncGenerator<StreamChunk, void, unknown> {
+  public async *routeStream(request: CompletionRequest, opts?: RouteOptions): AsyncGenerator<StreamChunk, void, unknown> {
     const start = Date.now();
     const requestId = Math.random().toString(36).substring(7);
     let accumulatedContent = '';

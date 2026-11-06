@@ -25,6 +25,16 @@ export function RoutingPage({ d }: { d: Dashboard }) {
   const [pinProvider, setPinProvider] = useState('');
   const [pinModel, setPinModel] = useState('');
   const [search, setSearch] = useState('');
+  const [strategy, setStrategy] = useState((routing as RoutingStatus & { strategy?: string } | undefined)?.strategy || 'custom');
+
+  useEffect(() => {
+    setStrategy((routing as RoutingStatus & { strategy?: string } | undefined)?.strategy || 'custom');
+  }, [routing]);
+
+  async function saveStrategy(value: string) {
+    setStrategy(value);
+    await d.updateRouting({ strategy: value }, `Auto routing strategy set to ${value}.`);
+  }
 
   useEffect(() => {
     setPinProvider(routing?.fixedProvider || '');
@@ -68,9 +78,26 @@ export function RoutingPage({ d }: { d: Dashboard }) {
             <CardTitle>Auto routing</CardTitle>
             <CardDescription>{pool ? `Routes across the ${pool} selected model${pool === 1 ? '' : 's'}.` : 'Routes across every available model. Switch models on below to narrow the pool.'}</CardDescription>
           </CardHeader>
-          <CardContent className="flex flex-wrap gap-2">
-            {pinned ? <Button onClick={() => void d.updateRouting({ mode: 'auto' }, 'Auto routing on.')}>Use auto routing</Button> : <ToneBadge tone="success">Active</ToneBadge>}
-            {!pinned && pool ? <Button variant="outline" onClick={() => void d.updateRouting({ enabledModels: {} }, 'Selection cleared: routing across all models.')}>Clear selection</Button> : null}
+          <CardContent className="grid gap-4">
+            <div className="flex flex-wrap items-center gap-2">
+              {pinned ? <Button onClick={() => void d.updateRouting({ mode: 'auto' }, 'Auto routing on.')}>Use auto routing</Button> : <ToneBadge tone="success">Active</ToneBadge>}
+              {!pinned && pool ? <Button variant="outline" onClick={() => void d.updateRouting({ enabledModels: {} }, 'Selection cleared: routing across all models.')}>Clear selection</Button> : null}
+            </div>
+            <div className="grid gap-1.5 sm:max-w-md">
+              <label htmlFor="routing-strategy" className="text-sm font-medium">Auto strategy</label>
+              <Select value={strategy} onValueChange={value => void saveStrategy(value)}>
+                <SelectTrigger id="routing-strategy" aria-label="Auto routing strategy"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="custom">Custom order (current provider order)</SelectItem>
+                  <SelectItem value="cheapest">Cheapest (published prices only)</SelectItem>
+                  <SelectItem value="fastest">Fastest (recent median latency)</SelectItem>
+                  <SelectItem value="best">Best (benchmark score)</SelectItem>
+                  <SelectItem value="balanced">Balanced (quality, price, speed)</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">{strategy === 'cheapest' ? 'Chooses the lowest published input/output price; models without a real price are excluded.' : strategy === 'fastest' ? 'Orders ready pool models by recent median time to first token and completion latency.' : strategy === 'best' ? 'Orders models by the benchmark score for coding, agentic, or chat requests.' : strategy === 'balanced' ? 'Combines normalized quality, price, and speed using the configured weights.' : 'Preserves today's explicit provider/model order until you choose another strategy.'}</p>
+              <p className="text-xs text-muted-foreground">With this strategy, the next request would go to {Object.entries(routing?.enabledModels ?? {}).flatMap(([provider, models]) => models.map(model => `${provider} / ${model}`)).slice(0, 3).join(', ') || 'the first ready model'}, then continue in the preview order.</p>
+            </div>
           </CardContent>
         </Card>
 
@@ -128,6 +155,7 @@ export function RoutingPage({ d }: { d: Dashboard }) {
   );
 }
 
+
 function ProviderRow({ p, routing, search, onToggle, onPin }: { p: ProviderStats; routing?: RoutingStatus; search: string; onToggle: (p: string, m: string, on: boolean) => void; onPin: (m: string, p: string) => void }) {
   const [open, setOpen] = useState(false);
   const q = search.toLowerCase();
@@ -184,3 +212,4 @@ function ProviderRow({ p, routing, search, onToggle, onPin }: { p: ProviderStats
     </TableRow>
   );
 }
+

@@ -69,6 +69,20 @@ function CapFields({ value, onChange, offered }: { value: CapForm; onChange: (v:
         <Input id="cap-models" placeholder={offered.length ? `All offered (${offered.join(', ')})` : 'All offered'} value={value.models} onChange={set('models')} />
         <p className="text-xs text-muted-foreground">Comma-separated; <code className="font-mono">*</code> matches anything, e.g. <code className="font-mono">gemini-*</code>. Empty: every offered model.</p>
       </div>
+      <div className="grid gap-1.5 sm:col-span-2">
+        <Label htmlFor="cap-strategy">Routing strategy</Label>
+        <Select value={value.strategy || 'custom'} onValueChange={strategy => setValue(current => ({ ...current, strategy }))}>
+          <SelectTrigger id="cap-strategy"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="custom">Custom order</SelectItem>
+            <SelectItem value="cheapest">Cheapest</SelectItem>
+            <SelectItem value="fastest">Fastest</SelectItem>
+            <SelectItem value="best">Best</SelectItem>
+            <SelectItem value="balanced">Balanced</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">Used for this key's <code className="font-mono">auto</code> requests; an explicit request strategy still takes precedence.</p>
+      </div>
     </div>
   );
 }
