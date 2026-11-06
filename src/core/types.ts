@@ -191,6 +191,9 @@ export interface Provider {
   label?: string;
   defaultModel: string;
   isAvailable(): Promise<boolean>;
+  /** Temporarily exclude a provider after an upstream account-credit failure. */
+  markUnavailable?(reason: string): void;
+  getUnavailableReason?(): string | undefined;
   getModels(): Promise<ModelDetail[]>;
   complete(request: CompletionRequest): Promise<CompletionResponse>;
   completeStream(request: CompletionRequest): AsyncGenerator<StreamChunk, void, unknown>;

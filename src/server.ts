@@ -532,8 +532,10 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       || runtimeConfig?.binding === true
       || Boolean(runtimeConfig?.baseUrlConfigured && provider.hasApiKey());
 
+    const unavailableReason = (provider as unknown as Provider).getUnavailableReason?.();
     return {
       configured: provider.hasApiKey(),
+      ...(unavailableReason ? { unavailableReason } : {}),
       source: provider.hasApiKey() ? source : 'none',
       persisted: provider.hasApiKey() && (source === 'keychain' || source === 'arcana'),
       arcanaAvailable: Boolean(

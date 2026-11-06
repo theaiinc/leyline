@@ -23,6 +23,8 @@ export type ApiKeyProvider = {
   persisted: boolean;
   arcanaAvailable?: boolean;
   arcanaReference?: string;
+  /** Why it is skipped right now ("Out of credit"), when it is. */
+  unavailableReason?: string;
   keychainAvailable: boolean;
   runtimeConfigurable: boolean;
   runtimeConfig?: RuntimeConfig;
@@ -378,6 +380,7 @@ function normalizeApiKeyProvider(value: unknown, index: number): ApiKeyProvider 
     persisted: Boolean(raw.persisted),
     arcanaAvailable: Boolean(raw.arcanaAvailable),
     arcanaReference: optionalString(raw.arcanaReference),
+    unavailableReason: optionalString(raw.unavailableReason),
     keychainAvailable: Boolean(raw.keychainAvailable),
     runtimeConfigurable: Boolean(raw.runtimeConfigurable),
     runtimeConfig: normalizeRuntimeConfig(raw.runtimeConfig),

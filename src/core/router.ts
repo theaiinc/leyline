@@ -18,7 +18,7 @@ import { ModelRegistry } from './model-registry';
 import { Classifier } from './classifier';
 import { logger } from './logger';
 import { maybeCompress } from './compress';
-import { formatProviderError, hydrateAxiosError } from './api-errors';
+import { formatProviderError, hydrateAxiosError, isInsufficientBalanceError } from './api-errors';
 import { ensureMessageArray } from './normalize-request';
 import { requestHasNonTextContent } from './content';
 
@@ -737,6 +737,10 @@ export class Router {
         return normalizedResponse;
       } catch (error: any) {
         logger.log({ requestId, provider: provider.name, model: effectiveModel, status: 'error', error: error.message, duration: Date.now() - start });
+        if (isInsufficientBalanceError(error)) {
+          provider.markUnavailable?.('Out of credit');
+          console.warn(`[Router] Marking ${provider.name} unavailable: Out of credit`);
+        }
         console.error(`[Router] Error with ${provider.name}:`, error.message);
       }
     }
@@ -927,6 +931,8 @@ export class Router {
               duration: Date.now() - start,
               usage: streamLogUsage(providerUsage, providerChars),
           });
+          // A provider whose account is out of credit sits out for a while (it says so on the Providers page).
+          if (isInsufficientBalanceError(error)) provider.markUnavailable?.('Out of credit');
           console.error(`[Router] Stream Error with ${provider.name}:`, error);
         }
       }

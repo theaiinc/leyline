@@ -207,6 +207,7 @@ export function ProvidersPage({ d }: { d: Dashboard }) {
               <form onSubmit={saveKey} className="grid gap-4">
                 {active.name === 'OpenAI' ? <Alert><AlertDescription>OpenAI here means api.openai.com. Azure deployments use the AzureOpenAI provider.</AlertDescription></Alert> : null}
                 {isWorkersAi ? <Alert><AlertDescription>{active.runtimeConfig?.binding ? 'Served through this Worker\'s AI binding: no API token needed.' : 'A Cloudflare API token with Workers AI access. Put the account ID under Runtime.'}</AlertDescription></Alert> : null}
+                {active.unavailableReason ? <Alert variant="destructive"><AlertDescription>{active.unavailableReason}: requests skip this provider for 15 minutes after it refuses one for lack of credit, then try it again. Top up its account to bring it back sooner.</AlertDescription></Alert> : null}
                 {isAzure && active.configured && active.runtimeReady === false ? <Alert><AlertDescription>The Azure key is saved but the base URL is missing. Save it under Runtime.</AlertDescription></Alert> : null}
                 {persistence?.server.warning ? <Alert variant="destructive"><AlertDescription>{persistence.server.warning}</AlertDescription></Alert> : null}
 

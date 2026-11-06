@@ -10,6 +10,24 @@ export function isRateLimitError(error: unknown): boolean {
     || message.includes('too many requests');
 }
 
+/** Provider rejected the request because its account has no usable credit. */
+export function isInsufficientBalanceError(error: unknown): boolean {
+  const candidate = error as {
+    message?: string;
+    response?: { status?: number; data?: unknown };
+  };
+  const message = [
+    candidate?.message,
+    extractProviderErrorMessage(candidate?.response?.data, ''),
+  ].filter(Boolean).join(' ').toLowerCase();
+
+  return candidate?.response?.status === 402
+    || /\b(insufficient|not enough|low)\b.*\b(balance|credit|funds?)\b/.test(message)
+    || /\b(balance|credit|funds?)\b.*\b(insufficient|exhausted|depleted|empty)\b/.test(message)
+    || message.includes('out of credit')
+    || message.includes('payment required');
+}
+
 function isPlainProviderData(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null) return false;
   if (typeof (value as { pipe?: unknown }).pipe === 'function') return false;
