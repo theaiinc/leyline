@@ -19,6 +19,7 @@ import dejavuBold from '../src/assets/fonts/DejaVuSans-Bold.ttf';
 import { D1ArcanaCloudStore, D1DocStore, D1LogStore, D1SecretStore, type D1Database } from '../src/core/d1-stores';
 import { arcanaCloudConfigFromEnv, parseArcanaCloudReferences, type SecretStore } from '../src/core/secret-store';
 import { logger } from '../src/core/logger';
+import { BYTEPLUS_BENCHMARK_ALIASES } from '../src/providers/byteplus';
 import { fetchBenchmarkSnapshot, mapBenchmarkSnapshot, refreshBenchmarks, type BenchmarkCache, type BenchmarkSnapshot } from '../src/core/benchmarks';
 import type { ModelListSnapshot } from '../src/core/router';
 import type { WorkersAiBinding } from '../src/providers/workers-ai';
@@ -178,7 +179,13 @@ async function build(env: Env): Promise<Built> {
     const cache = benchmarkCache(docs, env);
     const cached = await cache.get();
     const stale = !cached || Date.now() - cached.fetchedAt >= 24 * 60 * 60 * 1000;
-    const mapSnapshot = (snapshot: BenchmarkSnapshot | null) => snapshot ? mapBenchmarkSnapshot(snapshot, router.exportModelLists().flatMap((list) => list.models.map((model) => ({ id: model.id, aliases: model.aliases ?? [] })))) : null;
+    // Every model a provider lists here, with the names leaderboards use for it (owner aliases, BytePlus's dated
+    // ids' public names). exportModelLists() is keyed by provider; reading it as an array matched nothing.
+    const benchmarkModels = () => [...new Set(Object.values(router.exportModelLists()).flatMap((list) => list.ids))].map((id) => ({
+      id,
+      aliases: [...Object.entries(hosted.aliases ?? {}).filter(([, target]) => target === id).map(([alias]) => alias), ...(BYTEPLUS_BENCHMARK_ALIASES[id] ?? [])],
+    }));
+    const mapSnapshot = (snapshot: BenchmarkSnapshot | null) => snapshot ? mapBenchmarkSnapshot(snapshot, benchmarkModels()) : null;
     if (!stale) return mapSnapshot(cached);
     try {
       // Await the refresh here: a Worker may terminate ordinary background work
