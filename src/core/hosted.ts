@@ -21,7 +21,7 @@ import { accessAdminOf } from './admin-billing';
 import { isPublicSaleModel } from './pricing';
 import { isMediaModel, isSoldMediaModel } from './media-catalog';
 import { mountAdminCampaigns } from './admin-campaigns';
-import { Memo, isRouterPick, planStrategy, strategyFor, isRoutingStrategy, routeByPlan, routeHeader, streamByPlan, strategyErrorResponse, ROUTING_STRATEGIES, type RoutePlan, type StrategyEnv } from './routing-strategies';
+import { Memo, isRouterPick, planStrategy, strategyFor, isRoutingStrategy, routeByPlan, routeHeader, streamByPlan, strategyErrorResponse, ROUTING_STRATEGIES, type RoutePlan, type RoutingStrategy, type StrategyEnv } from './routing-strategies';
 import { BYTEPLUS_BENCHMARK_ALIASES, byteplusChatModelReadsImages } from '../providers/byteplus';
 import { logger, type LogEntry } from './logger';
 import type { CompletionRequest } from './types';
@@ -457,11 +457,20 @@ export function strategyEnv(router: Router, opts: HostedOptions | undefined, key
  */
 export async function chatRoutePlan(router: Router, opts: HostedOptions | undefined, req: Request, request: CompletionRequest, excludeProviders: string[] = []): Promise<RoutePlan | null> {
   const key = (req as WithKey).issuedKey;
-  const strategy = strategyFor(request.model, key?.caps.routingStrategy);
+  // A customer's key (a dash workspace) never routes plain `auto` through the host's pool, which can hold models
+  // Valefront doesn't sell (live 2026-11-07: the pool's auto list began with an Azure model): without a default
+  // chosen on the key, `auto` and `auto-vision` use Balanced, which picks only from what Valefront sells (and the
+  // workspace's own providers).
+  const customer = !!opts && !!key?.workspaceId;
+  const asked = (request.model ?? '').trim().toLowerCase();
+  const strategy = strategyFor(customer && asked === 'auto-vision' ? 'auto' : request.model, key?.caps.routingStrategy ?? (customer ? CUSTOMER_DEFAULT_STRATEGY : undefined));
   if (!strategy) return null;
   const r = req as WithKey;
   return planStrategy(strategy, request, strategyEnv(router, opts, key, excludeProviders, r.freeTokensOnly === true, r.byok ?? null, r.byokOnly === true));
 }
+
+/** What plain `auto` means on a customer's key that has no default strategy of its own. */
+export const CUSTOMER_DEFAULT_STRATEGY: RoutingStrategy = 'balanced';
 
 /** PII protection is on for this key (any mode but off). */
 export function piiProtectionOn(key: IssuedKey): boolean {

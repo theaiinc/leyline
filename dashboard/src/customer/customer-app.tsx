@@ -512,7 +512,7 @@ function KeysPage({ me }: { me: Me }) {
                   </div>
                   <select id={`routing-${k.id}`} className="h-8 rounded-md border bg-background px-2 text-xs" value={k.routingStrategy ?? ''} disabled={busy === k.id}
                     onChange={(e) => setRouting(k, (e.target.value || null) as RoutingStrategy | null)}>
-                    <option value="">Default</option>
+                    <option value="">Default (Balanced)</option>
                     {ROUTING_STRATEGY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}: {o.hint}</option>)}
                   </select>
                 </div>
