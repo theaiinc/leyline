@@ -109,6 +109,12 @@ function unsupportedContent(providers: string[], model: string): UnsupportedCont
 
 export interface RouterOptions {
   quotaManager?: QuotaManager;
+  /**
+   * A named model goes only to providers that list or enable it, never "to all of them" when none does (hosted
+   * Valefront): an Azure deployment answers whatever it's asked, so a model nobody lists was answered by
+   * gpt-5.6-luna, reported as the model named and charged at the default price (2026-11-06).
+   */
+  onlyListedModels?: boolean;
   modelRegistry?: ModelRegistry;
   classifier?: Classifier;
   tierConfig?: TierConfig;
@@ -211,6 +217,7 @@ export class Router {
   private serviceTiers: Record<string, string>;
   private singleModel?: SingleModelRouterConfig;
   private enabledModels?: Record<string, string[]>;
+  private onlyListedModels = false;
   private providerModelIds = new Map<string, { ids: Set<string>; timestamp: number; prices?: Map<string, TokenPricing> }>();
   private modelPins = new Map<string, string>();
 
@@ -233,6 +240,7 @@ export class Router {
       this.serviceTiers = opts.serviceTiers ?? { ...DEFAULT_SERVICE_TIERS };
       this.singleModel = opts.singleModel;
       this.enabledModels = opts.enabledModels;
+      this.onlyListedModels = opts.onlyListedModels ?? false;
     }
   }
 
@@ -469,8 +477,12 @@ export class Router {
         matches.push(provider);
       }
     }
-    // Nobody lists it (a deployment name, a model a provider doesn't advertise): try them all, as before.
-    if (matches.length === 0) return chat;
+    // Nobody lists it (a deployment name, a model a provider doesn't advertise): try them all, as before, except
+    // where a named model must be served as named (hosted).
+    if (matches.length === 0) {
+      if (this.onlyListedModels) throw new CapabilityError(503, 'model_unavailable', `No provider is serving "${model}" right now; try again shortly or see /v1/models.`);
+      return chat;
+    }
     if (matches.length > 1) {
       const pinned = this.modelPins.get(model);
       const pinnedIndex = pinned ? matches.findIndex(p => p.name === pinned) : -1;

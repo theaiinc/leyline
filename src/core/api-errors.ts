@@ -154,6 +154,10 @@ export function chatCompletionErrorResponse(error: unknown): { status: number; b
   if (coded?.code === 'provider_budget_exhausted') {
     return { status: 429, body: { error: { message, type: 'rate_limit_error', code: 'provider_budget_exhausted' } } };
   }
+  // A named model no provider is listing right now (Router onlyListedModels): retryable, not answered by another model.
+  if (coded?.code === 'model_unavailable') {
+    return { status: 503, body: { error: { message, type: 'server_error', code: 'model_unavailable' } } };
+  }
 
   if (isRateLimitError(error)) {
     return {
