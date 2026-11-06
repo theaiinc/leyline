@@ -73,6 +73,10 @@ AZURE_OPENAI_DEFAULT_MODEL=gpt-5.5
 BYTEPLUS_ARK_API_KEY=your_key
 BYTEPLUS_ARK_BASE_URL=https://ark.ap-southeast.bytepluses.com/api/v3
 BYTEPLUS_ARK_DEFAULT_MODEL=doubao-seed-1-6-250615
+# BytePlus Vision AI (OmniHuman talking avatars on POST /v1/videos, model "omnihuman-2.0"): an IAM Access Key
+# (console.byteplus.com/iam/keymanage) of an account with OmniHuman activated in the Vision AI console. Both needed.
+BYTEPLUS_VISION_ACCESS_KEY_ID=your_access_key_id
+BYTEPLUS_VISION_SECRET_ACCESS_KEY=your_secret_access_key
 
 # Optional dashboard persistence for runtime API keys
 LEYLINE_KEYCHAIN_ENABLED=true

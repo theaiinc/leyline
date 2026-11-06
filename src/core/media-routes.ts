@@ -4,7 +4,7 @@ import type { Router } from './router';
 import type { AudioFile, EmbeddingResult, ImageGenerationResult, Provider, SpeechResult, TranscriptionResult, VideoGenerationResult } from './types';
 import { randomBytes } from 'crypto';
 import type { DocStore } from './issued-keys';
-import { imageCostUsd, mediaModel, videoCostUsd, type MediaKind } from './media-catalog';
+import { avatarCostUsd, imageCostUsd, mediaModel, videoCostUsd, type MediaKind } from './media-catalog';
 import { resolveModel, servedBy, type HostedOptions, type MediaChargeBasis } from './hosted';
 import { chatCompletionErrorResponse, formatProviderError } from './api-errors';
 import {
@@ -21,6 +21,7 @@ import {
  * - POST /v1/audio/speech          {model, input, voice?, response_format?, speed?, instructions?} -> audio bytes
  * - POST /v1/images/generations    {model, prompt, n?, size?, response_format?: url | b64_json} -> {created, data, cost}
  * - POST /v1/videos                {model, prompt, duration?, resolution?, ratio?} -> 202 {id, status: queued}
+ *                                  talking avatars (omnihuman-2.0): {model, image: URL, audio: URL, prompt?}
  * - GET  /v1/videos/:id            -> {id, status, url?, cost?}; a finished video is charged once, here
  *
  * Same auth as chat (hosted: an issued key, its caps, the offered/turned-off models, the monthly budget), the
@@ -262,13 +263,29 @@ export function mountMediaRoutes(app: Express, router: Router, opts: MediaRouteO
     ...(v.url ? { url: v.url } : {}), ...(v.error ? { error: v.error } : {}), ...(cost !== undefined ? { cost } : {}),
   });
 
+  const httpUrl = (v: unknown): v is string => {
+    if (typeof v !== 'string' || v.length > 4096) return false;
+    try { const u = new URL(v); return u.protocol === 'https:' || u.protocol === 'http:'; } catch { return false; }
+  };
+
   app.post('/v1/videos', opts.auth, async (req, res) => {
     try {
       const body = req.body ?? {};
-      if (typeof body.prompt !== 'string' || !body.prompt.trim()) return fail(res, 400, 'invalid_prompt', 'prompt is required.');
       const m = mediaTarget(req, 'video');
+      // Talking avatars take an image and an audio track; the prompt is optional there.
+      if (!m?.avatar && (typeof body.prompt !== 'string' || !body.prompt.trim())) return fail(res, 400, 'invalid_prompt', 'prompt is required.');
       if (!m) return fail(res, 404, 'model_not_found', `"${body.model}" is not a video model offered here; see /v1/models.`);
-      const { result, provider } = await router.routeCapability<VideoGenerationResult>('video', m.id, (prov, selected) => prov.generateVideo!({
+      // Never start a video we can't charge for.
+      const priced = m.avatar ? Number.isFinite(m.avatar.perSecondUsd) && m.avatar.perSecondUsd > 0 : Boolean(m.video);
+      if (!priced) return fail(res, 400, 'model_not_priced', `"${m.id}" is not priced yet, so it can't be used; nothing was charged.`);
+      if (m.avatar) {
+        if (!httpUrl(body.image)) return fail(res, 400, 'invalid_image', '"image" (a public http(s) URL of the portrait) is required.');
+        if (!httpUrl(body.audio)) return fail(res, 400, 'invalid_audio', '"audio" (a public http(s) URL of the speech, wav or mp3) is required.');
+        if (body.prompt !== undefined && typeof body.prompt !== 'string') return fail(res, 400, 'invalid_prompt', '"prompt" must be a string.');
+      }
+      const { result, provider } = await router.routeCapability<VideoGenerationResult>('video', m.id, (prov, selected) => prov.generateVideo!(m.avatar ? {
+        model: selected, prompt: typeof body.prompt === 'string' ? body.prompt : '', image: body.image, audio: body.audio,
+      } : {
         model: selected, prompt: body.prompt,
         ...(body.duration !== undefined ? { duration: Number(body.duration) } : {}),
         ...(typeof body.resolution === 'string' ? { resolution: body.resolution } : {}),
@@ -295,6 +312,32 @@ export function mountMediaRoutes(app: Express, router: Router, opts: MediaRouteO
       const v = await prov.getVideo(job.task);
       if (v.status !== 'succeeded') return res.json(videoView(job, v));
       const m = mediaModel(job.model, 'video');
+      if (m?.avatar) {
+        // Billed by the seconds of video made, measured from the video. Until they're known the video isn't handed
+        // over (it would be free): the poll says running and the next one measures again.
+        if (!v.seconds || !Number.isFinite(v.seconds)) {
+          console.error(JSON.stringify({ event: 'video_unpriced', id: job.id, model: job.model, seconds: v.seconds ?? null }));
+          return res.json(videoView(job, { status: 'running' }));
+        }
+        let cost = avatarCostUsd(m, v.seconds);
+        let seconds = v.seconds;
+        let first = true;
+        try {
+          await jobs.put(`media-charges/${job.id}`, { cost, seconds, at: Date.now() }, '0');
+        } catch {
+          first = false;
+          // Already charged: show what was charged.
+          const charged = (await jobs.get<{ cost: number; seconds: number }>(`media-charges/${job.id}`))?.value;
+          if (charged) { cost = charged.cost; seconds = charged.seconds; }
+        }
+        if (first) {
+          servedBy(req)(job.provider, job.model);
+          asRequested(req, job.model);
+          // Its official price, never a campaign's (campaigns don't price by the second yet).
+          opts.record(req, job.model, { prompt_tokens: 0, completion_tokens: 0 }, cost);
+        }
+        return res.json({ ...videoView(job, v, cost), seconds });
+      }
       if (!m || !v.tokens) {
         console.error(JSON.stringify({ event: 'video_unpriced', id: job.id, model: job.model, tokens: v.tokens ?? null }));
         return res.json(videoView(job, v));

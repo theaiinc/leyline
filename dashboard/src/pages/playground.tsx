@@ -48,8 +48,8 @@ export function PlaygroundPage({ d }: { d: Dashboard }) {
         if (typeof value.input === 'number' && typeof value.output === 'number') next[model] = { model, input: value.input, output: value.output, cachedInput: value.cachedInput };
       }
       const media: Record<string, string> = {};
-      for (const m of (data as { media?: Array<{ id: string; per_image?: number; per_1m_video_tokens?: number }> }).media ?? []) {
-        media[m.id] = m.per_image !== undefined ? `${formatUsd(m.per_image)}/image` : m.per_1m_video_tokens !== undefined ? `$${m.per_1m_video_tokens}/1M video tokens` : '';
+      for (const m of (data as { media?: Array<{ id: string; per_image?: number; per_1m_video_tokens?: number; per_second?: number }> }).media ?? []) {
+        media[m.id] = m.per_image !== undefined ? `${formatUsd(m.per_image)}/image` : m.per_1m_video_tokens !== undefined ? `$${m.per_1m_video_tokens}/1M video tokens` : m.per_second !== undefined ? `$${m.per_second}/second` : '';
       }
       setMediaPrices(media);
       setPrices(next);

@@ -2,7 +2,7 @@ import type { Express, Request, RequestHandler, Response } from 'express';
 import { BillingError } from './billing';
 import { belowCost, cleanCampaign, promoPriceOf, type Campaign, type CatalogEntry, type D1CampaignStore, type OfficialPrice } from './campaigns';
 import { realPrice, type HostedOptions } from './hosted';
-import { MEDIA_MODELS, isMediaModel, isSoldMediaModel, type MediaModel } from './media-catalog';
+import { MEDIA_MODELS, isCampaignMediaModel, isMediaModel, isSoldMediaModel, type MediaModel } from './media-catalog';
 import { PUBLIC_SALE_MODEL_IDS, builtinPrice } from './pricing';
 import type { Price } from './issued-keys';
 
@@ -40,7 +40,7 @@ export function campaignCatalog(opts: HostedOptions): CatalogEntry[] {
     const cost = byteplus ?? opts.anyPublishedPrice?.(id) ?? builtinPrice(id) ?? price;
     out.push({ id, name: id, provider: byteplus ? 'BytePlus' : '', price: chat(price), cost: chat(cost) });
   }
-  for (const m of MEDIA_MODELS.filter((x) => isSoldMediaModel(x.id))) {
+  for (const m of MEDIA_MODELS.filter((x) => isSoldMediaModel(x.id) && isCampaignMediaModel(x))) {
     out.push({ id: m.id, name: m.name, provider: m.provider, price: mediaOfficial(m), cost: mediaOfficial(m) });
   }
   return out;
@@ -129,7 +129,7 @@ export async function pricingPromotions(
   const live = await campaigns.liveAutomatic(now);
   const official = new Map<string, OfficialPrice>([
     ...models.map((m) => [m.id, { kind: 'chat', input: m.input, output: m.output, ...(m.cached_input !== undefined ? { cachedInput: m.cached_input } : {}) }] as [string, OfficialPrice]),
-    ...media.map((m) => [m.id, mediaOfficial(m)] as [string, OfficialPrice]),
+    ...media.filter(isCampaignMediaModel).map((m) => [m.id, mediaOfficial(m)] as [string, OfficialPrice]),
   ]);
   const rank = new Map<string, number>();
   const headline = (p: OfficialPrice) => (p.kind === 'chat' ? p.input + p.output : p.kind === 'image' ? p.perImage : p.perMTokens);

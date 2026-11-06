@@ -3,6 +3,7 @@ import { Check, Copy, Download, Eraser, Image as ImageIcon, Loader2, Sparkles, V
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
@@ -21,6 +22,8 @@ type MediaModel = {
   per_image?: number; per_image_above_pixels?: { pixels: number; per_image: number };
   per_1m_video_tokens?: number; per_1m_video_tokens_1080p?: number; max_resolution?: '720p' | '1080p';
   durations?: { min: number; max: number; default: number };
+  /** Talking avatars (OmniHuman): one image + an audio track, billed per second of the finished video. */
+  per_second?: number; audio_seconds?: { min: number; max: number };
 };
 type Run = { id: string; model: string; kind: MediaKind; prompt: string; status: string; urls: string[]; cost?: number; ms: number; json: unknown };
 
@@ -53,6 +56,9 @@ export function MediaPlayground({ kind, authHeaders }: { kind: MediaKind; authHe
   const [duration, setDuration] = useState(5);
   const [resolution, setResolution] = useState('720p');
   const [ratio, setRatio] = useState('16:9');
+  const [imageUrl, setImageUrl] = useState('');
+  const [audioUrl, setAudioUrl] = useState('');
+  const [audioSeconds, setAudioSeconds] = useState<number | null>(null);
   const [tab, setTab] = useState<'playground' | 'api' | 'history'>('playground');
   const [view, setView] = useState<'preview' | 'json'>('preview');
   const [status, setStatus] = useState<'idle' | 'queued' | 'running' | 'succeeded' | 'failed'>('idle');
@@ -70,9 +76,13 @@ export function MediaPlayground({ kind, authHeaders }: { kind: MediaKind; authHe
   // Start on the cheapest everyday model, not the priciest (a playground run is a real, charged request).
   const DEFAULT: Record<MediaKind, string> = { image: 'seedream-4-0-250828', video: 'seedance-1-0-pro-fast-251015' };
   const model = list.find((m) => m.id === modelId) ?? list.find((m) => m.id === DEFAULT[kind]) ?? list[0];
+  const avatar = model?.per_second !== undefined;
   useEffect(() => {
     if (!model) return;
     if (model.id !== modelId) setModelId(model.id);
+    // A talking avatar's prompt is optional (how they move); start it empty rather than with a scene.
+    if (model.per_second !== undefined) setPrompt((p) => (p === SAMPLE[kind] ? '' : p));
+    else setPrompt((p) => p || SAMPLE[kind]);
     if (model.durations) setDuration(model.durations.default);
     if (resolution === '1080p' && model.max_resolution !== '1080p') setResolution('720p');
   }, [model?.id]);
@@ -83,8 +93,23 @@ export function MediaPlayground({ kind, authHeaders }: { kind: MediaKind; authHe
     return () => clearInterval(t);
   }, [status]);
 
-  const price = useMemo(() => {
+  // The video is as long as the audio: read the audio's length in the browser for the estimate.
+  useEffect(() => {
+    setAudioSeconds(null);
+    if (!avatar || !/^https?:\/\//.test(audioUrl)) return;
+    const a = new Audio();
+    a.preload = 'metadata';
+    a.onloadedmetadata = () => setAudioSeconds(Number.isFinite(a.duration) ? a.duration : null);
+    a.src = audioUrl;
+    return () => { a.onloadedmetadata = null; a.src = ''; };
+  }, [avatar, audioUrl]);
+
+  const price = useMemo((): { total: number | null; note: string; estimate?: boolean } | null => {
     if (!model) return null;
+    if (kind === 'video' && model.per_second !== undefined) {
+      const note = `${usd(model.per_second)} per second of video; charged on the finished video's length`;
+      return audioSeconds ? { total: model.per_second * audioSeconds, note, estimate: true } : { total: null, note };
+    }
     if (kind === 'image' && model.per_image !== undefined) {
       const [w, h] = size.split('x').map(Number);
       const each = model.per_image_above_pixels && w! * h! > model.per_image_above_pixels.pixels ? model.per_image_above_pixels.per_image : model.per_image;
@@ -96,16 +121,19 @@ export function MediaPlayground({ kind, authHeaders }: { kind: MediaKind; authHe
       return { total: (tokens * rate) / 1e6, note: `$${rate} per 1M video tokens · about ${tokens.toLocaleString()} tokens; charged on the actual tokens`, estimate: true };
     }
     return null;
-  }, [model, kind, size, n, resolution, duration]);
+  }, [model, kind, size, n, resolution, duration, audioSeconds]);
 
   const body = kind === 'image'
     ? { model: model?.id, prompt, size, n }
-    : { model: model?.id, prompt, duration, resolution, ratio };
+    : avatar
+      ? { model: model?.id, image: imageUrl.trim(), audio: audioUrl.trim(), ...(prompt.trim() ? { prompt: prompt.trim() } : {}) }
+      : { model: model?.id, prompt, duration, resolution, ratio };
+  const ready = avatar ? Boolean(imageUrl.trim() && audioUrl.trim()) : Boolean(prompt.trim());
   const endpoint = kind === 'image' ? '/v1/images/generations' : '/v1/videos';
   const curl = `curl ${apiUrl(endpoint)} \\\n  -H "Authorization: Bearer $VALEFRONT_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(body)}'${kind === 'video' ? `\n\n# then poll until "status" is "succeeded":\ncurl ${apiUrl('/v1/videos/<id>')} -H "Authorization: Bearer $VALEFRONT_API_KEY"` : ''}`;
 
   async function generate() {
-    if (!model || !prompt.trim()) return;
+    if (!model || !ready) return;
     setError(''); setView('preview'); setStatus('queued'); started.current = Date.now(); setElapsed(0);
     const headers = { 'Content-Type': 'application/json', ...authHeaders };
     try {
@@ -114,7 +142,8 @@ export function MediaPlayground({ kind, authHeaders }: { kind: MediaKind; authHe
       if (!res.ok) throw new Error(data?.error?.message || `Request failed (${res.status})`);
       if (kind === 'video') {
         setStatus('running');
-        for (let i = 0; i < 120 && !['succeeded', 'failed', 'cancelled', 'expired'].includes(data.status); i++) {
+        // Talking avatars run as long as their audio (up to 5 minutes) and take longer to make.
+        for (let i = 0; i < (avatar ? 450 : 120) && !['succeeded', 'failed', 'cancelled', 'expired'].includes(data.status); i++) {
           await new Promise((r) => setTimeout(r, 4000));
           const poll = await fetch(apiUrl(`/v1/videos/${encodeURIComponent(data.id)}`), { credentials: 'same-origin', headers: authHeaders });
           data = await poll.json();
@@ -125,7 +154,7 @@ export function MediaPlayground({ kind, authHeaders }: { kind: MediaKind; authHe
       const urls: string[] = kind === 'image'
         ? (data.data ?? []).map((d: { url?: string; b64_json?: string }) => d.url ?? (d.b64_json ? `data:image/png;base64,${d.b64_json}` : '')).filter(Boolean)
         : data.url ? [data.url] : [];
-      const run: Run = { id: data.id ?? `img-${Date.now()}`, model: model.id, kind, prompt, status: 'succeeded', urls, cost: typeof data.cost === 'number' ? data.cost : Number(data.cost) || undefined, ms: Date.now() - started.current, json: data };
+      const run: Run = { id: data.id ?? `img-${Date.now()}`, model: model.id, kind, prompt: avatar ? prompt || audioUrl : prompt, status: 'succeeded', urls, cost: typeof data.cost === 'number' ? data.cost : Number(data.cost) || undefined, ms: Date.now() - started.current, json: data };
       setCurrent(run); setRuns((r) => [run, ...r].slice(0, 24)); setStatus('succeeded');
     } catch (err) {
       setStatus('failed'); setError(err instanceof Error ? err.message : String(err));
@@ -146,7 +175,7 @@ export function MediaPlayground({ kind, authHeaders }: { kind: MediaKind; authHe
             </Select>
           </div>
           <div className="mt-2 flex flex-wrap gap-1.5">
-            <Badge variant="secondary"><Icon className="size-3" />{kind === 'image' ? 'Text to image' : 'Text to video'}</Badge>
+            <Badge variant="secondary"><Icon className="size-3" />{kind === 'image' ? 'Text to image' : avatar ? 'Image + audio to video' : 'Text to video'}</Badge>
             {price ? <Badge variant="outline">{price.note}</Badge> : null}
             {model?.source ? <a className="text-xs text-muted-foreground underline" href={model.source} target="_blank" rel="noreferrer">Official price</a> : null}
           </div>
@@ -183,9 +212,18 @@ export function MediaPlayground({ kind, authHeaders }: { kind: MediaKind; authHe
           <Card className="gap-4">
             <CardHeader><CardTitle>Input</CardTitle></CardHeader>
             <CardContent className="grid gap-4">
-              <div className="grid gap-1.5"><Label htmlFor="mp-prompt">Prompt *</Label>
-                <Textarea id="mp-prompt" rows={5} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Describe what you want" /></div>
-              {kind === 'image' ? (
+              {avatar ? (
+                <>
+                  <div className="grid gap-1.5"><Label htmlFor="mp-image">Image URL *</Label>
+                    <Input id="mp-image" type="url" value={imageUrl} onChange={(e) => setImageUrl(e.target.value)} placeholder="https://… portrait (jpg, png, webp; under 30 MB)" /></div>
+                  <div className="grid gap-1.5"><Label htmlFor="mp-audio">Audio URL *</Label>
+                    <Input id="mp-audio" type="url" value={audioUrl} onChange={(e) => setAudioUrl(e.target.value)} placeholder={`https://… speech (wav or mp3, ${model?.audio_seconds?.min ?? 4}–${model?.audio_seconds?.max ?? 300} s, under 15 MB)`} />
+                    {audioSeconds ? <p className="text-xs text-muted-foreground">Audio: {audioSeconds.toFixed(1)}s; the video is as long.</p> : null}</div>
+                </>
+              ) : null}
+              <div className="grid gap-1.5"><Label htmlFor="mp-prompt">{avatar ? 'Prompt (optional)' : 'Prompt *'}</Label>
+                <Textarea id="mp-prompt" rows={avatar ? 3 : 5} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder={avatar ? 'How they move, the camera, the scene' : 'Describe what you want'} /></div>
+              {avatar ? null : kind === 'image' ? (
                 <>
                   <div className="grid gap-1.5"><Label>Size</Label>
                     <Select value={size} onValueChange={setSize}><SelectTrigger><SelectValue /></SelectTrigger>
@@ -209,11 +247,13 @@ export function MediaPlayground({ kind, authHeaders }: { kind: MediaKind; authHe
               )}
               <div className="flex gap-2 pt-1">
                 <Button variant="outline" onClick={() => { setPrompt(''); setCurrent(null); setStatus('idle'); setError(''); }}><Eraser />Clear</Button>
-                <Button className="flex-1" disabled={busy || !model || !prompt.trim()} onClick={() => void generate()}>
-                  {busy ? <Loader2 className="animate-spin" /> : <Sparkles />}{busy ? 'Generating…' : `Generate${price ? ` ${price.estimate ? '≈ ' : ''}${usd(price.total)}` : ''}`}
+                <Button className="flex-1" disabled={busy || !model || !ready} onClick={() => void generate()}>
+                  {busy ? <Loader2 className="animate-spin" /> : <Sparkles />}{busy ? 'Generating…' : `Generate${price && price.total !== null ? ` ${price.estimate ? '≈ ' : ''}${usd(price.total)}` : ''}`}
                 </Button>
               </div>
-              {kind === 'video' ? <p className="text-xs text-muted-foreground">Videos usually take 30 seconds to a few minutes. You're charged only when one is finished, by its actual tokens.</p> : null}
+              {kind === 'video' ? <p className="text-xs text-muted-foreground">{avatar
+                ? "Talking avatars take a few minutes. You're charged only when one is finished, by its length in seconds."
+                : "Videos usually take 30 seconds to a few minutes. You're charged only when one is finished, by its actual tokens."}</p> : null}
             </CardContent>
           </Card>
 

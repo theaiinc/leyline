@@ -482,11 +482,13 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       models,
       // Paid add-ons, charged on top of model usage (src/core/addons.ts): PII protection per 1M input tokens.
       addons: publicAddons(),
-      // Image and video models (src/core/media-catalog.ts): per image, or per 1M tokens of the finished video.
+      // Image and video models (src/core/media-catalog.ts): per image, per 1M tokens of the finished video, or (talking
+      // avatars) per second of the finished video.
       media: MEDIA_MODELS.filter((m) => isSoldMediaModel(m.id)).map((m) => ({
         id: m.id, name: m.name, provider: m.provider, kind: m.kind, source: MEDIA_PRICING_SOURCES[m.provider],
         ...(m.image ? { per_image: m.image.perImageUsd, ...(m.image.above ? { per_image_above_pixels: { pixels: m.image.above.pixels, per_image: m.image.above.perImageUsd } } : {}) } : {}),
         ...(m.video ? { per_1m_video_tokens: m.video.perMTokensUsd, ...(m.video.perMTokensUsd1080p !== undefined ? { per_1m_video_tokens_1080p: m.video.perMTokensUsd1080p } : {}), max_resolution: m.video.maxResolution, durations: m.video.durations } : {}),
+        ...(m.avatar ? { per_second: m.avatar.perSecondUsd, inputs: ['image', 'audio'], audio_seconds: m.avatar.audioSeconds } : {}),
       })),
       exchange_rate: await vndRate(),
     };

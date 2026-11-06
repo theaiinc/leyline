@@ -75,7 +75,8 @@
   // Secrets (wrangler secret put): LEYLINE_STORE_KEY (32 random bytes, base64), LEYLINE_SESSION_SECRET,
   // LEYLINE_LOGIN_CLIENT_SECRET, LLM_API_KEY, LEYLINE_ARCANA_CLOUD_CLIENT_SECRET,
   // LEYLINE_ARCANA_CLOUD_ACCESS_CLIENT_SECRET; optionally LEYLINE_ADMIN_TOKEN, and provider keys such as
-  // OPENAI_API_KEY or DEEPGRAM_API_KEY (or save them on the dashboard / as Arcana references instead).
+  // OPENAI_API_KEY or DEEPGRAM_API_KEY (or save them on the dashboard / as Arcana references instead);
+  // BYTEPLUS_VISION_ACCESS_KEY_ID + BYTEPLUS_VISION_SECRET_ACCESS_KEY turn on OmniHuman talking avatars.
   // Billing secrets: TURNSTILE_SECRET; per mode (SANDBOX and LIVE side by side): PAYPAL_{SANDBOX,LIVE}_CLIENT_ID,
   // _CLIENT_SECRET, _WEBHOOK_ID; VIETTEL_SINVOICE_{SANDBOX,LIVE}_USERNAME, _PASSWORD, _TAX_CODE, _TEMPLATE_CODE,
   // _SERIES (optionally _BASE_URL, _AUTH_URL).
