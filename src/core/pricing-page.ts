@@ -30,9 +30,17 @@ export function renderPricingPage(p: Row): string {
   const priceCell = (official: unknown, promo: unknown) =>
     promo !== undefined && promo !== null && promo !== official ? `<s>${usd(official)}</s> <b class="promo">${usd(promo)}</b>` : usd(official);
 
+  // Prompt-length tiers and peak-hour prices (BytePlus), under the model: the row's prices are the base (or off-peak) ones.
+  const priceNote = (m: Row) => {
+    const tiers = (Array.isArray(m.prompt_tiers) ? m.prompt_tiers : []) as Row[];
+    const notes = tiers.map((t) => `Prompts over ${num(t.above_tokens)} tokens: ${usd(t.input)} in, ${usd(t.output)} out${t.cached_input !== undefined ? `, ${usd(t.cached_input)} cached` : ''}`);
+    const peak = m.peak && typeof m.peak === 'object' ? (m.peak as Row) : null;
+    if (peak) notes.unshift(`Off-peak prices shown. Peak (${esc(peak.hours)}): ${usd(peak.input)} in, ${usd(peak.output)} out${peak.cached_input !== undefined ? `, ${usd(peak.cached_input)} cached` : ''}`);
+    return notes.map((n) => `<br><small>${n}</small>`).join('');
+  };
   const chatRows = models.map((m) => {
     const pr = promoOf(m);
-    return `<tr><td><b>${esc(m.name)}</b><br><code>${esc(m.id)}</code>${m.free_tier ? ' <span class="pill">free tier</span>' : ''}</td>
+    return `<tr><td><b>${esc(m.name)}</b><br><code>${esc(m.id)}</code>${m.free_tier ? ' <span class="pill">free tier</span>' : ''}${priceNote(m)}</td>
 <td class="n">${priceCell(m.input, pr?.input)}</td><td class="n">${priceCell(m.output, pr?.output)}</td>
 <td class="n">${m.cached_input !== undefined ? usd(m.cached_input) : '—'}</td><td>${esc(m.provider)}</td></tr>`;
   }).join('');

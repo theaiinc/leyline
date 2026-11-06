@@ -11,6 +11,7 @@ import {
   TierConfig,
   Capability,
   servesChat,
+  type TokenPricing,
 } from './types';
 import { CapabilityError, errorStatus } from './media';
 import { QuotaManager } from './quota-manager';
@@ -143,7 +144,7 @@ export interface SingleModelRouterConfig {
 const MODEL_ID_CACHE_TTL_MS = 3600 * 1000;
 
 /** Model lists by provider name, as shared between instances. */
-export type ModelListSnapshot = Record<string, { ids: string[]; timestamp: number; prices?: Record<string, { input: number; output: number }> }>;
+export type ModelListSnapshot = Record<string, { ids: string[]; timestamp: number; prices?: Record<string, TokenPricing> }>;
 
 const DEFAULT_SERVICE_TIERS: Record<string, string> = {
   casual: '4b',
@@ -210,7 +211,7 @@ export class Router {
   private serviceTiers: Record<string, string>;
   private singleModel?: SingleModelRouterConfig;
   private enabledModels?: Record<string, string[]>;
-  private providerModelIds = new Map<string, { ids: Set<string>; timestamp: number; prices?: Map<string, { input: number; output: number }> }>();
+  private providerModelIds = new Map<string, { ids: Set<string>; timestamp: number; prices?: Map<string, TokenPricing> }>();
   private modelPins = new Map<string, string>();
 
   constructor(quotaManagerOrOptions?: QuotaManager | RouterOptions) {
@@ -333,7 +334,7 @@ export class Router {
   /** Refresh the cached model-id list for one provider (used eagerly and lazily). */
   async reindexProvider(provider: Provider): Promise<void> {
     let ids = new Set<string>();
-    const prices = new Map<string, { input: number; output: number }>();
+    const prices = new Map<string, TokenPricing>();
     try {
       const details = await provider.getModels();
       ids = new Set(details.map(detail => detail.id));
@@ -345,7 +346,7 @@ export class Router {
   }
 
   /** The price a provider publishes for a model (US$ per million tokens), from its last model list. */
-  publishedPrice(providerName: string, model: string): { input: number; output: number } | undefined {
+  publishedPrice(providerName: string, model: string): TokenPricing | undefined {
     return this.providerModelIds.get(providerName)?.prices?.get(model);
   }
 
@@ -353,7 +354,7 @@ export class Router {
    * Any provider's published price for a model: for a provider that publishes none (Anthropic lists models
    * without prices) serving a model a gateway prices (LLM API lists the same Claude models with theirs).
    */
-  anyPublishedPrice(model: string): { input: number; output: number } | undefined {
+  anyPublishedPrice(model: string): TokenPricing | undefined {
     for (const entry of this.providerModelIds.values()) {
       const price = entry.prices?.get(model);
       if (price) return price;

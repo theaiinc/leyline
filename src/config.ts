@@ -237,7 +237,12 @@ export const config: LeylineConfig = {
   clientApiKey: resolveClientApiKey(),
   freeTierModels: (process.env.FREE_TIER_MODELS || 'seed-2-0-lite-260428,seed-2-0-mini-260428,deepseek-v4-1-flash-261017,deepseek-v4-flash-ga-260731,glm-5-3-flash-260828')
     .split(',').map((model) => model.trim()).filter(Boolean),
-  offeredModels: (process.env.LEYLINE_OFFERED_MODELS || 'seed-2-0-lite-260428,seed-2-0-mini-260428,deepseek-v4-1-flash-261017,deepseek-v4-flash-ga-260731,glm-5-3-flash-260828')
+  // Every BytePlus ModelArk chat model with an official price (BYTEPLUS_CHAT_MODEL_IDS, src/providers/byteplus.ts).
+  offeredModels: (process.env.LEYLINE_OFFERED_MODELS || [
+    'dola-seed-2-1-turbo-260628', 'seed-2-0-lite-260428', 'seed-2-0-mini-260428', 'seed-2-0-pro-260328', 'seed-2-0-code-preview-260328',
+    'deepseek-v4-1-flash-economy-261017', 'deepseek-v4-1-flash-261017', 'deepseek-v4-1-flash-260910', 'deepseek-v4-pro-ga-260813',
+    'deepseek-v4-flash-ga-260731', 'deepseek-v4-pro-260425', 'deepseek-v4-flash-260425', 'glm-5-3-flash-260828', 'glm-5-2-260617',
+  ].join(','))
     .split(',').map((model) => model.trim()).filter(Boolean),
   tunnel: {
     enabled: process.env.LEYLINE_TUNNEL_ENABLED !== 'false',

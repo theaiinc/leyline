@@ -30,6 +30,9 @@ export const BUILTIN_PRICES: Record<string, { input: number; output: number }> =
   '@cf/baai/bge-small-en-v1.5': { input: 0.02, output: 0 },
   '@cf/baai/bge-base-en-v1.5': { input: 0.067, output: 0 },
   '@cf/baai/bge-large-en-v1.5': { input: 0.204, output: 0 },
+  // BytePlus ModelArk, text input (https://docs.byteplus.com/en/docs/ModelArk/1544106, Embedding models): /v1/embeddings
+  // takes text only, so the image-input price ($0.325) never applies.
+  'skylark-embedding-vision-251215': { input: 0.125, output: 0 },
 };
 
 /** A built-in list price for a model (also under a gateway prefix such as openai/text-embedding-3-small). */
@@ -44,6 +47,10 @@ export type PublicPricingModel = {
   input: number;
   output: number;
   cached_input?: number;
+  /** Prices for longer prompts: a request whose prompt has more than above_tokens tokens pays these, whole. */
+  prompt_tiers?: Array<{ above_tokens: number; input: number; output: number; cached_input?: number }>;
+  /** Peak-hour prices (input/output/cached_input above are the off-peak ones), and when the peak hours are. */
+  peak?: { hours: string; input: number; output: number; cached_input?: number };
   free_tier: boolean;
   source: string;
 };
@@ -57,6 +64,7 @@ export const DEFAULT_FREE_TIER_EXPIRES_AFTER_DAYS = 30;
 
 /** BytePlus ModelArk chat models covered by the public free-tier offer. */
 import { config } from '../config';
+import type { PeakPrice, TokenPricing } from './types';
 
 /** Verified free-tier model IDs, supplied by deployment configuration. */
 export const FREE_TIER_MODEL_IDS = config.freeTierModels;
@@ -84,18 +92,42 @@ const OFFICIAL_PRICING_PAGES: Record<string, string> = {
   OpenRouter: 'https://openrouter.ai/pricing',
 };
 
-function modelPricing(model: unknown): { input: number; output: number; cachedInput?: number } | undefined {
+const PEAK_HOURS: Record<PeakPrice['schedule'], string> = {
+  'byteplus-utc8-workday': 'Monday to Friday, 09:00-12:00 and 14:00-18:00 (UTC+8)',
+};
+
+const priceNumber = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
+
+type PublicPrices = Pick<PublicPricingModel, 'input' | 'output' | 'cached_input' | 'prompt_tiers' | 'peak'>;
+
+/** A provider's normalized price (TokenPricing: input, output, cachedInput, promptTiers, peak) in /v1/pricing's shape. */
+function normalizedPricing(pricing: TokenPricing): PublicPrices | undefined {
+  const input = priceNumber(pricing.input);
+  const output = priceNumber(pricing.output);
+  if (input === undefined || output === undefined) return undefined;
+  const cached = priceNumber(pricing.cachedInput);
+  const tiers = Array.isArray(pricing.promptTiers) ? pricing.promptTiers : [];
+  const peak = pricing.peak;
+  return {
+    input,
+    output,
+    ...(cached !== undefined ? { cached_input: cached } : {}),
+    ...(tiers.length ? { prompt_tiers: tiers.map((t) => ({ above_tokens: t.aboveTokens, input: t.input, output: t.output, ...(t.cachedInput !== undefined ? { cached_input: t.cachedInput } : {}) })) } : {}),
+    ...(peak && PEAK_HOURS[peak.schedule] ? { peak: { hours: PEAK_HOURS[peak.schedule], input: peak.input, output: peak.output, ...(peak.cachedInput !== undefined ? { cached_input: peak.cachedInput } : {}) } } : {}),
+  };
+}
+
+function modelPricing(model: unknown): PublicPrices | undefined {
   if (!model || typeof model !== 'object') return undefined;
   const detail = model as { pricing?: unknown; input_price?: unknown; output_price?: unknown };
   const parsed = parsePublishedPricing(detail.pricing);
-  if (parsed) return parsed;
+  if (parsed) {
+    const { cachedInput, ...rest } = parsed;
+    return { ...rest, ...(cachedInput !== undefined ? { cached_input: cachedInput } : {}) };
+  }
   if (detail.pricing && typeof detail.pricing === 'object') {
-    const normalized = detail.pricing as { input?: unknown; output?: unknown };
-    const input = Number(normalized.input);
-    const output = Number(normalized.output);
-    if (Number.isFinite(input) && Number.isFinite(output) && input >= 0 && output >= 0) {
-      return { input, output };
-    }
+    const normalized = normalizedPricing(detail.pricing as TokenPricing);
+    if (normalized) return normalized;
   }
   const input = Number(detail.input_price);
   const output = Number(detail.output_price);

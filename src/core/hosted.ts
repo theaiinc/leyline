@@ -8,7 +8,7 @@ import { builtinPrice } from './pricing';
 import type { ChargeBasis } from './campaigns';
 import { errorStatus } from './media';
 import { estimateBodyTokens } from './content';
-import { DEFAULT_PRICE, IssuedKeys, costUsd, manualPriceOf, modelAllowed, priceOf, type HostedSettings, type IssuedKey, type KeyCaps, type Price } from './issued-keys';
+import { DEFAULT_PRICE, IssuedKeys, costUsd, manualPriceOf, modelAllowed, priceAt, priceOf, type HostedSettings, type IssuedKey, type KeyCaps, type Price } from './issued-keys';
 import type { BillingService } from './billing-service';
 import type { WorkspaceRecord } from './billing-store';
 import type { AccessConfig } from './cloudflare-access';
@@ -269,15 +269,19 @@ export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_
   const published = usePublished
     ? (r.served ? opts.publishedPrice?.(r.served.provider, used) : undefined) ?? opts.anyPublishedPrice?.(used) ?? builtinPrice(used)
     : undefined;
-  const cost = usd ?? costUsd(priceOf({ prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE }, used, published), counted);
+  // One clock for the whole request: a price with peak hours or prompt-length tiers (BytePlus) is made flat once,
+  // so the spend line, the charge and any promotion all use the same price.
+  const at = Date.now();
+  const cost = usd ?? costUsd(priceAt(priceOf({ prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE }, used, published), counted, at), counted, at);
   const work = opts.keys.record(r.issuedKey ?? null, model, counted, cost, { provider: r.served?.provider ?? 'unknown', model: used })
     .then(() => checkAlerts(opts, r.issuedKey ?? null))
     .catch((err) => console.error('[hosted] usage record failed', err));
   opts.background?.(work);
   // A customer pays real prices only: set by hand or published, never the default price.
   if (r.workspace && opts.billing) {
-    const price = realPrice(opts, used, r.served?.provider);
-    const charged = usd ?? (price ? costUsd(price, counted) : null);
+    const real = realPrice(opts, used, r.served?.provider);
+    const price = real ? priceAt(real, counted, at) : undefined;
+    const charged = usd ?? (price ? costUsd(price, counted, at) : null);
     const tokens = (counted.prompt_tokens ?? 0) + (counted.completion_tokens ?? 0);
     // What the request was, so a promotion can price it: chat by its tokens, images and videos by what was made.
     // Priced some other way (audio, by the minute or character): no promotion applies.
@@ -329,7 +333,11 @@ export function strategyEnv(router: Router, opts: HostedOptions | undefined, key
         // A customer with no balance, on free tokens: free-tier models only (anything else would be charged).
         && (!freeTokensOnly || !opts?.billing || opts.billing.isFreeModel(m)));
     },
-    price: (m) => (opts ? realPrice(opts, m) : router.anyPublishedPrice(m) ?? builtinPrice(m)),
+    // Ranked by the price right now (peak hours count); prompt-length tiers aren't known yet, so the base tier.
+    price: (m) => {
+      const p = opts ? realPrice(opts, m) : router.anyPublishedPrice(m) ?? builtinPrice(m);
+      return p ? priceAt(p, undefined) : undefined;
+    },
     served: async (m) => {
       for (const provider of await router.chatProvidersFor(m)) {
         if (excludeProviders.includes(provider.name)) continue;

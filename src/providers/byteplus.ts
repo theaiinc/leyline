@@ -1,6 +1,8 @@
 import { OpenAIProvider } from './openai';
 import type {
+  CompletionRequest,
   ImageGenerationRequest,
+  TokenPricing,
   ImageGenerationResult,
   ModelDetail,
   VideoGenerationRequest,
@@ -13,17 +15,55 @@ import { MEDIA_PRICING_SOURCES, mediaModel, mediaModelsOf, videoDuration, videoR
  * BytePlus ModelArk's OpenAI-compatible provider for chat and embeddings.
  * Reasoning-only responses are promoted to content when the upstream omits content.
  */
-// Official ModelArk pricing source; media requests must use an explicit entry and never fall back to a default price.
-const BYTEPLUS_PRICING_SOURCE = 'https://www.byteplus.com/en/product/modelark/pricing';
+// Official ModelArk prices: the Pricing page (Large language models, Standard online inference) of the ModelArk docs,
+// read 2026-11-06 (page updated 2026-10-23); ids, modalities and limits from its Model list page. Media requests must
+// use an explicit entry (src/core/media-catalog.ts) and never fall back to a default price.
+export const BYTEPLUS_PRICING_SOURCE = 'https://docs.byteplus.com/en/docs/ModelArk/1544106';
+export const BYTEPLUS_MODEL_LIST_SOURCE = 'https://docs.byteplus.com/en/docs/ModelArk/1330310';
 
-const BYTEPLUS_CATALOG: Array<ModelDetail & { pricing: { input: number; output: number } }> = ([
-  // capabilities: what each chat model reads (Seed 2.0 is multimodal; DeepSeek V4 Flash reads text only). Routing
-  // strategies (src/core/routing-strategies.ts) send a request with images only to models listing 'vision'.
-  { id: 'seed-2-0-lite-260428', name: 'Seed 2.0 Lite', capabilities: ['chat', 'vision'], pricing: { input: 0.25, output: 2.0 } },
-  { id: 'seed-2-0-mini-260428', name: 'Dola Seed 2.0 Mini', capabilities: ['chat', 'vision'], pricing: { input: 0.1, output: 0.4 } },
-  { id: 'deepseek-v4-flash-ga-260731', name: 'DeepSeek V4 Flash', capabilities: ['chat'], pricing: { input: 0.14, output: 0.28 } },
-  // TODO: confirm official prices for DeepSeek V4.1 Flash and GLM-5.3 Flash from BytePlus console/docs.
-] as Array<ModelDetail & { pricing: { input: number; output: number } }>).map((model) => ({ ...model, source: BYTEPLUS_PRICING_SOURCE }));
+type CatalogEntry = ModelDetail & { pricing: TokenPricing };
+
+/**
+ * BytePlus bills a Seed 2.0 request whole by its prompt length: one price for [0, 128]K prompt tokens, another for
+ * (128, 256]K. The docs don't say whether K is 1,000 or 1,024 tokens: the boundary is put at 128,000 so a prompt in
+ * between is never charged less than BytePlus charges Valefront.
+ */
+const SEED_TIER_ABOVE = 128_000;
+const tierAbove128k = (input: number, output: number, cachedInput: number) => [{ aboveTokens: SEED_TIER_ABOVE, input, output, cachedInput }];
+/** DeepSeek V4.1 Flash series: off-peak is the base price; peak hours are Mon-Fri 09:00-12:00 and 14:00-18:00 (UTC+8). */
+const peak = (input: number, output: number, cachedInput: number) => ({ schedule: 'byteplus-utc8-workday' as const, input, output, cachedInput });
+
+/**
+ * Every chat model ModelArk lists with a Standard online-inference price (US$ per 1M tokens: input, output, cached
+ * input), ids exactly as BytePlus spells them. Left out: models retiring on 2026-11-11 (Seed 1.6/1.8, DeepSeek V3.2,
+ * GLM-4.7, seed-2-0-lite-260228, seed-2-0-mini-260215). Not represented: the audio-input prices of Seed 2.0 Lite/Mini
+ * (audio input is refused, see complete()) and explicit-cache storage (Valefront only uses implicit caching, free).
+ * capabilities: 'vision' where the Model list says "Visual understanding: Yes". Routing strategies
+ * (src/core/routing-strategies.ts) send a request with images only to models listing 'vision'.
+ */
+const BYTEPLUS_CATALOG: CatalogEntry[] = ([
+  // ByteDance. Dola Seed 2.1 Turbo: one tier, [0, 256]K (the pricing table lists it as dola-seed-2-1-turbo; the
+  // Model list's only version is dola-seed-2-1-turbo-260628).
+  { id: 'dola-seed-2-1-turbo-260628', name: 'Dola Seed 2.1 Turbo', capabilities: ['chat', 'vision'], pricing: { input: 0.5, output: 2.5, cachedInput: 0.1 } },
+  { id: 'seed-2-0-lite-260428', name: 'Dola Seed 2.0 Lite', capabilities: ['chat', 'vision'], pricing: { input: 0.25, output: 2.0, cachedInput: 0.05, promptTiers: tierAbove128k(0.5, 4.0, 0.1) } },
+  { id: 'seed-2-0-mini-260428', name: 'Dola Seed 2.0 Mini', capabilities: ['chat', 'vision'], pricing: { input: 0.1, output: 0.4, cachedInput: 0.02, promptTiers: tierAbove128k(0.2, 0.8, 0.04) } },
+  { id: 'seed-2-0-pro-260328', name: 'Dola Seed 2.0 Pro', capabilities: ['chat', 'vision'], pricing: { input: 0.5, output: 3.0, cachedInput: 0.1, promptTiers: tierAbove128k(1.0, 6.0, 0.2) } },
+  { id: 'seed-2-0-code-preview-260328', name: 'Dola Seed 2.0 Code', capabilities: ['chat', 'vision'], pricing: { input: 0.5, output: 3.0, cachedInput: 0.1, promptTiers: tierAbove128k(1.0, 6.0, 0.2) } },
+  // DeepSeek. V4.1 Flash: off-peak / peak. V4 Pro and V4 Flash: one price ("Not applicable" prompt length).
+  { id: 'deepseek-v4-1-flash-economy-261017', name: 'DeepSeek V4.1 Flash Economy', capabilities: ['chat', 'vision'], pricing: { input: 0.12, output: 0.48, cachedInput: 0.002, peak: peak(0.24, 0.96, 0.005) } },
+  { id: 'deepseek-v4-1-flash-261017', name: 'DeepSeek V4.1 Flash', capabilities: ['chat', 'vision'], pricing: { input: 0.15, output: 0.6, cachedInput: 0.003, peak: peak(0.3, 1.2, 0.006) } },
+  { id: 'deepseek-v4-1-flash-260910', name: 'DeepSeek V4.1 Flash (260910)', capabilities: ['chat', 'vision'], pricing: { input: 0.15, output: 0.6, cachedInput: 0.003, peak: peak(0.3, 1.2, 0.006) } },
+  { id: 'deepseek-v4-pro-ga-260813', name: 'DeepSeek V4 Pro', capabilities: ['chat'], pricing: { input: 1.32, output: 3.96, cachedInput: 0.044 } },
+  { id: 'deepseek-v4-flash-ga-260731', name: 'DeepSeek V4 Flash', capabilities: ['chat'], pricing: { input: 0.44, output: 1.32, cachedInput: 0.014 } },
+  { id: 'deepseek-v4-pro-260425', name: 'DeepSeek V4 Pro (260425)', capabilities: ['chat'], pricing: { input: 1.32, output: 3.96, cachedInput: 0.044 } },
+  { id: 'deepseek-v4-flash-260425', name: 'DeepSeek V4 Flash (260425)', capabilities: ['chat'], pricing: { input: 0.44, output: 1.32, cachedInput: 0.014 } },
+  // Z.ai.
+  { id: 'glm-5-3-flash-260828', name: 'GLM-5.3 Flash', capabilities: ['chat', 'vision'], pricing: { input: 0.15, output: 0.5, cachedInput: 0.03 } },
+  { id: 'glm-5-2-260617', name: 'GLM-5.2', capabilities: ['chat'], pricing: { input: 1.4, output: 4.4, cachedInput: 0.26 } },
+] as CatalogEntry[]).map((model) => ({ ...model, source: BYTEPLUS_PRICING_SOURCE }));
+
+/** The ids of every BytePlus chat model Valefront prices (the default offered list, src/config.ts, matches it). */
+export const BYTEPLUS_CHAT_MODEL_IDS = BYTEPLUS_CATALOG.map((m) => m.id);
 
 export const BYTEPLUS_CATALOG_PRICING = Object.fromEntries(
   BYTEPLUS_CATALOG.map(({ id, pricing }) => [id, pricing]),
@@ -61,7 +101,7 @@ export class BytePlusProvider extends OpenAIProvider {
     if (capability === 'embeddings') return model === 'skylark-embedding-vision-251215';
     // Image and video models: the ones Valefront prices (src/core/media-catalog.ts), never a guessed id.
     if (capability === 'image' || capability === 'video') return Boolean(this.apiKey) && mediaModel(model, capability)?.provider === 'BytePlus';
-    return capability === 'chat' && /^(doubao|seed|deepseek|kimi)-/i.test(model);
+    return capability === 'chat' && /^(doubao|seed|deepseek|kimi|glm)-|^dola-seed-/i.test(model);
   }
 
   /**
@@ -72,6 +112,15 @@ export class BytePlusProvider extends OpenAIProvider {
   async getModels(): Promise<ModelDetail[]> {
     const media = mediaModelsOf('BytePlus').map((m) => ({ id: m.id, name: m.name, source: MEDIA_PRICING_SOURCES.BytePlus }));
     return [...BYTEPLUS_CATALOG.map(({ pricing, ...model }) => ({ ...model, pricing })), ...media];
+  }
+
+  /**
+   * Audio input is refused: BytePlus prices audio input tokens (Seed 2.0 Lite/Mini) at 15 times text input, and its
+   * usage doesn't tell Valefront how many prompt tokens were audio, so it would be charged at the text price. Images,
+   * video and files go as sent (priced as non-audio input).
+   */
+  acceptsNonTextContent(request: CompletionRequest): boolean {
+    return !request.messages.some((m) => Array.isArray(m.content) && m.content.some((p) => (p as { type?: unknown } | null)?.type === 'input_audio'));
   }
 
   async complete(request: Parameters<OpenAIProvider['complete']>[0]) {

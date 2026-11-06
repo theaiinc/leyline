@@ -80,7 +80,28 @@ export interface ModelDetail {
   /** Modalities accepted by this model. */
   capabilities?: Capability[];
   /** The price the provider publishes for this model, in US dollars per million tokens. */
-  pricing?: { input: number; output: number };
+  pricing?: TokenPricing;
+}
+
+/**
+ * A price for prompts longer than `aboveTokens` (BytePlus Seed 2.0: one price up to 128K prompt tokens, another
+ * above). A request is priced whole by its prompt length, as the provider bills it.
+ */
+export interface PromptTier { aboveTokens: number; input: number; output: number; cachedInput?: number }
+
+/**
+ * Peak-hour prices (BytePlus DeepSeek V4.1 Flash): the price's own input/output/cachedInput are the off-peak ones.
+ * `schedule` names the hours: 'byteplus-utc8-workday' is Monday to Friday 09:00-12:00 and 14:00-18:00 at UTC+8.
+ */
+export interface PeakPrice { schedule: 'byteplus-utc8-workday'; input: number; output: number; cachedInput?: number }
+
+/** A token price in US dollars per million tokens, with any prompt-length tiers or peak-hour prices it has. */
+export interface TokenPricing {
+  input: number;
+  output: number;
+  cachedInput?: number;
+  promptTiers?: PromptTier[];
+  peak?: PeakPrice;
 }
 
 // ── Capabilities beyond chat (embeddings, speech-to-text, text-to-speech) ──
