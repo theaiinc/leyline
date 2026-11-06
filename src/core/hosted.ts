@@ -18,6 +18,7 @@ import { RequestPiiRedactor } from './pii-redaction';
 import { ADDON_PROVIDER, PII_ADDON_ID } from './addons';
 import { RepriceRefused, repriceSpend } from './spend-reprice';
 import { accessAdminOf } from './admin-billing';
+import { isPublicSaleModel } from './pricing';
 import { isMediaModel, isSoldMediaModel } from './media-catalog';
 import { mountAdminCampaigns } from './admin-campaigns';
 import { Memo, isRouterPick, planStrategy, strategyFor, isRoutingStrategy, routeByPlan, routeHeader, streamByPlan, strategyErrorResponse, ROUTING_STRATEGIES, type RoutePlan, type StrategyEnv } from './routing-strategies';
@@ -324,7 +325,11 @@ export function strategyEnv(router: Router, opts: HostedOptions | undefined, key
   return {
     offered: async () => {
       const pool = opts?.models.length ? opts.models : Object.keys(router.getModelIndex());
+      // A customer's key (a dash workspace) gets only models Valefront sells (its public catalog: BytePlus), never a
+      // provider Valefront doesn't resell (live 2026-11-06 a strategy picked Workers AI and Azure models). A
+      // shared-pool key may also use the providers its owner configured with their own keys (BYOK, Steve).
       return pool.filter((m) => !m.includes('*') && !isMediaModel(m) && capabilitiesForModel(m).join() === 'chat'
+        && (!opts || !key?.workspaceId || isPublicSaleModel(m))
         && (!key || modelAllowed(key.caps, m)) && (!opts || !isBlocked(opts, m))
         // A customer with no balance, on free tokens: free-tier models only (anything else would be charged).
         && (!freeTokensOnly || !opts?.billing || opts.billing.isFreeModel(m)));

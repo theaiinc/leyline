@@ -188,6 +188,23 @@ const settle = () => new Promise((r) => setTimeout(r, 10));
 /** US$ for the fake upstream's usage (100k in, 20k out) at a model's price. */
 const usd = (m: string) => (100_000 * PRICES[m]!.input + 20_000 * PRICES[m]!.output) / 1_000_000;
 
+describe('routing strategies: only what Valefront sells, plus the owner\'s own providers', () => {
+  it('a customer key never gets a model outside the public catalog; a shared-pool key may use its owner\'s providers', async () => {
+    const OTHER = 'gpt-5.6-luna';
+    PRICES[OTHER] = { input: 0.001, output: 0.001 };
+    try {
+      const { app, upstream, makeKey } = setup({ models: [LITE, MINI, FLASH, OTHER] });
+      // Shared-pool key (no workspace): the owner's own provider (BYOK) is a candidate, and here the cheapest.
+      const pool = await makeKey();
+      expect((await chat(app, pool, 'auto:cheapest')).headers['x-valefront-route']).toContain(`model=${OTHER}`);
+      expect(upstream.seen).toContain(OTHER);
+      // A customer's key never gets it: see 'a customer on free tokens alone…' below (gpt-5.5, not sold, never picked).
+    } finally {
+      delete PRICES[OTHER];
+    }
+  });
+});
+
 describe('routing strategies: chat API', () => {
   it('auto:<strategy> sends the top-ranked model, says so in X-Valefront-Route, and is priced by that model', async () => {
     const { app, keys, upstream, makeKey } = setup();
@@ -328,7 +345,7 @@ describe('routing strategies: customer key default (dash Keys)', () => {
 });
 
 describe('routing strategies: free tokens', () => {
-  it('a customer on free tokens alone gets only free-tier models; with credit, every model', async () => {
+  it('a customer on free tokens alone gets only free-tier models; with credit, every sold model', async () => {
     clearStrategyCaches();
     // gpt-5.5 priced below the free-tier model, so cheapest would pick it for a paying customer.
     const h = hostedBilling({ hosted: { prices: { 'seed-2-0-lite-260428': { input: 5, output: 15 }, 'gpt-5.5': { input: 1, output: 2 } } } });
@@ -340,7 +357,9 @@ describe('routing strategies: free tokens', () => {
     expect(free.headers['x-valefront-route']).toBe('cheapest; model=seed-2-0-lite-260428; reason=lowest-blended-price');
     const ws = (await h.store.workspaceBySub('sub-f'))!;
     await h.store.addAdjustment(ws.id, 1000, 'test credit', 'test:route1');
+    // With credit the free-tier limit is gone, but gpt-5.5 still isn't picked: Valefront doesn't sell it.
     const paid = await chat(h.app, key, 'auto:cheapest');
-    expect(paid.headers['x-valefront-route']).toBe('cheapest; model=gpt-5.5; reason=lowest-blended-price');
+    expect(paid.status).toBe(200);
+    expect(paid.headers['x-valefront-route']).toBe('cheapest; model=seed-2-0-lite-260428; reason=lowest-blended-price');
   });
 });
