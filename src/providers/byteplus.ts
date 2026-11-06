@@ -7,6 +7,7 @@ import type {
   VideoGenerationResult,
 } from '../core/types';
 import { config } from '../config';
+import { MEDIA_PRICING_SOURCES, mediaModel, mediaModelsOf, videoDuration, videoResolution } from '../core/media-catalog';
 
 /**
  * BytePlus ModelArk's OpenAI-compatible provider for chat and embeddings.
@@ -19,10 +20,6 @@ const BYTEPLUS_CATALOG: Array<ModelDetail & { pricing: { input: number; output: 
   { id: 'seed-2-0-lite-260428', name: 'Seed 2.0 Lite', pricing: { input: 0.25, output: 2.0 } },
   { id: 'seed-2-0-mini-260428', name: 'Dola Seed 2.0 Mini', pricing: { input: 0.1, output: 0.4 } },
   { id: 'deepseek-v4-flash-ga-260731', name: 'DeepSeek V4 Flash', pricing: { input: 0.14, output: 0.28 } },
-  // BytePlus ModelArk official pricing: Seedream image generation is priced per image;
-  // Seedance video generation is priced per second. Unlisted account models remain refused.
-  { id: 'seedream-4-0-250828', name: 'Seedream 4.0', pricing: { input: 0, output: 0.03 } },
-  { id: 'seedance-1-0-pro-250528', name: 'Seedance 1.0 Pro', pricing: { input: 0, output: 0.12 } },
   // TODO: confirm official prices for DeepSeek V4.1 Flash and GLM-5.3 Flash from BytePlus console/docs.
 ].map((model) => ({ ...model, source: BYTEPLUS_PRICING_SOURCE }));
 
@@ -45,28 +42,9 @@ export class BytePlusProvider extends OpenAIProvider {
 
   servesModel(capability: 'chat' | 'embeddings' | 'transcription' | 'speech' | 'image' | 'video', model: string): boolean {
     if (capability === 'embeddings') return model === 'skylark-embedding-vision-251215';
-    if (capability === 'image') return this.mediaModels.image.has(model);
-    if (capability === 'video') return this.mediaModels.video.has(model);
+    // Image and video models: the ones Valefront prices (src/core/media-catalog.ts), never a guessed id.
+    if (capability === 'image' || capability === 'video') return Boolean(this.apiKey) && mediaModel(model, capability)?.provider === 'BytePlus';
     return capability === 'chat' && /^(doubao|seed|deepseek|kimi)-/i.test(model);
-  }
-
-  private mediaModels: { image: Set<string>; video: Set<string> } = { image: new Set(), video: new Set() };
-
-  /**
-   * ModelArk's model list is account-scoped. Discover media ids from it rather
-   * than advertising a guessed model id; pricing remains explicit in the shared
-   * price table and is never inferred from the upstream response.
-   */
-  private async discoverMediaModels(): Promise<void> {
-    if (!this.apiKey) return;
-    const body = await this.ark('/models', { method: 'GET' });
-    const models = Array.isArray(body.data) ? body.data : Array.isArray(body.models) ? body.models : [];
-    for (const entry of models) {
-      const id = typeof entry === 'string' ? entry : entry?.id;
-      if (typeof id !== 'string') continue;
-      if (/seedream|image/i.test(id)) this.mediaModels.image.add(id);
-      if (/seedance|video/i.test(id)) this.mediaModels.video.add(id);
-    }
   }
 
   /**
@@ -75,8 +53,8 @@ export class BytePlusProvider extends OpenAIProvider {
    * cannot depend on an upstream list that omits ModelArk prices.
    */
   async getModels(): Promise<ModelDetail[]> {
-    await this.discoverMediaModels();
-    return BYTEPLUS_CATALOG.map(({ pricing, ...model }) => ({ ...model, pricing }));
+    const media = mediaModelsOf('BytePlus').map((m) => ({ id: m.id, name: m.name, source: MEDIA_PRICING_SOURCES.BytePlus }));
+    return [...BYTEPLUS_CATALOG.map(({ pricing, ...model }) => ({ ...model, pricing })), ...media];
   }
 
   async complete(request: Parameters<OpenAIProvider['complete']>[0]) {
@@ -112,37 +90,54 @@ export class BytePlusProvider extends OpenAIProvider {
       body: JSON.stringify({
         model: request.model,
         prompt: request.prompt,
-        ...(request.size ? { size: request.size } : {}),
-        ...(request.n ? { n: request.n } : {}),
+        size: request.size ?? '2K',
+        response_format: request.response_format === 'b64_json' ? 'b64_json' : 'url',
+        watermark: false,
+        // One image per call for Seedream (several come back as a group only with sequential generation).
+        sequential_image_generation: 'disabled',
       }),
     });
-    return { data: body.data ?? [], model: body.model ?? request.model };
+    const data = (Array.isArray(body.data) ? body.data : []).filter((d: { url?: string; b64_json?: string }) => d && (d.url || d.b64_json));
+    return { data: data.map((d: { url?: string; b64_json?: string }) => (d.url ? { url: d.url } : { b64_json: d.b64_json })), model: body.model ?? request.model };
   }
 
+  /** Starts a Seedance task; the video is fetched with getVideo (BytePlus keeps the task, so any instance can). */
   async generateVideo(request: VideoGenerationRequest): Promise<VideoGenerationResult> {
+    const m = mediaModel(request.model, 'video');
+    if (!m) throw new Error(`BytePlus: ${request.model} is not a priced video model`);
+    const duration = videoDuration(m, request.duration);
+    const resolution = videoResolution(m, request.resolution);
     const created = await this.ark('/contents/generations/tasks', {
       method: 'POST',
       body: JSON.stringify({
         model: request.model,
         content: [{ type: 'text', text: request.prompt }],
-        ...(request.duration ? { duration: request.duration } : {}),
-        ...(request.size ? { ratio: request.size } : {}),
+        duration,
+        resolution,
+        ratio: typeof request.ratio === 'string' ? request.ratio : '16:9',
+        watermark: false,
+        generate_audio: false,
       }),
     });
     const id = created.id ?? created.task_id;
     if (!id) throw new Error('BytePlus video response did not include a task id.');
-    let task = created;
-    for (let attempt = 0; attempt < 60 && !['succeeded', 'failed', 'cancelled'].includes(String(task.status).toLowerCase()); attempt += 1) {
-      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 1000));
-      task = await this.ark(`/contents/generations/tasks/${encodeURIComponent(id)}`, { method: 'GET' });
-    }
-    const output = task.content ?? task.output ?? {};
+    return { id: String(id), status: 'queued', model: request.model, duration, resolution };
+  }
+
+  async getVideo(id: string): Promise<VideoGenerationResult> {
+    const task = await this.ark(`/contents/generations/tasks/${encodeURIComponent(id)}`, { method: 'GET' });
+    const content = task.content ?? {};
+    const usage = task.usage ?? {};
+    const tokens = Number(usage.completion_tokens ?? usage.total_tokens);
     return {
-      id: String(id),
-      status: String(task.status ?? 'unknown'),
-      url: output.video_url ?? output.url ?? task.video_url,
-      error: task.error?.message ?? task.error,
-      model: request.model,
+      id: String(task.id ?? id),
+      status: String(task.status ?? 'unknown').toLowerCase(),
+      model: String(task.model ?? ''),
+      ...(content.video_url ? { url: String(content.video_url) } : {}),
+      ...(task.error ? { error: String(task.error.message ?? task.error.code ?? task.error) } : {}),
+      ...(Number.isFinite(tokens) && tokens > 0 ? { tokens } : {}),
+      ...(task.resolution ? { resolution: String(task.resolution) } : {}),
+      ...(task.duration ? { duration: Number(task.duration) } : {}),
     };
   }
 

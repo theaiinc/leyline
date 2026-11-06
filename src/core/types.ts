@@ -172,10 +172,15 @@ export interface VideoGenerationRequest {
 
 export interface VideoGenerationResult {
   id: string;
+  /** queued | running | succeeded | failed | cancelled | expired (BytePlus's task states). */
   status: string;
   url?: string;
   error?: string;
   model: string;
+  /** Tokens the finished video used (what BytePlus bills); set once it succeeded. */
+  tokens?: number;
+  resolution?: string;
+  duration?: number;
 }
 
 export interface Provider {
@@ -201,7 +206,10 @@ export interface Provider {
   transcribe?(request: TranscriptionRequest): Promise<TranscriptionResult>;
   speak?(request: SpeechRequest): Promise<SpeechResult>;
   generateImage?(request: ImageGenerationRequest): Promise<ImageGenerationResult>;
+  /** Starts a video (asynchronous): returns the task, usually still queued. */
   generateVideo?(request: VideoGenerationRequest): Promise<VideoGenerationResult>;
+  /** The state of a video task started by generateVideo. */
+  getVideo?(id: string): Promise<VideoGenerationResult>;
   /**
    * Whether it can take this request's non-text content (images, audio, files) for `request.model`. Unset: it
    * passes content parts through to an OpenAI-compatible upstream, which decides. Providers that would drop the

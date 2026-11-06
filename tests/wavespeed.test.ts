@@ -1,44 +1,30 @@
 import { WaveSpeedProvider } from '../src/providers/wavespeed';
 
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
-describe('WaveSpeed media provider', () => {
-  afterEach(() => {
-    jest.restoreAllMocks();
+describe('WaveSpeed image provider', () => {
+  it('submits to the model path (size w*h, num_images, sync mode) and returns the outputs', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(json({ code: 200, data: { id: 'p1', status: 'completed', outputs: ['https://cdn.example/a.jpeg'] } }));
+    const p = new WaveSpeedProvider('k', 'https://wavespeed.test/api/v3', { fetchImpl, sleep: async () => {} });
+    await expect(p.generateImage({ model: 'wavespeed-ai/flux-dev', prompt: 'a leaf', size: '1024x768' })).resolves.toEqual({ model: 'wavespeed-ai/flux-dev', data: [{ url: 'https://cdn.example/a.jpeg' }] });
+    expect(fetchImpl).toHaveBeenCalledWith('https://wavespeed.test/api/v3/wavespeed-ai/flux-dev', expect.objectContaining({ method: 'POST' }));
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({ prompt: 'a leaf', size: '1024*768', num_images: 1, enable_sync_mode: true, enable_base64_output: false });
   });
 
-  it('generates an image with the requested model and prompt', async () => {
-    const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
-      json({ data: [{ url: 'https://cdn.example/image.png' }], model: 'wavespeed-ai/flux-dev' }),
-    );
-    const provider = new WaveSpeedProvider('wavespeed-key', 'https://wavespeed.test/api/v3');
-
-    await expect(provider.generateImage({
-      model: 'wavespeed-ai/flux-dev',
-      prompt: 'a test image',
-      n: 1,
-    })).resolves.toEqual({
-      data: [{ url: 'https://cdn.example/image.png' }],
-      model: 'wavespeed-ai/flux-dev',
-    });
-    expect(fetchMock).toHaveBeenCalledWith(
-      'https://wavespeed.test/api/v3/image/generations',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({ model: 'wavespeed-ai/flux-dev', prompt: 'a test image', n: 1 }),
-      }),
-    );
+  it('polls predictions/{id}/result when the submit comes back unfinished; a failed task throws', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(json({ data: { id: 'p2', status: 'processing', outputs: [] } }))
+      .mockResolvedValueOnce(json({ data: { id: 'p2', status: 'completed', outputs: ['https://cdn.example/b.jpeg'] } }));
+    const p = new WaveSpeedProvider('k', 'https://wavespeed.test/api/v3', { fetchImpl, sleep: async () => {} });
+    await expect(p.generateImage({ model: 'wavespeed-ai/flux-dev', prompt: 'x' })).resolves.toMatchObject({ data: [{ url: 'https://cdn.example/b.jpeg' }] });
+    expect(fetchImpl.mock.calls[1][0]).toBe('https://wavespeed.test/api/v3/predictions/p2/result');
+    const failing = new WaveSpeedProvider('k', 'https://wavespeed.test/api/v3', { fetchImpl: jest.fn().mockResolvedValueOnce(json({ data: { id: 'p3', status: 'failed', error: 'nsfw', outputs: [] } })), sleep: async () => {} });
+    await expect(failing.generateImage({ model: 'wavespeed-ai/flux-dev', prompt: 'x' })).rejects.toThrow(/failed: nsfw/);
   });
 
-  it('polls an asynchronous video until it succeeds', async () => {
-    const fetchMock = jest.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(json({ id: 'video-1', status: 'processing' }))
-      .mockResolvedValueOnce(json({ id: 'video-1', status: 'succeeded', url: 'https://cdn.example/video.mp4', model: 'wavespeed-ai/seedance-1.5-pro' }));
-    const provider = new WaveSpeedProvider('wavespeed-key', 'https://wavespeed.test/api/v3');
-
-    await expect(provider.generateVideo({ model: 'wavespeed-ai/seedance-1.5-pro', prompt: 'a test video' }))
-      .resolves.toMatchObject({ id: 'video-1', status: 'succeeded', url: 'https://cdn.example/video.mp4' });
-    expect(fetchMock).toHaveBeenNthCalledWith(2, 'https://wavespeed.test/api/v3/video/generations/video-1', expect.objectContaining({ headers: expect.any(Object) }));
+  it('serves only its priced image models, and only with a key', () => {
+    expect(new WaveSpeedProvider('k').servesModel('image', 'wavespeed-ai/flux-dev')).toBe(true);
+    expect(new WaveSpeedProvider('k').servesModel('image', 'wavespeed-ai/unknown')).toBe(false);
+    expect(new WaveSpeedProvider('').servesModel('image', 'wavespeed-ai/flux-dev')).toBe(false);
   });
 });

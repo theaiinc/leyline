@@ -90,5 +90,5 @@ export function hostedBilling(over: { hosted?: Partial<HostedOptions>; billing?:
   const pending: Promise<unknown>[] = [];
   const app = createServer(router, quotaManager, { hosted, enforceExternalSurface: false, apiKeyStore: new MemorySecretStore() });
   const settle = async () => { while (pending.length) await Promise.allSettled(pending.splice(0)); };
-  return { app, keys, upstream, hosted, turnstile, access, settle, partners, partnerEmails, ...fx };
+  return { app, router, keys, upstream, hosted, turnstile, access, settle, partners, partnerEmails, ...fx };
 }

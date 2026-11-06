@@ -6,6 +6,7 @@ import path from 'path';
 import { Router } from './core/router';
 import { CompletionRequest, ClassifyRequest, Provider, ApiKeyConfigurableProvider, RuntimeConfigurableProvider, servesChat } from './core/types';
 import { mountMediaRoutes } from './core/media-routes';
+import { MEDIA_MODELS, MEDIA_PRICING_SOURCES } from './core/media-catalog';
 import { logger } from './core/logger';
 import { QuotaManager } from './core/quota-manager';
 import { config } from './config';
@@ -185,10 +186,10 @@ function requireHostedAdmin(hosted: HostedOptions) {
 // sleeping service from an API-surface policy response.
 const EXTERNAL_ROUTES = new Set([
   '/healthz', '/readyz', '/v1/chat/completions', '/v1/route', '/mcp', '/v1/models', '/v1/messages', '/v1/messages/count_tokens',
-  '/v1/embeddings', '/v1/audio/transcriptions', '/v1/audio/speech', '/v1/benchmarks', '/v1/pricing', '/webhooks/paypal', '/webhooks/sepay',
+  '/v1/embeddings', '/v1/audio/transcriptions', '/v1/audio/speech', '/v1/images/generations', '/v1/videos', '/v1/benchmarks', '/v1/pricing', '/webhooks/paypal', '/webhooks/sepay',
 ]);
 /** Hosted keys mode: the admin page and its sign-in (each is still guarded by its own route). */
-const EXTERNAL_PREFIXES = ['/admin', '/auth/'];
+const EXTERNAL_PREFIXES = ['/admin', '/auth/', '/v1/videos/'];
 
 function requireExternalSurfaceAllowlist(req: Request, res: Response, next: NextFunction): void {
   if (
@@ -478,6 +479,12 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       models,
       // Paid add-ons, charged on top of model usage (src/core/addons.ts): PII protection per 1M input tokens.
       addons: publicAddons(),
+      // Image and video models (src/core/media-catalog.ts): per image, or per 1M tokens of the finished video.
+      media: MEDIA_MODELS.map((m) => ({
+        id: m.id, name: m.name, provider: m.provider, kind: m.kind, source: MEDIA_PRICING_SOURCES[m.provider],
+        ...(m.image ? { per_image: m.image.perImageUsd, ...(m.image.above ? { per_image_above_pixels: { pixels: m.image.above.pixels, per_image: m.image.above.perImageUsd } } : {}) } : {}),
+        ...(m.video ? { per_1m_video_tokens: m.video.perMTokensUsd, ...(m.video.perMTokensUsd1080p !== undefined ? { per_1m_video_tokens_1080p: m.video.perMTokensUsd1080p } : {}), max_resolution: m.video.maxResolution, durations: m.video.durations } : {}),
+      })),
       exchange_rate: await vndRate(),
     };
   };
@@ -1155,6 +1162,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     hosted,
     ready: apiKeyInitialization,
     bodyLimit: config.bodyLimit,
+    ...(hosted ? { jobs: hosted.keys.docs } : {}),
     record: (req, model, usage, usd) => {
       if (hosted) recordUsage(hosted, req, usage, 0, usd);
       const tenant = (req as Request & { tenant?: AegisTenant }).tenant;

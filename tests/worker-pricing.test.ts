@@ -10,7 +10,8 @@ describe('Worker provider wiring pricing regression', () => {
 
     expect(provider).toBeDefined();
 
-    const models = await provider!.getModels();
+    // Token-priced models only (image/video models are priced in src/core/media-catalog.ts).
+    const models = (await provider!.getModels()).filter(model => model.pricing);
     expect(models.map(model => model.id)).toEqual(Object.keys(BYTEPLUS_CATALOG_PRICING));
     for (const model of models) {
       expect(model.pricing).toEqual(BYTEPLUS_CATALOG_PRICING[model.id]);
