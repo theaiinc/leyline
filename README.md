@@ -290,6 +290,7 @@ Run Leyline in the cloud and hand out API keys that use your provider keys, each
 - Endpoints:
   - `POST /v1/chat/completions` (OpenAI; tools are passed through).
   - `POST /v1/messages` and `/v1/messages/count_tokens` (Anthropic, for Claude Code; streaming and tool use are translated).
+  - `POST /v1/responses` (OpenAI Responses API, for Codex CLI; stateless, streaming and tool calls are translated).
   - `GET /v1/models`.
   - `POST /v1/embeddings`, `POST /v1/audio/transcriptions`, `POST /v1/audio/speech` (OpenAI; see *Embeddings and audio* below).
 

@@ -19,6 +19,8 @@ import { adminOf, sessionOf, mountHosted, providersOverBudget, resumeAdminSessio
 import { createRequireAegisToken, AegisTenant } from './core/aegis-auth';
 import { chatCompletionErrorResponse, formatProviderError, hydrateAxiosError } from './core/api-errors';
 import { normalizeCompletionRequest } from './core/normalize-request';
+import { ResponsesRequestError, ResponsesStream, chatToResponse, responsesToChat, sse, type ResponsesRequest } from './core/responses';
+import { estimateBodyTokens } from './core/content';
 import { createMcpHttpHandler } from './mcp/http';
 import type { TunnelInfo } from './core/cloudflared-tunnel';
 import { INSTANCE_FAMILIES } from './core/provider-instances';
@@ -186,7 +188,7 @@ function requireHostedAdmin(hosted: HostedOptions) {
 // Render/Cloudflare can perform health checks and Argus can distinguish a
 // sleeping service from an API-surface policy response.
 const EXTERNAL_ROUTES = new Set([
-  '/healthz', '/readyz', '/v1/chat/completions', '/v1/route', '/mcp', '/v1/models', '/v1/messages', '/v1/messages/count_tokens',
+  '/healthz', '/readyz', '/v1/chat/completions', '/v1/route', '/mcp', '/v1/models', '/v1/messages', '/v1/messages/count_tokens', '/v1/responses',
   '/v1/embeddings', '/v1/audio/transcriptions', '/v1/audio/speech', '/v1/images/generations', '/v1/videos', '/v1/benchmarks', '/v1/pricing', '/webhooks/paypal', '/webhooks/sepay',
 ]);
 /** Hosted keys mode: the admin page and its sign-in (each is still guarded by its own route). */
@@ -1153,6 +1155,126 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       // A stream that failed before its first chunk (a 400 for images no provider can read) answers as JSON,
       // not under the text/event-stream type set for it.
       res.status(status).type('json').json(body);
+    }
+  });
+
+  // OpenAI Responses API (OpenAI Codex CLI speaks only this): translated to a chat request and routed exactly like
+  // /v1/chat/completions above (same auth, admission, aliases, PII redaction, billing and spend), the result
+  // translated back (src/core/responses.ts). Stateless: previous_response_id is refused with a 400.
+  app.post('/v1/responses', authMiddleware, async (req, res) => {
+    await apiKeyInitialization;
+    const invalid = (status: number, message: string, code: string, param: string | null = null) =>
+      res.status(status).json({ error: { message, type: 'invalid_request_error', code, param } });
+    let translated;
+    try {
+      translated = responsesToChat(req.body as ResponsesRequest);
+    } catch (err) {
+      if (err instanceof ResponsesRequestError) return invalid(400, err.message, err.code, err.param);
+      throw err;
+    }
+    let request = translated.request;
+    const tools = translated.tools;
+    const asked = request.model;
+    if (request.messages.length === 0) return invalid(400, 'input is required: at least one message.', 'missing_required_parameter', 'input');
+    if (hosted) request.model = resolveModel(hosted.aliases, request.model);
+    const pii = (req as Request & { pii?: import('./core/pii-redaction').RequestPiiRedactor }).pii;
+    if (pii) request = await pii.redact(request);
+    const echo = { model: asked, request: req.body as ResponsesRequest };
+    const routeOptions = {
+      onServed: servedBy(req),
+      ...(hosted ? { excludeProviders: await providersOverBudget(hosted) } : {}),
+    };
+    // Usage as the provider reported it, else estimated (four characters a token), the way recordUsage counts it.
+    const counted = (usage: { prompt_tokens?: number; completion_tokens?: number } | undefined, outChars: number) =>
+      usage && ((usage.prompt_tokens ?? 0) > 0 || (usage.completion_tokens ?? 0) > 0)
+        ? usage
+        : { prompt_tokens: estimateBodyTokens(req.body), completion_tokens: Math.ceil(outChars / 4) };
+
+    if (request.stream) {
+      const out = new ResponsesStream(echo, tools);
+      try {
+        const routeAt = Date.now();
+        const stream = await router.routeStream(request, routeOptions);
+        // The SSE headers go out with the first event, so a provider that fails before its first chunk still gets a
+        // plain JSON error with its status.
+        const send = (events: ReturnType<ResponsesStream['push']>) => {
+          if (!res.headersSent) {
+            res.setHeader('Content-Type', 'text/event-stream');
+            res.setHeader('Cache-Control', 'no-cache');
+            res.setHeader('Connection', 'keep-alive');
+            const t = (req as { timings?: { lookupMs: number; admitMs: number } }).timings;
+            res.setHeader('Server-Timing', [...(t ? [`lookup;dur=${t.lookupMs}`, `admit;dur=${t.admitMs}`] : []), `route;dur=${Date.now() - routeAt}`].join(', '));
+          }
+          for (const e of events) res.write(sse(e));
+        };
+        for await (const chunk of stream) {
+          if (pii) {
+            for (const [choiceIndex, choice] of (chunk.choices ?? []).entries() as Iterable<[number, { delta?: { content?: string | null; tool_calls?: Array<{ function?: { arguments?: string } }> } }]>) {
+              if (choice.delta?.content) choice.delta.content = pii.rehydrateStream(choice.delta.content, `choice:${choiceIndex}:content`);
+              for (const [toolIndex, call] of (choice.delta?.tool_calls ?? []).entries()) {
+                if (call.function?.arguments) call.function.arguments = pii.rehydrateStream(call.function.arguments, `choice:${choiceIndex}:tool:${toolIndex}`);
+              }
+            }
+          }
+          send(out.push(chunk));
+        }
+        if (pii) {
+          for (const key of pii.streamKeys) {
+            const tail = pii.finishStream(key);
+            const match = tail ? /^choice:0:(content|tool:(\d+))$/.exec(key) : null;
+            if (!match) continue;
+            const delta = match[1] === 'content' ? { content: tail } : { tool_calls: [{ index: Number(match[2]), function: { arguments: tail } }] };
+            send(out.push({ id: 'pii-flush', object: 'chat.completion.chunk', created: 0, model: request.model, choices: [{ index: 0, delta, finish_reason: null }] } as never));
+          }
+          await pii.finish();
+        }
+        const usage = counted(out.reportedUsage, out.chars);
+        send(out.end(usage));
+        res.end();
+        console.log(JSON.stringify({ event: 'leyline_responses', model: request.model, ...(req as { timings?: object }).timings, totalMs: Date.now() - routeAt }));
+        logTenantUsage(req, request.model, usage, out.chars);
+      } catch (error: any) {
+        const hydrated = await hydrateAxiosError(error);
+        console.error('/v1/responses Error:', formatProviderError(hydrated));
+        const { status, body } = chatCompletionErrorResponse(hydrated);
+        if (!res.headersSent) {
+          // Nothing streamed yet: answer with the status, as JSON, like a non-streaming request.
+          res.status(status).type('json').json(body);
+          return;
+        }
+        // Partway through: what was streamed is counted, and the client is told the response failed.
+        for (const e of out.fail('The Valefront model provider failed partway through this response; try again.')) res.write(sse(e));
+        res.end();
+        logTenantUsage(req, request.model, counted(out.reportedUsage, out.chars), out.chars);
+      }
+      return;
+    }
+
+    try {
+      const response = await router.route(request, routeOptions);
+      const hydrated = pii ? { ...response, choices: response.choices?.map((choice) => ({
+        ...choice,
+        message: choice.message ? {
+          ...choice.message,
+          content: typeof choice.message.content === 'string' ? pii.rehydrate(choice.message.content) : choice.message.content,
+          tool_calls: choice.message.tool_calls?.map((call) => ({
+            ...call,
+            function: call.function ? { ...call.function, arguments: pii.rehydrate(call.function.arguments ?? '') } : call.function,
+          })),
+        } : choice.message,
+      })) } : response;
+      if (pii) await pii.finish();
+      const outChars = (hydrated.choices?.[0]?.message?.content?.length ?? 0)
+        + (hydrated.choices?.[0]?.message?.tool_calls ?? []).reduce((n, c) => n + (c.function?.arguments?.length ?? 0), 0);
+      const usage = counted(response.usage, outChars);
+      res.json(chatToResponse(hydrated, echo, tools, usage));
+      logTenantUsage(req, request.model, usage, outChars);
+    } catch (error: any) {
+      const hydrated = await hydrateAxiosError(error);
+      console.error('/v1/responses Error:', formatProviderError(hydrated));
+      const { status, body } = chatCompletionErrorResponse(hydrated);
+      if (!res.headersSent) res.status(status).type('json').json(body);
+      else res.end();
     }
   });
 
