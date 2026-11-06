@@ -25,6 +25,7 @@ import { Memo, isRouterPick, planStrategy, strategyFor, isRoutingStrategy, route
 import { BYTEPLUS_BENCHMARK_ALIASES, byteplusChatModelReadsImages } from '../providers/byteplus';
 import { logger, type LogEntry } from './logger';
 import type { CompletionRequest } from './types';
+import { BYOK_PREFIX, WorkspaceProviderError, type PoolCredentials, type WorkspaceByok, type WorkspaceProviders } from './workspace-providers';
 
 /** An image or video generation, for pricing it under a promotion (recordUsage). */
 export type MediaChargeBasis = Extract<ChargeBasis, { kind: 'image' | 'video' }>;
@@ -105,9 +106,44 @@ export type HostedOptions = {
   access?: AccessConfig | null;
   /** The Worker's vars and secrets, for the admin page's "credentials present: yes/no" (values are never shown). */
   providerEnv?: Record<string, string | undefined>;
+  /** Workspaces' own providers (BYOK, src/core/workspace-providers.ts); unset: none, every model is the pool's. */
+  workspaceProviders?: WorkspaceProviders | null;
+  /** A shared-pool provider's live settings, key included, for adm's from-pool copy (set by server.ts). */
+  poolProvider?: (name: string) => Promise<PoolCredentials | null>;
 };
 
-type WithKey = Request & { issuedKey?: IssuedKey; freeTokensOnly?: boolean; requestedModel?: string; ownerRequest?: boolean; workspace?: WorkspaceRecord; served?: { provider: string; model: string }; timings?: { lookupMs: number; admitMs: number }; pii?: RequestPiiRedactor };
+type WithKey = Request & {
+  issuedKey?: IssuedKey; freeTokensOnly?: boolean; requestedModel?: string; ownerRequest?: boolean; workspace?: WorkspaceRecord;
+  served?: { provider: string; model: string }; timings?: { lookupMs: number; admitMs: number }; pii?: RequestPiiRedactor;
+  /** The key's workspace's own providers (BYOK), and the model of theirs this request names (null: a pool model). */
+  byok?: WorkspaceByok | null; byokModel?: string | null;
+  /** Admitted for the workspace's own providers only (no credit): a routing strategy may pick only BYOK models. */
+  byokOnly?: boolean;
+};
+
+/** The endpoints a workspace's own providers (BYOK) serve: chat, in the OpenAI, Anthropic and Responses formats. */
+const BYOK_PATHS = new Set(['/v1/chat/completions', '/v1/messages', '/v1/responses']);
+
+/** Served by a workspace's own provider (BYOK): never charged a model price, and no cost to Valefront. */
+export function servedByByok(provider: string | undefined): boolean {
+  return !!provider && provider.startsWith(BYOK_PREFIX);
+}
+
+/**
+ * The model to send upstream for a request: the workspace's own model as asked (an alias never takes a BYOK model
+ * to the pool), else the host's alias for it, else as asked.
+ */
+export function requestModel(opts: HostedOptions, req: Request, model: string): string {
+  const r = req as WithKey;
+  if (r.byok && r.byokModel && (model === r.requestedModel || model === r.byokModel)) return r.byokModel;
+  return resolveModel(opts.aliases, model);
+}
+
+/** The router for this request: a workspace key's BYOK models go to its own providers, everything else as before. */
+export function routerFor<R extends Router>(router: R, req: Request): Pick<Router, 'route' | 'routeStream'> {
+  const byok = (req as WithKey).byok;
+  return byok && byok.size ? byok.wrap(router) : router;
+}
 
 /** Route option that remembers which provider and model served this request (for spend by provider and model). */
 export function servedBy(req: Request): (provider: string, model: string) => void {
@@ -159,9 +195,24 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
     if (/^auto:/i.test(requested.trim()) && !isRoutingStrategy(requested.trim().slice(5).toLowerCase())) {
       return fail(400, 'unknown_routing_strategy', `Unknown routing strategy "${requested}": use ${ROUTING_STRATEGIES.map((s) => `auto:${s}`).join(', ')}, auto, or a model id.`);
     }
-    const offered = isRouterPick(requested) || opts.models.length === 0 || opts.models.some((m) => modelAllowed({ models: [m] }, requested)) || !!resolveAlias(opts, requested) || isSoldMediaModel(requested);
+    // A customer's own providers (BYOK): a model one of them lists goes there, for this workspace's keys only.
+    let byok: WorkspaceByok | null = null;
+    if (key.workspaceId && opts.workspaceProviders) {
+      try {
+        byok = await opts.workspaceProviders.forWorkspace(key.workspaceId);
+      } catch (err) {
+        // Never fails a request that worked before BYOK existed: without the list, every model is the pool's (as before).
+        console.error(JSON.stringify({ event: 'workspace_providers_lookup_failed', workspaceId: key.workspaceId, error: err instanceof Error ? err.message : String(err) }));
+      }
+    }
+    // Chat only (chat completions, Anthropic messages, responses): other endpoints (embeddings, media) keep the pool.
+    const byokModel = byok && requested && !isRouterPick(requested) && BYOK_PATHS.has(req.path) ? byok.match(requested, resolveModel(opts.aliases, requested)) : null;
+    (req as WithKey).byok = byok && byok.size ? byok : null;
+    (req as WithKey).byokModel = byokModel;
+    const offered = isRouterPick(requested) || !!byokModel || opts.models.length === 0 || opts.models.some((m) => modelAllowed({ models: [m] }, requested)) || !!resolveAlias(opts, requested) || isSoldMediaModel(requested);
     if (!offered) return fail(404, 'model_not_found', `The model "${requested}" is not offered here; see /v1/models.`);
-    if (requested && isBlocked(opts, requested)) {
+    // The host's blocked list is for the shared pool: a workspace's own provider is the customer's to use.
+    if (requested && !byokModel && isBlocked(opts, requested)) {
       return fail(403, 'model_disabled', `The model "${requested}" is turned off here; see /v1/models for what you can use.`);
     }
     const admitAt = Date.now();
@@ -183,19 +234,38 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
       if (!isAdminEmail(opts, ws.email)) {
         const target = resolveModel(opts.aliases, requested);
         const routerPicks = isRouterPick(requested);
-        if (!routerPicks && !realPrice(opts, target) && !isMediaModel(target)) {
-          return fail(403, 'model_not_priced', `The model "${requested}" has no published price yet, so it can't be used with this key; see https://llm.valefront.com/v1/pricing.`);
+        if (byokModel) {
+          // The customer's own provider bills them: no model price, no credit needed (PII protection still does).
+          let own;
+          try {
+            own = await opts.billing.admitByok(ws, { piiProtection: piiProtectionOn(key) });
+          } catch (err) {
+            console.error('[hosted] workspace check failed', err);
+            return fail(503, 'billing_unavailable', 'Valefront could not check your balance just now; try again.');
+          }
+          if (own.refusal) return fail(own.refusal.status, own.refusal.code, own.refusal.message);
+        } else {
+          if (!routerPicks && !realPrice(opts, target) && !isMediaModel(target)) {
+            return fail(403, 'model_not_priced', `The model "${requested}" has no published price yet, so it can't be used with this key; see https://llm.valefront.com/v1/pricing.`);
+          }
+          let admission;
+          try {
+            admission = await opts.billing.admit(ws, routerPicks ? requested : target, { piiProtection: piiProtectionOn(key) });
+          } catch (err) {
+            console.error('[hosted] credit check failed', err);
+            return fail(503, 'billing_unavailable', 'Valefront could not check your balance just now; try again.');
+          }
+          if ('refusal' in admission) {
+            // No credit, but a routing strategy can still pick one of the workspace's own models (billed by them).
+            const strategy = routerPicks && byok?.size && BYOK_PATHS.has(req.path) ? (() => { try { return strategyFor(requested, key.caps.routingStrategy); } catch { return null; } })() : null;
+            const own = strategy && admission.refusal.status !== 403 ? await opts.billing.admitByok(ws, { piiProtection: piiProtectionOn(key) }).catch(() => null) : null;
+            if (!own || own.refusal) return fail(admission.refusal.status, admission.refusal.code, admission.refusal.message);
+            (req as WithKey).byokOnly = true;
+          } else if (routerPicks && admission.mode === 'free' && !admission.paid) {
+            // Admitted on free tokens alone (no balance): a routing strategy may pick only free-tier models.
+            (req as WithKey).freeTokensOnly = true;
+          }
         }
-        let admission;
-        try {
-          admission = await opts.billing.admit(ws, routerPicks ? requested : target, { piiProtection: piiProtectionOn(key) });
-        } catch (err) {
-          console.error('[hosted] credit check failed', err);
-          return fail(503, 'billing_unavailable', 'Valefront could not check your balance just now; try again.');
-        }
-        if ('refusal' in admission) return fail(admission.refusal.status, admission.refusal.code, admission.refusal.message);
-        // Admitted on free tokens alone (no balance): a routing strategy may pick only free-tier models.
-        if (routerPicks && admission.mode === 'free' && !admission.paid) (req as WithKey).freeTokensOnly = true;
         (req as WithKey).workspace = ws;
       }
     }
@@ -273,13 +343,15 @@ export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_
   // One clock for the whole request: a price with peak hours or prompt-length tiers (BytePlus) is made flat once,
   // so the spend line, the charge and any promotion all use the same price.
   const at = Date.now();
-  const cost = usd ?? costUsd(priceAt(priceOf({ prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE }, used, published), counted, at), counted, at);
+  // A workspace's own provider (BYOK) costs Valefront nothing: counted ($0 spend line BYOK:<label>), never charged.
+  const byok = servedByByok(r.served?.provider);
+  const cost = byok ? 0 : usd ?? costUsd(priceAt(priceOf({ prices: opts.prices ?? {}, defaultPrice: opts.defaultPrice ?? DEFAULT_PRICE }, used, published), counted, at), counted, at);
   const work = opts.keys.record(r.issuedKey ?? null, model, counted, cost, { provider: r.served?.provider ?? 'unknown', model: used })
     .then(() => checkAlerts(opts, r.issuedKey ?? null))
     .catch((err) => console.error('[hosted] usage record failed', err));
   opts.background?.(work);
   // A customer pays real prices only: set by hand or published, never the default price.
-  if (r.workspace && opts.billing) {
+  if (r.workspace && opts.billing && !byok) {
     const real = realPrice(opts, used, r.served?.provider);
     const price = real ? priceAt(real, counted, at) : undefined;
     const charged = usd ?? (price ? costUsd(price, counted, at) : null);
@@ -294,8 +366,11 @@ export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_
         : undefined))
       .catch((err) => console.error('[hosted] usage charge failed', r.workspace?.id, err));
     opts.background?.(billing);
-    // PII protection (a paid add-on): its own fee on the input tokens, charged from credit even on free tokens, and
-    // its own spend line. Only when the request's messages were actually redacted (not, say, an embeddings call).
+  }
+  if (r.workspace && opts.billing) {
+    // PII protection (a paid add-on): its own fee on the input tokens, charged from credit even on free tokens and on
+    // the workspace's own providers, and its own spend line. Only when the request's messages were actually redacted
+    // (not, say, an embeddings call).
     if (r.pii?.applied) {
       const ws = r.workspace;
       const inputTokens = counted.prompt_tokens ?? 0;
@@ -325,32 +400,41 @@ export function clearStrategyCaches(): void {
  * provider that isn't over its monthly budget and reports available; free-tier models only for a customer admitted on
  * free tokens alone. Without hosted mode: every listed model with a published price.
  */
-export function strategyEnv(router: Router, opts: HostedOptions | undefined, key: IssuedKey | undefined, excludeProviders: string[] = [], freeTokensOnly = false): StrategyEnv {
+export function strategyEnv(router: Router, opts: HostedOptions | undefined, key: IssuedKey | undefined, excludeProviders: string[] = [], freeTokensOnly = false, byok: WorkspaceByok | null = null, byokOnly = false): StrategyEnv {
+  // The workspace's own chat models (BYOK), when its key asks a strategy to pick (Steve: "Auto strategies can route to
+  // byok models as well, as long as the user configured it"). Allowed for the key like any model; free to Valefront,
+  // so not limited to free-tier models.
+  const own = new Set((byok?.models() ?? []).filter((m) => capabilitiesForModel(m).join() === 'chat' && (!key || modelAllowed(key.caps, m))));
   return {
     offered: async () => {
+      if (byokOnly) return [...own];
       const pool = opts?.models.length ? opts.models : Object.keys(router.getModelIndex());
       // A customer's key (a dash workspace) gets only models Valefront sells (its public catalog: BytePlus), never a
       // provider Valefront doesn't resell (live 2026-11-06 a strategy picked Workers AI and Azure models). A
       // shared-pool key may also use the providers its owner configured with their own keys (BYOK, Steve).
-      return pool.filter((m) => !m.includes('*') && !isMediaModel(m) && capabilitiesForModel(m).join() === 'chat'
+      return [...pool.filter((m) => !own.has(m) && !m.includes('*') && !isMediaModel(m) && capabilitiesForModel(m).join() === 'chat'
         && (!opts || !key?.workspaceId || isPublicSaleModel(m))
         && (!key || modelAllowed(key.caps, m)) && (!opts || !isBlocked(opts, m))
         // A customer with no balance, on free tokens: free-tier models only (anything else would be charged).
-        && (!freeTokensOnly || !opts?.billing || opts.billing.isFreeModel(m)));
+        && (!freeTokensOnly || !opts?.billing || opts.billing.isFreeModel(m))), ...own];
     },
-    // Ranked by the price right now (peak hours count); prompt-length tiers aren't known yet, so the base tier.
+    // Ranked by the price right now (peak hours count); prompt-length tiers aren't known yet, so the base tier. A BYOK
+    // model by what its provider publishes (Valefront's own prices are for the pool); unknown: not ranked by price.
     price: (m) => {
-      const p = opts ? realPrice(opts, m) : router.anyPublishedPrice(m) ?? builtinPrice(m);
+      const p = own.has(m) ? router.anyPublishedPrice(m) ?? builtinPrice(m) : opts ? realPrice(opts, m) : router.anyPublishedPrice(m) ?? builtinPrice(m);
       return p ? priceAt(p, undefined) : undefined;
     },
+    unpricedOk: (m) => own.has(m),
     served: async (m) => {
+      if (own.has(m)) return true;
       for (const provider of await router.chatProvidersFor(m)) {
         if (excludeProviders.includes(provider.name)) continue;
         if (await provider.isAvailable()) return true;
       }
       return false;
     },
-    readsImages: byteplusChatModelReadsImages,
+    // A workspace's own model: its provider decides what it reads.
+    readsImages: (m) => own.has(m) || byteplusChatModelReadsImages(m),
     benchmarkAliases: BYTEPLUS_BENCHMARK_ALIASES,
     ...(opts?.benchmarks ? { benchmarks: () => strategyBenchmarks.get(() => opts.benchmarks!()) } : {}),
     recentLogs: () => strategyLogs.get(() => logger.recent()),
@@ -365,7 +449,8 @@ export async function chatRoutePlan(router: Router, opts: HostedOptions | undefi
   const key = (req as WithKey).issuedKey;
   const strategy = strategyFor(request.model, key?.caps.routingStrategy);
   if (!strategy) return null;
-  return planStrategy(strategy, request, strategyEnv(router, opts, key, excludeProviders, (req as WithKey).freeTokensOnly === true));
+  const r = req as WithKey;
+  return planStrategy(strategy, request, strategyEnv(router, opts, key, excludeProviders, r.freeTokensOnly === true, r.byok ?? null, r.byokOnly === true));
 }
 
 /** PII protection is on for this key (any mode but off). */
@@ -554,7 +639,10 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
     if (opts.models.length === 0) await router.reindexStale();
     const configured = [...opts.models, ...Object.keys(opts.aliases).filter((a) => !a.includes('*'))];
     const providerModels = opts.models.length === 0 ? Object.keys(router.getModelIndex()) : [];
-    const ids = [...configured, ...providerModels].filter((m, i, all) => all.indexOf(m) === i && modelAllowed(key.caps, m) && !isBlocked(opts, m));
+    // A workspace key also sees its workspace's own models (BYOK), which the host's blocked list doesn't cover.
+    const byok = (req as WithKey).byok;
+    const own = byok?.models() ?? [];
+    const ids = [...configured, ...providerModels, ...own].filter((m, i, all) => all.indexOf(m) === i && modelAllowed(key.caps, m) && (byok?.has(m) || !isBlocked(opts, m)));
     const capability = typeof req.query.capability === 'string' ? req.query.capability : undefined;
     const snapshot = await opts.benchmarks?.();
     const data = ids.map((id) => {
@@ -566,7 +654,7 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
         id,
         object: 'model',
         created: 0,
-        owned_by: 'leyline',
+        owned_by: byok?.has(id) ? 'byok' : 'leyline',
         type: 'model',
         display_name: id,
         capabilities: capabilitiesForModel(id),
@@ -599,10 +687,11 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
       return res.status(400).json(anthropicError(400, err instanceof Error ? err.message : String(err)));
     }
     const asked = request.model;
-    request.model = resolveModel(opts.aliases, asked);
+    request.model = requestModel(opts, req, asked);
     const pii = (req as WithKey).pii;
     if (pii) request = await pii.redact(request);
     const excludeProviders = await providersOverBudget(opts);
+    const via = routerFor(router, req);
     let plan: RoutePlan | null;
     try {
       plan = await chatRoutePlan(router, opts, req, request, excludeProviders);
@@ -624,7 +713,7 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
           for (const e of events) res.write(`event: ${e.event}\ndata: ${JSON.stringify(e.data)}\n\n`);
         };
         try {
-          const stream = plan ? streamByPlan(router, request, plan, routeOpts, setRoute) : router.routeStream(request, routeOpts);
+          const stream = plan ? streamByPlan(via, request, plan, routeOpts, setRoute) : via.routeStream(request, routeOpts);
           for await (const chunk of stream) {
             if (pii) {
               for (const [choiceIndex, choice] of (chunk.choices ?? []).entries() as Iterable<[number, { delta?: { content?: string | null; tool_calls?: Array<{ function?: { arguments?: string } }> } }]>) {
@@ -675,7 +764,7 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
         recordUsage(opts, req, out.tokens, out.chars);
         return;
       }
-      const response = plan ? await routeByPlan(router, request, plan, routeOpts, setRoute) : await router.route(request, routeOpts);
+      const response = plan ? await routeByPlan(via, request, plan, routeOpts, setRoute) : await via.route(request, routeOpts);
       const hydrated = pii ? { ...response, choices: response.choices?.map((choice) => ({
         ...choice,
         message: choice.message ? {
@@ -842,6 +931,56 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
       res.status(409).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
+  // ── workspaces' own providers (BYOK), seen from adm ──────────────────────────────────────────────────
+  // Find a workspace (the owner's, to move the pool's non-BytePlus providers into it), with its providers.
+  app.get('/admin/api/workspaces', guard, async (req, res) => {
+    const email = typeof req.query.email === 'string' ? req.query.email.trim() : '';
+    if (!email) return res.status(400).json({ error: 'send ?email=<address>' });
+    if (!opts.billing) return res.status(503).json({ error: 'billing_unavailable' });
+    const found = await opts.billing.store.workspacesByEmail(email);
+    const workspaces = await Promise.all(found.map(async (ws) => ({
+      id: ws.id, email: ws.email, createdAt: ws.createdAt, deletedAt: ws.deletedAt ?? null, suspendedAt: ws.suspendedAt ?? null,
+      admin: isAdminEmail(opts, ws.email),
+      keys: (await opts.keys.listForWorkspace(ws.id)).filter((k) => !k.revokedAt).map((k) => ({ id: k.id, name: k.name, prefix: k.prefix })),
+      providers: opts.workspaceProviders ? await opts.workspaceProviders.list(ws.id) : [],
+    })));
+    res.json({ workspaces });
+  });
+  app.get('/admin/api/workspaces/:workspaceId/providers', guard, async (req, res) => {
+    if (!opts.workspaceProviders) return res.status(503).json({ error: 'workspace_providers_unavailable' });
+    res.json({ providers: await opts.workspaceProviders.list(String(req.params.workspaceId)) });
+  });
+  /**
+   * Copy a shared-pool provider (its key, base URL and deployment, read server-side) into a workspace as that
+   * workspace's own provider: { provider: "<pool provider name>", models?: [...], label? }. The key is never returned.
+   * The pool provider stays as it is; take it out of the pool separately, once the workspace's keys use the copy.
+   */
+  app.post('/admin/api/workspaces/:workspaceId/providers/from-pool', guard, async (req, res) => {
+    const workspaces = opts.workspaceProviders;
+    if (!workspaces || !opts.billing || !opts.poolProvider) return res.status(503).json({ error: 'workspace_providers_unavailable' });
+    const workspaceId = String(req.params.workspaceId);
+    const name = typeof req.body?.provider === 'string' ? req.body.provider.trim() : '';
+    if (!name) return res.status(400).json({ error: 'send { "provider": "<pool provider name>" }' });
+    try {
+      const ws = await opts.billing.store.workspace(workspaceId);
+      if (!ws || ws.deletedAt) return res.status(404).json({ error: 'workspace_not_found' });
+      const pool = await opts.poolProvider(name);
+      if (!pool) return res.status(404).json({ error: `no pool provider "${name}" of a kind a workspace can have (Azure OpenAI, OpenAI-compatible, Anthropic)` });
+      if (!pool.apiKey) return res.status(409).json({ error: `pool provider "${name}" has no API key loaded` });
+      const models = req.body?.models !== undefined ? req.body.models : pool.models;
+      const label = typeof req.body?.label === 'string' && req.body.label.trim() ? req.body.label : name.slice(0, 40);
+      const by = (req as Request & { admin?: string }).admin!;
+      const saved = await workspaces.add(workspaceId, { kind: pool.kind, label, baseUrl: pool.baseUrl, deployment: pool.deployment, apiVersion: pool.apiVersion, models, apiKey: pool.apiKey }, by);
+      console.log(JSON.stringify({ event: 'workspace_provider_from_pool', workspaceId, pool: name, id: saved.id, label: saved.label, models: saved.models, by }));
+      await opts.billing.store.audit({ type: 'workspace_provider.added', workspaceId, meta: { id: saved.id, label: saved.label, kind: saved.kind, fromPool: name, by } });
+      res.status(201).json({ provider: saved });
+    } catch (err) {
+      if (err instanceof WorkspaceProviderError) return res.status(err.status).json({ error: err.message, code: err.code });
+      console.error('[hosted] from-pool copy failed', err instanceof Error ? err.message : err);
+      res.status(500).json({ error: 'copy failed' });
+    }
+  });
+
   app.delete('/admin/api/keys/:id', guard, async (req, res) => {
     try {
       const record = await opts.keys.revoke(String(req.params.id));

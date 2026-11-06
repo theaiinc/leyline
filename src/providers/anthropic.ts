@@ -135,10 +135,13 @@ export class AnthropicProvider implements Provider {
   capabilities: Capability[] = ['chat'];
   defaultModel: string;
   private apiKey: string;
+  /** Anthropic's API, or a compatible endpoint (a workspace's own, src/core/workspace-providers.ts). */
+  private readonly api: string;
 
-  constructor(apiKey: string = process.env.ANTHROPIC_API_KEY || '', model: string = config.DEFAULT_MODELS.ANTHROPIC) {
+  constructor(apiKey: string = process.env.ANTHROPIC_API_KEY || '', model: string = config.DEFAULT_MODELS.ANTHROPIC, baseUrl: string = API) {
     this.apiKey = apiKey;
     this.defaultModel = model;
+    this.api = (baseUrl || API).replace(/\/+$/, '');
   }
 
   async isAvailable(): Promise<boolean> {
@@ -160,7 +163,7 @@ export class AnthropicProvider implements Provider {
   async getModels(): Promise<ModelDetail[]> {
     if (!this.apiKey) return [];
     try {
-      const response = await fetch(`${API}/models?limit=100`, { headers: this.headers() });
+      const response = await fetch(`${this.api}/models?limit=100`, { headers: this.headers() });
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${(await response.text().catch(() => '')).slice(0, 200)}`);
       const body = (await response.json()) as { data?: Array<{ id: string; display_name?: string }> };
       return (body.data ?? []).map(m => ({ id: m.id, name: m.display_name || m.id }));
@@ -171,7 +174,7 @@ export class AnthropicProvider implements Provider {
   }
 
   private async post(body: Record<string, unknown>): Promise<Response> {
-    const response = await fetch(`${API}/messages`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) });
+    const response = await fetch(`${this.api}/messages`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) });
     if (!response.ok) {
       const detail = await response.text().catch(() => '');
       const error = new Error(`Anthropic ${response.status}: ${detail.slice(0, 300)}`) as Error & { status?: number; response?: { status: number } };

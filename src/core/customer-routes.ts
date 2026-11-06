@@ -9,6 +9,7 @@ import type { AdminUser } from './admin-login';
 import { SignupError, TERMS_VERSION, signUp } from './self-serve-workspaces';
 import { PII_ADDON_ID, PII_ADDON_NAME, customerPiiModes, piiPricePerMTokens } from './addons';
 import type { KeyCaps } from './issued-keys';
+import { BYOK_KINDS, WorkspaceProviderError, type WorkspaceProvider } from './workspace-providers';
 
 /**
  * The customer's side of hosted Valefront, for anyone signed in with Aegis: /dashboard/me/… on the dashboard host.
@@ -34,7 +35,7 @@ export function clientIp(req: Request): string {
 }
 
 function errorOut(res: Response, err: unknown): void {
-  if (err instanceof BillingError || err instanceof SignupError) {
+  if (err instanceof BillingError || err instanceof SignupError || err instanceof WorkspaceProviderError) {
     res.status(err.status).json({ error: { code: err.code, message: err.message } });
     return;
   }
@@ -233,6 +234,71 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
     });
   });
 
+  // ── your providers (BYOK: src/core/workspace-providers.ts) ─────────────────────────────────────────────
+  // Your own provider accounts (Azure OpenAI, an OpenAI-compatible gateway, Anthropic), used only by your keys for
+  // the models you list, billed by that provider. Keys are write-only: sent on add (or to replace), never returned.
+  const providersOn = (_req: Request, res: Response, next: NextFunction) => {
+    if (!opts.workspaceProviders) return res.status(503).json({ error: { code: 'providers_unavailable', message: 'Your own providers are not available on this server.' } });
+    next();
+  };
+  const theirs = [...mine, providersOn];
+  const providerView = (p: WorkspaceProvider) => ({
+    id: p.id, kind: p.kind, label: p.label, baseUrl: p.baseUrl, deployment: p.deployment, apiVersion: p.apiVersion, models: p.models,
+    enabled: p.enabled, createdAt: p.createdAt, updatedAt: p.updatedAt, spendLine: `BYOK:${p.label}`,
+  });
+  const notSuspended = (req: Request) => {
+    if (ws(req).suspendedAt) throw new BillingError('workspace_suspended', 'This workspace is suspended.', 403);
+  };
+  app.get('/dashboard/me/providers', ...theirs, async (req, res) => {
+    try {
+      res.json({ providers: (await opts.workspaceProviders!.list(ws(req).id)).map(providerView), kinds: BYOK_KINDS });
+    } catch (err) {
+      errorOut(res, err);
+    }
+  });
+  app.post('/dashboard/me/providers', ...theirs, async (req, res) => {
+    try {
+      notSuspended(req);
+      const b = req.body ?? {};
+      const saved = await opts.workspaceProviders!.add(ws(req).id, { kind: b.kind, label: b.label, baseUrl: b.baseUrl, deployment: b.deployment, apiVersion: b.apiVersion, models: b.models, apiKey: b.apiKey, enabled: b.enabled }, (req as CustomerRequest).customer!.email);
+      await opts.billing!.store.audit({ type: 'workspace_provider.added', workspaceId: ws(req).id, meta: { id: saved.id, label: saved.label, kind: saved.kind } });
+      res.status(201).json({ provider: providerView(saved) });
+    } catch (err) {
+      errorOut(res, err);
+    }
+  });
+  app.patch('/dashboard/me/providers/:id', ...theirs, async (req, res) => {
+    try {
+      notSuspended(req);
+      const b = req.body ?? {};
+      const saved = await opts.workspaceProviders!.update(ws(req).id, String(req.params.id), { kind: b.kind, label: b.label, baseUrl: b.baseUrl, deployment: b.deployment, apiVersion: b.apiVersion, models: b.models, apiKey: b.apiKey, enabled: b.enabled });
+      await opts.billing!.store.audit({ type: 'workspace_provider.updated', workspaceId: ws(req).id, meta: { id: saved.id, label: saved.label, keyReplaced: b.apiKey !== undefined } });
+      res.json({ provider: providerView(saved) });
+    } catch (err) {
+      errorOut(res, err);
+    }
+  });
+  app.delete('/dashboard/me/providers/:id', ...theirs, async (req, res) => {
+    try {
+      const removed = await opts.workspaceProviders!.remove(ws(req).id, String(req.params.id));
+      if (!removed) return res.status(404).json({ error: { code: 'not_found', message: 'Provider not found.' } });
+      await opts.billing!.store.audit({ type: 'workspace_provider.removed', workspaceId: ws(req).id, meta: { id: String(req.params.id) } });
+      res.json({ removed: true });
+    } catch (err) {
+      errorOut(res, err);
+    }
+  });
+  /** One tiny request through it ("Reply with OK.", 16 tokens max), not counted: { ok, status, model, ms }. */
+  app.post('/dashboard/me/providers/:id/test', ...theirs, async (req, res) => {
+    try {
+      notSuspended(req);
+      const model = typeof req.body?.model === 'string' ? req.body.model : undefined;
+      res.json(await opts.workspaceProviders!.test(ws(req).id, String(req.params.id), model));
+    } catch (err) {
+      errorOut(res, err);
+    }
+  });
+
   // ── billing ────────────────────────────────────────────────────────────────────────────────────────────
   app.get('/dashboard/me/billing', ...mine, async (req, res) => {
     try {
@@ -360,6 +426,8 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
         store.grant(w.id), store.profile(w.id), store.ledger(w.id, 100_000), store.orders(w.id), store.einvoices(w.id), store.receipts(w.id), store.auditEvents(w.id),
       ]);
       const usage = await Promise.all(keys.map(async (k) => ({ keyId: k.id, months: await opts.keys.allUsage(k.id) })));
+      // Your own providers as configured (never their keys).
+      const providers = opts.workspaceProviders ? (await opts.workspaceProviders.list(w.id)).map(providerView) : [];
       const body = {
         exportedAt: new Date().toISOString(),
         controller: 'THE AI TECHNOLOGY COMPANY LIMITED, privacy@valefront.com',
@@ -368,6 +436,7 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
         freeGrant: grant,
         keys: keys.map((k) => ({ id: k.id, name: k.name, prefix: k.prefix, createdAt: k.createdAt, revokedAt: k.revokedAt ?? null, lastUsedAt: k.lastUsedAt ?? null, caps: k.caps })),
         usage,
+        providers,
         ledger,
         orders: orders.map((o) => ({ ...o, account: undefined })),
         receipts,
@@ -388,6 +457,8 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
         throw new BillingError('confirmation_required', 'Type your email address to confirm.', 400);
       }
       const keys = await opts.keys.deleteWorkspaceKeys(w.id);
+      // Your own providers' keys go with the workspace.
+      if (opts.workspaceProviders) await opts.workspaceProviders.removeAll(w.id);
       await opts.billing!.store.deleteWorkspace(w.id);
       console.log(JSON.stringify({ event: 'workspace_deleted', workspaceId: w.id, keys }));
       res.setHeader('Set-Cookie', [cookie('leyline_session', '', 0), cookie('leyline_refresh', '', 0)]);

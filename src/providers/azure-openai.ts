@@ -104,6 +104,16 @@ export class AzureOpenAIProvider implements Provider {
     };
   }
 
+  /**
+   * Use the OpenAI-compatible v1 API (model in the payload, bearer auth) or the legacy deployment URLs, whatever the
+   * URL looks like (a workspace's own Azure resource, src/core/workspace-providers.ts, must not follow this host's
+   * AZURE_OPENAI_BASE_URL).
+   */
+  setOpenAICompatible(on: boolean): void {
+    this.useOpenAICompatibleEndpoint = on;
+    this.client = null;
+  }
+
   setRuntimeConfig(runtime: Record<string, string | undefined>): void {
     if (typeof runtime.baseUrl === 'string') {
       this.endpoint = runtime.baseUrl.trim().replace(/\/+$/, '');
