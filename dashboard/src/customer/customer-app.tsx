@@ -179,7 +179,8 @@ function failToast(err: unknown) {
 
 function Code({ children }: { children: string }) {
   // min-w-0 + max-w-full: a long line scrolls inside the box instead of widening the card (it spilled out, 2026-11-05).
-  return <div className="relative min-w-0 max-w-full"><pre className="max-w-full overflow-x-auto rounded-md bg-muted p-3 pr-20 text-xs leading-relaxed">{children}</pre><div className="absolute top-2 right-2"><CopyButton value={children} /></div></div>;
+  // Phones: the Copy button sits above the box, so it never covers the code (2026-11-06).
+  return <div className="relative min-w-0 max-w-full"><div className="mb-1 flex justify-end sm:hidden"><CopyButton value={children} /></div><pre className="max-w-full overflow-x-auto rounded-md bg-muted p-3 text-xs leading-relaxed sm:pr-20">{children}</pre><div className="absolute top-2 right-2 hidden sm:block"><CopyButton value={children} /></div></div>;
 }
 
 function Quickstart({ me, apiKey }: { me: Me; apiKey?: string | null }) {
@@ -540,7 +541,7 @@ function UsagePage({ me }: { me: Me }) {
         <tbody><tr><td className="p-2 font-medium">PII protection{data?.addons?.piiProtection ? <span className="block text-xs font-normal text-muted-foreground">{piiPrice(data.addons.piiProtection)}</span> : null}</td><td className="p-2 text-right tabular-nums">{tokens(pii.requests)}</td><td className="p-2 text-right tabular-nums">{tokens(pii.tokens)}</td><td className="p-2 text-right tabular-nums">${pii.usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}</td></tr></tbody></table></div>
     </Section> : null}
     <Section title="By key">
-      {(data?.keys ?? []).map((k) => <div key={k.id} className="flex justify-between border-b py-2 text-sm last:border-0"><span>{k.name} <code className="text-xs text-muted-foreground">{k.prefix}…</code></span><span className="tabular-nums">{tokens(k.usage.promptTokens + k.usage.completionTokens)} tokens</span></div>)}
+      {(data?.keys ?? []).map((k) => <div key={k.id} className="flex justify-between gap-3 border-b py-2 text-sm last:border-0"><span className="min-w-0">{k.name} <code className="text-xs text-muted-foreground">{k.prefix}…</code></span><span className="shrink-0 whitespace-nowrap tabular-nums">{tokens(k.usage.promptTokens + k.usage.completionTokens)} tokens</span></div>)}
     </Section>
   </>);
 }
