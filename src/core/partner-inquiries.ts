@@ -1,3 +1,4 @@
+import { ADMIN_PAGE_CSS, adminHeader } from './admin-page-style';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import { randomUUID } from 'crypto';
 import { accessAdminOf, adminNav, isAdminHost } from './admin-billing';
@@ -500,16 +501,11 @@ function partnersPage(p: { who: string; note: string; status?: InquiryStatus; in
 <td>${e(i.contactName)}${i.role ? `<br><small>${e(i.role)}</small>` : ''}<br><small><a href="mailto:${e(i.email)}">${e(i.email)}</a></small></td>
 <td>${e(TYPE_LABELS[i.partnershipType] ?? i.partnershipType)}${i.modalities.length ? `<br><small>${e(i.modalities.join(', '))}</small>` : ''}${i.regions ? `<br><small>Regions: ${e(i.regions)}</small>` : ''}</td>
 <td>${multi(i.modelsOffered)}${i.message ? `<hr>${multi(i.message)}` : ''}</td>
-<td><form method="post" action="/partners/${e(i.id)}/status"><input type="hidden" name="filter" value="${e(p.status ?? '')}"><select name="status">${options}</select>
+<td><form class="status" method="post" action="/partners/${e(i.id)}/status"><input type="hidden" name="filter" value="${e(p.status ?? '')}"><select name="status">${options}</select>
 <textarea name="note" rows="2" placeholder="Note">${e(i.note)}</textarea><button>Save</button></form>${i.updatedBy ? `<small>${e(i.updatedBy)}, ${e(new Date(i.updatedAt!).toISOString().slice(0, 16).replace('T', ' '))}</small><br>` : ''}${emails}</td></tr>`;
   }).join('');
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Valefront partner inquiries</title>
-<style>body{font:14px/1.45 system-ui,sans-serif;margin:0;color:#14161b;background:#f7f8fa}main{max-width:1300px;margin:0 auto;padding:20px}h1{font-size:20px}
-.adminnav{margin-bottom:8px}table{width:100%;border-collapse:collapse;background:#fff}td,th{padding:6px;border-bottom:1px solid #e3e5ea;text-align:left;vertical-align:top}
-.pre{white-space:pre-wrap;max-height:12em;overflow:auto;max-width:420px}tr.s-new td:first-child{border-left:3px solid #2f6feb}tr.s-closed{color:#667}
-form{display:flex;flex-direction:column;gap:4px;min-width:180px}select,textarea{font:inherit;padding:4px;border:1px solid #ccd;border-radius:6px}button{font:inherit;padding:4px 10px;border-radius:6px;border:1px solid #889;background:#eef;cursor:pointer;align-self:flex-start}
-.note{padding:8px 12px;background:#fff6d6;border:1px solid #e8d48a;border-radius:8px}.wrap{overflow-x:auto}</style></head><body><main>
-${adminNav('partners')}
+<style>${ADMIN_PAGE_CSS}.pre{white-space:pre-wrap;max-height:12em;overflow:auto;max-width:420px}tr.s-new td:first-child{box-shadow:inset 3px 0 0 var(--ring)}tr.s-closed{opacity:.7}form.status{display:flex;flex-direction:column;gap:6px;min-width:180px}</style></head><body>${adminHeader('partners')}<main>
 <h1>Partner inquiries</h1><p>From the "Partner with Valefront" form on valefront.com. Signed in through Cloudflare Access as <strong>${e(p.who)}</strong>.</p>
 ${p.note ? `<p class="note">${e(p.note)}</p>` : ''}
 <p>${filter(undefined, 'All', total)} · ${filter('new', 'New', p.counts.new)} · ${filter('contacted', 'Contacted', p.counts.contacted)} · ${filter('closed', 'Closed', p.counts.closed)}</p>

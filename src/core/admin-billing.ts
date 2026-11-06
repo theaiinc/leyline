@@ -1,3 +1,4 @@
+import { ADMIN_PAGE_CSS, adminHeader } from './admin-page-style';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import { randomUUID } from 'crypto';
 import { BillingError, METHOD_LABELS, cleanAccount, cleanLegal, cleanVat, cleanVatInvoiceDetails, decimalToCents, formatUsd, vatLabel, type BillingOrder, type EInvoice } from './billing';
@@ -57,6 +58,7 @@ export function accessAdminOf(req: Request): string | null {
 const esc = (t: unknown) => String(t ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
 /** The admin host's server pages share this header: Billing · Partners (and the owner dashboard). */
+/** @deprecated adm pages use adminHeader (admin-page-style.ts). */
 export function adminNav(current: 'billing' | 'partners'): string {
   const link = (id: 'billing' | 'partners', href: string, label: string) => (id === current ? `<strong>${label}</strong>` : `<a href="${href}">${label}</a>`);
   return `<nav class="adminnav">${link('billing', '/billing/', 'Billing')} · ${link('partners', '/partners/', 'Partners')} · <a href="/">Dashboard</a></nav>`;
@@ -332,12 +334,7 @@ function adminPage(p: {
   }).join('');
   const a = p.account;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Valefront billing admin</title>
-<style>body{font:14px/1.45 system-ui,sans-serif;margin:0;color:#14161b;background:#f7f8fa}main{max-width:1200px;margin:0 auto;padding:20px}h1{font-size:20px}h2{font-size:16px;margin-top:28px}
-table{width:100%;border-collapse:collapse;background:#fff}td,th{padding:6px;border-bottom:1px solid #e3e5ea;text-align:left;vertical-align:top}.n{text-align:right}
-form.settings{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:8px;background:#fff;padding:12px;border:1px solid #e3e5ea;border-radius:8px}
-label{display:flex;flex-direction:column;font-size:12px;color:#555}input,textarea{font:inherit;padding:5px;border:1px solid #ccd;border-radius:6px}button{font:inherit;padding:5px 10px;border-radius:6px;border:1px solid #889;background:#eef;cursor:pointer}
-.note{padding:8px 12px;background:#fff6d6;border:1px solid #e8d48a;border-radius:8px}.wrap{overflow-x:auto}.adminnav{margin-bottom:8px}@media (max-width:720px){main{padding:12px}table.stack,table.stack tbody,table.stack tr,table.stack td{display:block;width:auto}table.stack thead{display:none}table.stack tr{background:#fff;border:1px solid #e3e5ea;border-radius:8px;margin:0 0 10px;padding:6px 2px}table.stack td{border:0;padding:4px 10px;text-align:left}table.stack td[data-label]::before{content:attr(data-label);display:block;font-size:11px;font-weight:600;color:#667;text-transform:uppercase;letter-spacing:.02em}form.settings{grid-template-columns:1fr}input,button{font-size:16px}}small{overflow-wrap:anywhere}</style></head><body><main>
-${adminNav('billing')}
+<style>${ADMIN_PAGE_CSS}</style></head><body>${adminHeader('billing')}<main>
 <h1>Valefront billing admin</h1><p>Signed in through Cloudflare Access as <strong>${esc(p.who)}</strong>. WorldFirst bank transfer: <strong>${a ? 'configured' : 'not configured'}</strong> (no sandbox). Every payment gets a receipt; VAT e-invoices only for buyers in Vietnam who ask.</p>
 ${p.note ? `<p class="note">${esc(p.note)}</p>` : ''}
 <h2>Providers: sandbox or live</h2><p><small>Secrets are Worker secrets (wrangler secret put); this page shows only whether they're set. In sandbox, PayPal is offered to admin workspaces only, and its receipts are marked SANDBOX and numbered apart. A VAT invoice is issued only through S-Invoice in its payment's mode. Every switch is audit-logged with who made it.</small></p>
