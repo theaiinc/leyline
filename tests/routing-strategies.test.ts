@@ -188,21 +188,17 @@ const settle = () => new Promise((r) => setTimeout(r, 10));
 /** US$ for the fake upstream's usage (100k in, 20k out) at a model's price. */
 const usd = (m: string) => (100_000 * PRICES[m]!.input + 20_000 * PRICES[m]!.output) / 1_000_000;
 
-describe('routing strategies: only what Valefront sells', () => {
-  it('never picks a model outside the public catalog, even offered, priced, served and cheaper (Azure/Workers AI, live 2026-11-06)', async () => {
+describe('routing strategies: only what Valefront sells, plus the owner\'s own providers', () => {
+  it('a customer key never gets a model outside the public catalog; a shared-pool key may use its owner\'s providers', async () => {
     const OTHER = 'gpt-5.6-luna';
     PRICES[OTHER] = { input: 0.001, output: 0.001 };
     try {
       const { app, upstream, makeKey } = setup({ models: [LITE, MINI, FLASH, OTHER] });
-      const key = await makeKey();
-      for (const s of ['auto:cheapest', 'auto:best', 'auto:fastest', 'auto:balanced']) {
-        const r = await chat(app, key, s);
-        expect(r.status).toBe(200);
-        expect(r.headers['x-valefront-route']).not.toContain(OTHER);
-      }
-      expect(upstream.seen).not.toContain(OTHER);
-      // Named explicitly, an offered model still works for whoever may use it (a pool key).
-      expect((await chat(app, key, OTHER)).status).toBe(200);
+      // Shared-pool key (no workspace): the owner's own provider (BYOK) is a candidate, and here the cheapest.
+      const pool = await makeKey();
+      expect((await chat(app, pool, 'auto:cheapest')).headers['x-valefront-route']).toContain(`model=${OTHER}`);
+      expect(upstream.seen).toContain(OTHER);
+      // A customer's key never gets it: see 'a customer on free tokens alone…' below (gpt-5.5, not sold, never picked).
     } finally {
       delete PRICES[OTHER];
     }

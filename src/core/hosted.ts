@@ -325,10 +325,11 @@ export function strategyEnv(router: Router, opts: HostedOptions | undefined, key
   return {
     offered: async () => {
       const pool = opts?.models.length ? opts.models : Object.keys(router.getModelIndex());
-      // Only models Valefront sells (its public catalog: BytePlus): a strategy must never route a customer to a
-      // provider Valefront doesn't resell (live 2026-11-06 it picked Workers AI and Azure models for a pool key).
+      // A customer's key (a dash workspace) gets only models Valefront sells (its public catalog: BytePlus), never a
+      // provider Valefront doesn't resell (live 2026-11-06 a strategy picked Workers AI and Azure models). A
+      // shared-pool key may also use the providers its owner configured with their own keys (BYOK, Steve).
       return pool.filter((m) => !m.includes('*') && !isMediaModel(m) && capabilitiesForModel(m).join() === 'chat'
-        && (!opts || isPublicSaleModel(m))
+        && (!opts || !key?.workspaceId || isPublicSaleModel(m))
         && (!key || modelAllowed(key.caps, m)) && (!opts || !isBlocked(opts, m))
         // A customer with no balance, on free tokens: free-tier models only (anything else would be charged).
         && (!freeTokensOnly || !opts?.billing || opts.billing.isFreeModel(m)));
