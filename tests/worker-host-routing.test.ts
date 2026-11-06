@@ -1,4 +1,4 @@
-import { dashboardApiRequest, dashboardPageRedirect, dashboardRouteRedirect, legacyDashboardRedirect } from '../worker/host-routing';
+import { dashboardApiRequest, dashboardPagePath, dashboardPageRedirect, legacyDashboardRedirect } from '../worker/host-routing';
 
 describe('legacy dashboard host routing', () => {
   test.each(['/', '/dashboard', '/dashboard/', '/auth/login', '/auth/callback'])(
@@ -48,16 +48,21 @@ describe('legacy dashboard host routing', () => {
   });
 });
 describe('dashboard pages linked as paths', () => {
-  test('https://dash.valefront.com/billing (the 402 message, PayPal\'s return) opens the Billing page with its query', () => {
-    const response = dashboardRouteRedirect(new URL('https://dash.valefront.com/billing?paypal=return&order=ord_1'));
-    expect(response?.status).toBe(302);
-    expect(response?.headers.get('location')).toBe('https://dash.valefront.com/#/billing?paypal=return&order=ord_1');
+  const get = (u: string, accept = 'text/html,application/xhtml+xml') => new Request(u, { headers: { accept } });
+  test('https://dash.valefront.com/billing (the 402 message, PayPal\'s return) is served as the app, query kept for it', () => {
+    const u = 'https://dash.valefront.com/billing?paypal=return&order=ord_1';
+    expect(dashboardPagePath(get(u), new URL(u))).toBe(true);
+    for (const p of ['/keys', '/providers', '/playground', '/spending', '/usage', '/get-started', '/data/']) {
+      expect(dashboardPagePath(get(`https://dash.valefront.com${p}`), new URL(`https://dash.valefront.com${p}`))).toBe(true);
+    }
   });
 
-  test('old paths keep working; API hosts and API paths are left alone', () => {
-    expect(dashboardRouteRedirect(new URL('https://dash.valefront.com/usage'))?.headers.get('location')).toBe('https://dash.valefront.com/#/usage');
-    expect(dashboardRouteRedirect(new URL('https://llm.valefront.com/billing'))).toBeNull();
-    expect(dashboardRouteRedirect(new URL('https://dash.valefront.com/dashboard/me/billing'))).toBeNull();
+  test('API hosts, API paths, non-HTML and non-GET requests are left alone', () => {
+    const u = 'https://dash.valefront.com/billing';
+    expect(dashboardPagePath(get('https://llm.valefront.com/billing'), new URL('https://llm.valefront.com/billing'))).toBe(false);
+    expect(dashboardPagePath(get('https://dash.valefront.com/dashboard/me/billing'), new URL('https://dash.valefront.com/dashboard/me/billing'))).toBe(false);
+    expect(dashboardPagePath(get(u, 'application/json'), new URL(u))).toBe(false);
+    expect(dashboardPagePath(new Request(u, { method: 'POST', headers: { accept: 'text/html' } }), new URL(u))).toBe(false);
   });
 
   test('the PayPal webhook is not rewritten into the dashboard API', () => {

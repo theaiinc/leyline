@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
-import { useHashRoute } from '@/hooks/use-hash-route';
+import { usePathRoute } from '@/hooks/use-path-route';
 import { cn } from '@/lib/utils';
 import { Turnstile } from './turnstile';
 import { KeyBadge, MintButton, Step, WelcomeHero, friendlyModel } from './welcome';
@@ -108,7 +108,7 @@ const ALIASES: Record<string, string> = { usage: 'spending' };
 export function CustomerApp({ dark, toggleTheme }: { dark: boolean; toggleTheme: () => void }) {
   const [me, setMe] = useState<Me | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [page, go] = useHashRoute('get-started');
+  const [page, go] = usePathRoute('get-started');
   const load = useCallback(async () => {
     try {
       setMe(await api<Me>('/dashboard/me'));
@@ -901,13 +901,13 @@ function BillingPage({ me, reload }: { me: Me; reload: () => Promise<void> }) {
   const load = useCallback(async () => setBilling(await api<Billing>('/dashboard/me/billing')), []);
   useEffect(() => { void load().catch(failToast); }, [load]);
 
-  // Back from PayPal (#/billing?paypal=return&order=…): capture, once.
+  // Back from PayPal (/billing?paypal=return&order=…; older links #/billing?…): capture, once.
   useEffect(() => {
-    const q = new URLSearchParams(window.location.hash.split('?')[1] ?? '');
+    const q = new URLSearchParams(window.location.search || (window.location.hash.split('?')[1] ?? ''));
     const order = q.get('order');
     const flow = q.get('paypal');
     if (!order || !flow) return;
-    window.history.replaceState(null, '', '/#/billing');
+    window.history.replaceState(null, '', '/billing');
     if (flow === 'cancel') { toast.message('Payment cancelled; nothing was charged.'); return; }
     void api<Order>(`/dashboard/me/billing/orders/${order}/paypal-capture`, { method: 'POST', body: {} })
       .then((o) => { toast.success(o.status === 'paid' ? `Paid: ${usd(o.amountCents)} credit added. Your receipt is on its way by email.` : 'Payment received; credit is added as soon as PayPal confirms it.'); })
