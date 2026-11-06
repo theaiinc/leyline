@@ -368,3 +368,61 @@ describe('adm: a pool provider copied into a workspace', () => {
     expect(p.name).toBe('BYOK:A');
   });
 });
+
+describe('workspace keys get only what Valefront sells from the pool (PR B)', () => {
+  function sellsOnly(h: H, sold: string[]) {
+    h.hosted.soldModel = (m) => sold.includes(m);
+  }
+
+  it('a model Valefront does not sell is 404 model_not_offered for a workspace key, pointing to Your providers', async () => {
+    const h = setup();
+    sellsOnly(h, ['seed-2-0-lite-260428']);
+    const a = await customer(h, 'sub-a', 'a@example.com', '203.0.113.1');
+    await h.store.addAdjustment(a.ws.id, 1000, 'test credit', 'test:enforce1');
+    const res = await chat(h, a.key, 'gpt-5.5');
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('model_not_offered');
+    expect(res.body.error.message).toContain('Your providers');
+    const messages = await request(h.app).post('/v1/messages').set('x-api-key', a.key).send({ model: 'gpt-5.5', max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] });
+    expect(messages.status).toBe(404);
+    expect((await request(h.app).post('/v1/responses').set('Authorization', `Bearer ${a.key}`).send({ model: 'gpt-5.5', input: 'hi' })).status).toBe(404);
+    expect(h.upstream.seen).toHaveLength(0);
+    // A sold model still works, and so does routing.
+    expect((await chat(h, a.key, 'seed-2-0-lite-260428')).status).toBe(200);
+    // An alias to a model Valefront doesn't sell is refused too.
+    h.hosted.aliases = { 'claude-*': 'gpt-5.5' };
+    expect((await chat(h, a.key, 'claude-sonnet-5')).body.error.code).toBe('model_not_offered');
+  });
+
+  it('the same model through the workspace own provider works, and /v1/models lists sold plus own models only', async () => {
+    const h = setup();
+    sellsOnly(h, ['seed-2-0-lite-260428']);
+    const a = await customer(h, 'sub-a', 'a@example.com', '203.0.113.1');
+    await addProvider(h, a.cookie, { ...GATEWAY, models: ['gpt-5.5'] });
+    expect((await chat(h, a.key, 'gpt-5.5')).status).toBe(200);
+    expect(calls[0]!.url).toBe('https://gateway.example.com/v1/chat/completions');
+    const ids = (await request(h.app).get('/v1/models').set('Authorization', `Bearer ${a.key}`)).body.data.map((m: { id: string }) => m.id);
+    expect(ids).toEqual(expect.arrayContaining(['seed-2-0-lite-260428', 'gpt-5.5']));
+    expect(ids).not.toContain('unpriced-model');
+  });
+
+  it('shared-pool keys (no workspace) keep every pool model', async () => {
+    const h = setup();
+    sellsOnly(h, ['seed-2-0-lite-260428']);
+    const { key } = await h.keys.create({ name: 'pool', by: 'token' });
+    expect((await chat(h, key, 'gpt-5.5')).status).toBe(200);
+    const ids = (await request(h.app).get('/v1/models').set('Authorization', `Bearer ${key}`)).body.data.map((m: { id: string }) => m.id);
+    expect(ids).toContain('gpt-5.5');
+  });
+
+  it("the owner's own workspace is held to it too, so its keys use the copied BYOK provider", async () => {
+    const h = setup();
+    sellsOnly(h, ['seed-2-0-lite-260428']);
+    const own = await customer(h, 'sub-o', 'owner@valefront.com', '203.0.113.9');
+    expect((await chat(h, own.key, 'gpt-5.5')).body.error.code).toBe('model_not_offered');
+    h.router.addProvider(AzureOpenAIProvider.forInstance({ id: 'pool-az', endpoint: 'https://pool.openai.azure.com/openai/v1', deployment: 'gpt-5.5', apiKey: POOL_SECRET }));
+    expect((await request(h.app).post(`/admin/api/workspaces/${own.ws.id}/providers/from-pool`).set(ADMIN).send({ provider: 'AzureOpenAI:pool-az' })).status).toBe(201);
+    expect((await chat(h, own.key, 'gpt-5.5')).status).toBe(200);
+    expect(calls[0]!.url).toBe('https://pool.openai.azure.com/openai/v1/chat/completions');
+  });
+});

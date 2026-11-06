@@ -78,6 +78,8 @@ export function hostedBilling(over: { hosted?: Partial<HostedOptions>; billing?:
     // Real prices for two models; "unpriced-model" has none; no published prices in tests.
     prices: { 'seed-2-0-lite-260428': { input: 1, output: 2 }, 'gpt-5.5': { input: 5, output: 15 } },
     usePublishedPrices: false,
+    // What these tests' Valefront sells to workspace keys: the test catalog (production: the BytePlus catalog).
+    soldModel: (m) => ['seed-2-0-lite-260428', 'gpt-5.5', 'unpriced-model'].includes(m),
     billing: fx.service,
     turnstile: { siteKey: 'site-key', verify: async (token) => { turnstile.calls++; return turnstile.tokens.has(token); } },
     adminHost: 'adm.valefront.com',
