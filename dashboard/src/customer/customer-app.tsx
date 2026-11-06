@@ -3,7 +3,7 @@ import { BookOpen, Calculator, ChevronDown, CreditCard, Gift, Database, KeyRound
 import { SideNav, navIds, type NavEntry } from '@/components/side-nav';
 import { CalculatorPage } from '@/pages/calculator';
 import { toast } from 'sonner';
-import { api, apiUrl } from '@/api';
+import { api, apiUrl, ROUTING_STRATEGY_OPTIONS, type RoutingStrategy } from '@/api';
 import { CopyButton, PageHeader } from '@/components/common';
 import { AppShell } from '@/components/app-shell';
 import { Button } from '@/components/ui/button';
@@ -37,7 +37,7 @@ type Me = {
 
 type PiiMode = 'off' | 'regex' | 'presidio';
 type KeyView = {
-  id: string; name: string; prefix: string; createdAt: number; revokedAt: number | null; lastUsedAt: number | null; piiProtection?: PiiMode;
+  id: string; name: string; prefix: string; createdAt: number; revokedAt: number | null; lastUsedAt: number | null; piiProtection?: PiiMode; routingStrategy?: RoutingStrategy | null;
   usage: { month: string; requests: number; promptTokens: number; completionTokens: number; byModel: Record<string, { requests: number; tokens: number }>; addons?: Record<string, { requests: number; tokens: number; usd: number }>; promotions?: Record<string, PromotionLine> };
 };
 /** The PII protection add-on as the server offers it (GET /dashboard/me/keys). */
@@ -435,6 +435,18 @@ function KeysPage({ me }: { me: Me }) {
       setBusy(null);
     }
   }
+  async function setRouting(k: KeyView, strategy: RoutingStrategy | null) {
+    setBusy(k.id);
+    try {
+      await api(`/dashboard/me/keys/${k.id}/routing`, { method: 'PUT', body: { strategy } });
+      toast.success(strategy ? `"${k.name}" routes auto by ${strategy}.` : `"${k.name}" routes auto as before.`);
+      await load();
+    } catch (err) {
+      failToast(err);
+    } finally {
+      setBusy(null);
+    }
+  }
   async function revoke(k: KeyView) {
     if (!window.confirm(`Revoke "${k.name}" (${k.prefix}…)? Anything using it stops working.`)) return;
     try {
@@ -484,6 +496,19 @@ function KeysPage({ me }: { me: Me }) {
                       <option value="presidio">Thorough (also names, addresses, IDs)</option>
                     </select>
                   ) : null}
+                </div>
+              )}
+              {k.revokedAt ? null : (
+                <div className="flex w-full flex-wrap items-center gap-3 border-t pt-3">
+                  <div className="grid min-w-0 flex-1 gap-0.5">
+                    <Label htmlFor={`routing-${k.id}`}>Routing for <code>auto</code></Label>
+                    <p className="text-xs text-muted-foreground">Which model answers <code>model: "auto"</code> chat requests. A request naming <code>auto:cheapest</code>, <code>auto:best</code>, <code>auto:fastest</code> or <code>auto:balanced</code> wins. You pay the price of the model that answers.</p>
+                  </div>
+                  <select id={`routing-${k.id}`} className="h-8 rounded-md border bg-background px-2 text-xs" value={k.routingStrategy ?? ''} disabled={busy === k.id}
+                    onChange={(e) => setRouting(k, (e.target.value || null) as RoutingStrategy | null)}>
+                    <option value="">Default</option>
+                    {ROUTING_STRATEGY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}: {o.hint}</option>)}
+                  </select>
                 </div>
               )}
             </div>

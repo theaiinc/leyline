@@ -16,7 +16,8 @@ import { adminHostGate, mountAdminBilling } from './core/admin-billing';
 import { vndRate } from './core/fx';
 import { mountAdminPartners, mountPartnerInquiryApi } from './core/partner-inquiries';
 import { mountCustomerRoutes } from './core/customer-routes';
-import { adminOf, sessionOf, mountHosted, providersOverBudget, resumeAdminSession, recordUsage, servedBy, requireIssuedKey, resolveModel, sameOrigin, type HostedOptions } from './core/hosted';
+import { routeByPlan, routeHeader, streamByPlan, strategyErrorResponse, type RoutePlan } from './core/routing-strategies';
+import { chatRoutePlan, adminOf, sessionOf, mountHosted, providersOverBudget, resumeAdminSession, recordUsage, servedBy, requireIssuedKey, resolveModel, sameOrigin, type HostedOptions } from './core/hosted';
 import { createRequireAegisToken, AegisTenant } from './core/aegis-auth';
 import { chatCompletionErrorResponse, formatProviderError, hydrateAxiosError } from './core/api-errors';
 import { normalizeCompletionRequest } from './core/normalize-request';
@@ -260,7 +261,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
 
   // The valefront.com "Partner with Valefront" form: its own CORS (valefront.com only), so before the open one.
   if (hosted) mountPartnerInquiryApi(app, hosted);
-  app.use(cors({ exposedHeaders: ['Mcp-Session-Id'] }));
+  app.use(cors({ exposedHeaders: ['Mcp-Session-Id', 'X-Valefront-Route'] }));
   // The PayPal webhook's signature is checked over the body exactly as it arrived (SePay's key is a header).
   app.use(express.json({ limit: config.bodyLimit, verify: (req, _res, buf) => { if ((req as Request).url?.startsWith('/webhooks/')) (req as Request & { rawBody?: Buffer }).rawBody = Buffer.from(buf); } }));
   // The platform admin host (adm.valefront.com, behind Cloudflare Access): every request there is checked first;
@@ -1032,6 +1033,18 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     return res.json({ removed: true });
   });
 
+  /** The routing-strategy plan for a chat request (null: route as today), or the refusal to answer with. */
+  const planChatRoute = async (req: Request, request: import('./core/types').CompletionRequest, excludeProviders?: string[]): Promise<{ plan: RoutePlan | null } | { refused: { status: number; body: unknown } }> => {
+    try {
+      return { plan: await chatRoutePlan(router, hosted, req, request, excludeProviders ?? []) };
+    } catch (err) {
+      const refused = strategyErrorResponse(err);
+      if (refused) return { refused };
+      console.error('[strategy] routing plan failed', err);
+      return { refused: { status: 503, body: { error: { message: 'Valefront could not pick a model just now; try again.', type: 'service_unavailable', code: 'routing_unavailable' } } } };
+    }
+  };
+
   // Existing: chat completions endpoint (with provider failover)
   app.post('/v1/chat/completions', authMiddleware, async (req, res) => {
     await apiKeyInitialization;
@@ -1070,6 +1083,11 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       // Hosted: providers at their monthly spend limit are skipped (providersOverBudget).
       ...(hosted ? { excludeProviders: await providersOverBudget(hosted) } : {}),
     };
+    // auto:cheapest / best / fastest / balanced (or a key's default strategy for auto): an ordered list of models.
+    const planned = forceProvider ? { plan: null } : await planChatRoute(req, request, routeOptions.excludeProviders);
+    if ('refused' in planned) return res.status(planned.refused.status).json(planned.refused.body);
+    const { plan } = planned;
+    const setRoute = (model: string) => { if (plan && !res.headersSent) res.setHeader('X-Valefront-Route', routeHeader(plan, model)); };
 
     try {
       if (request.stream) {
@@ -1078,7 +1096,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
         res.setHeader('Connection', 'keep-alive');
 
         const routeAt = Date.now();
-        const stream = await router.routeStream(request, routeOptions);
+        const stream = plan ? streamByPlan(router, request, plan, routeOptions, setRoute) : await router.routeStream(request, routeOptions);
         const routeMs = Date.now() - routeAt;
         // The same, for the caller: Server-Timing goes out with the headers, before the first chunk.
         const t = (req as { timings?: { lookupMs: number; admitMs: number } }).timings;
@@ -1133,7 +1151,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
         logTenantUsage(req, request.model, streamUsage, streamChars);
 
       } else {
-        const response = await router.route(request, routeOptions);
+        const response = plan ? await routeByPlan(router, request, plan, routeOptions, setRoute) : await router.route(request, routeOptions);
         const hydrated = pii ? { ...response, choices: response.choices?.map((choice) => ({
           ...choice,
           message: choice.message ? {
@@ -1202,6 +1220,10 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       onServed: servedBy(req),
       ...(hosted ? { excludeProviders: await providersOverBudget(hosted) } : {}),
     };
+    const planned = await planChatRoute(req, request, routeOptions.excludeProviders);
+    if ('refused' in planned) return res.status(planned.refused.status).json(planned.refused.body);
+    const { plan } = planned;
+    const setRoute = (model: string) => { if (plan && !res.headersSent) res.setHeader('X-Valefront-Route', routeHeader(plan, model)); };
     // Usage as the provider reported it, else estimated (four characters a token), the way recordUsage counts it.
     const counted = (usage: { prompt_tokens?: number; completion_tokens?: number } | undefined, outChars: number) =>
       usage && ((usage.prompt_tokens ?? 0) > 0 || (usage.completion_tokens ?? 0) > 0)
@@ -1212,7 +1234,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       const out = new ResponsesStream(echo, tools);
       try {
         const routeAt = Date.now();
-        const stream = await router.routeStream(request, routeOptions);
+        const stream = plan ? streamByPlan(router, request, plan, routeOptions, setRoute) : await router.routeStream(request, routeOptions);
         // The SSE headers go out with the first event, so a provider that fails before its first chunk still gets a
         // plain JSON error with its status.
         const send = (events: ReturnType<ResponsesStream['push']>) => {
@@ -1269,7 +1291,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     }
 
     try {
-      const response = await router.route(request, routeOptions);
+      const response = plan ? await routeByPlan(router, request, plan, routeOptions, setRoute) : await router.route(request, routeOptions);
       const hydrated = pii ? { ...response, choices: response.choices?.map((choice) => ({
         ...choice,
         message: choice.message ? {

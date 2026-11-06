@@ -20,6 +20,10 @@ import { RepriceRefused, repriceSpend } from './spend-reprice';
 import { accessAdminOf } from './admin-billing';
 import { isMediaModel, isSoldMediaModel } from './media-catalog';
 import { mountAdminCampaigns } from './admin-campaigns';
+import { Memo, isRouterPick, planStrategy, strategyFor, isRoutingStrategy, routeByPlan, routeHeader, streamByPlan, strategyErrorResponse, ROUTING_STRATEGIES, type RoutePlan, type StrategyEnv } from './routing-strategies';
+import { BYTEPLUS_BENCHMARK_ALIASES, byteplusChatModelReadsImages } from '../providers/byteplus';
+import { logger, type LogEntry } from './logger';
+import type { CompletionRequest } from './types';
 
 /** An image or video generation, for pricing it under a promotion (recordUsage). */
 export type MediaChargeBasis = Extract<ChargeBasis, { kind: 'image' | 'video' }>;
@@ -102,7 +106,7 @@ export type HostedOptions = {
   providerEnv?: Record<string, string | undefined>;
 };
 
-type WithKey = Request & { issuedKey?: IssuedKey; requestedModel?: string; ownerRequest?: boolean; workspace?: WorkspaceRecord; served?: { provider: string; model: string }; timings?: { lookupMs: number; admitMs: number }; pii?: RequestPiiRedactor };
+type WithKey = Request & { issuedKey?: IssuedKey; freeTokensOnly?: boolean; requestedModel?: string; ownerRequest?: boolean; workspace?: WorkspaceRecord; served?: { provider: string; model: string }; timings?: { lookupMs: number; admitMs: number }; pii?: RequestPiiRedactor };
 
 /** Route option that remembers which provider and model served this request (for spend by provider and model). */
 export function servedBy(req: Request): (provider: string, model: string) => void {
@@ -151,7 +155,10 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
     }
     if (!key) return fail(401, 'invalid_api_key', 'Incorrect API key provided.');
     const requested = typeof req.body?.model === 'string' ? req.body.model : '';
-    const offered = !requested || requested === 'auto' || requested === 'auto-vision' || opts.models.length === 0 || opts.models.some((m) => modelAllowed({ models: [m] }, requested)) || !!resolveAlias(opts, requested) || isSoldMediaModel(requested);
+    if (/^auto:/i.test(requested.trim()) && !isRoutingStrategy(requested.trim().slice(5).toLowerCase())) {
+      return fail(400, 'unknown_routing_strategy', `Unknown routing strategy "${requested}": use ${ROUTING_STRATEGIES.map((s) => `auto:${s}`).join(', ')}, auto, or a model id.`);
+    }
+    const offered = isRouterPick(requested) || opts.models.length === 0 || opts.models.some((m) => modelAllowed({ models: [m] }, requested)) || !!resolveAlias(opts, requested) || isSoldMediaModel(requested);
     if (!offered) return fail(404, 'model_not_found', `The model "${requested}" is not offered here; see /v1/models.`);
     if (requested && isBlocked(opts, requested)) {
       return fail(403, 'model_disabled', `The model "${requested}" is turned off here; see /v1/models for what you can use.`);
@@ -174,7 +181,7 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
       if (!ws || ws.deletedAt) return fail(401, 'key_revoked', 'This API key has been revoked.');
       if (!isAdminEmail(opts, ws.email)) {
         const target = resolveModel(opts.aliases, requested);
-        const routerPicks = !requested || requested === 'auto' || requested === 'auto-vision';
+        const routerPicks = isRouterPick(requested);
         if (!routerPicks && !realPrice(opts, target) && !isMediaModel(target)) {
           return fail(403, 'model_not_priced', `The model "${requested}" has no published price yet, so it can't be used with this key; see https://llm.valefront.com/v1/pricing.`);
         }
@@ -186,6 +193,8 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
           return fail(503, 'billing_unavailable', 'Valefront could not check your balance just now; try again.');
         }
         if ('refusal' in admission) return fail(admission.refusal.status, admission.refusal.code, admission.refusal.message);
+        // Admitted on free tokens alone (no balance): a routing strategy may pick only free-tier models.
+        if (routerPicks && admission.mode === 'free' && !admission.paid) (req as WithKey).freeTokensOnly = true;
         (req as WithKey).workspace = ws;
       }
     }
@@ -291,6 +300,59 @@ export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_
       opts.background?.(addon);
     }
   }
+}
+
+// ── routing strategies (auto:cheapest / best / fastest / balanced, src/core/routing-strategies.ts) ──────────
+
+/** Benchmarks and the request log, read at most every 10 minutes / every minute for routing strategies. */
+const strategyBenchmarks = new Memo<BenchmarkSnapshot | null>(10 * 60_000);
+const strategyLogs = new Memo<LogEntry[]>(60_000);
+
+/** Forget the cached benchmarks and request log (tests). */
+export function clearStrategyCaches(): void {
+  strategyBenchmarks.clear();
+  strategyLogs.clear();
+}
+
+/**
+ * What a routing strategy may pick from for this request: chat models offered here (opts.models, or every model the
+ * providers list when none are configured), not blocked, allowed for the key, with a real price, served by a
+ * provider that isn't over its monthly budget and reports available; free-tier models only for a customer admitted on
+ * free tokens alone. Without hosted mode: every listed model with a published price.
+ */
+export function strategyEnv(router: Router, opts: HostedOptions | undefined, key: IssuedKey | undefined, excludeProviders: string[] = [], freeTokensOnly = false): StrategyEnv {
+  return {
+    offered: async () => {
+      const pool = opts?.models.length ? opts.models : Object.keys(router.getModelIndex());
+      return pool.filter((m) => !m.includes('*') && !isMediaModel(m) && capabilitiesForModel(m).join() === 'chat'
+        && (!key || modelAllowed(key.caps, m)) && (!opts || !isBlocked(opts, m))
+        // A customer with no balance, on free tokens: free-tier models only (anything else would be charged).
+        && (!freeTokensOnly || !opts?.billing || opts.billing.isFreeModel(m)));
+    },
+    price: (m) => (opts ? realPrice(opts, m) : router.anyPublishedPrice(m) ?? builtinPrice(m)),
+    served: async (m) => {
+      for (const provider of await router.chatProvidersFor(m)) {
+        if (excludeProviders.includes(provider.name)) continue;
+        if (await provider.isAvailable()) return true;
+      }
+      return false;
+    },
+    readsImages: byteplusChatModelReadsImages,
+    benchmarkAliases: BYTEPLUS_BENCHMARK_ALIASES,
+    ...(opts?.benchmarks ? { benchmarks: () => strategyBenchmarks.get(() => opts.benchmarks!()) } : {}),
+    recentLogs: () => strategyLogs.get(() => logger.recent()),
+  };
+}
+
+/**
+ * The routing plan for a chat request (`auto:<strategy>`, or `auto` on a key with a default strategy), or null to
+ * route it as today. Throws UnknownStrategyError for an unknown strategy and NoEligibleModelError when nothing fits.
+ */
+export async function chatRoutePlan(router: Router, opts: HostedOptions | undefined, req: Request, request: CompletionRequest, excludeProviders: string[] = []): Promise<RoutePlan | null> {
+  const key = (req as WithKey).issuedKey;
+  const strategy = strategyFor(request.model, key?.caps.routingStrategy);
+  if (!strategy) return null;
+  return planStrategy(strategy, request, strategyEnv(router, opts, key, excludeProviders, (req as WithKey).freeTokensOnly === true));
 }
 
 /** PII protection is on for this key (any mode but off). */
@@ -527,6 +589,18 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
     request.model = resolveModel(opts.aliases, asked);
     const pii = (req as WithKey).pii;
     if (pii) request = await pii.redact(request);
+    const excludeProviders = await providersOverBudget(opts);
+    let plan: RoutePlan | null;
+    try {
+      plan = await chatRoutePlan(router, opts, req, request, excludeProviders);
+    } catch (err) {
+      const refused = strategyErrorResponse(err);
+      if (!refused) console.error('[hosted] /v1/messages routing plan failed', err);
+      const status = refused?.status ?? 503;
+      return res.status(status).json(anthropicError(status, refused?.body.error.message ?? 'Valefront could not pick a model just now; try again.'));
+    }
+    const routeOpts = { onServed: servedBy(req), excludeProviders };
+    const setRoute = (model: string) => { if (plan && !res.headersSent) res.setHeader('X-Valefront-Route', routeHeader(plan, model)); };
     try {
       if (request.stream) {
         res.setHeader('Content-Type', 'text/event-stream');
@@ -537,8 +611,8 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
           for (const e of events) res.write(`event: ${e.event}\ndata: ${JSON.stringify(e.data)}\n\n`);
         };
         try {
-          const excludeProviders = await providersOverBudget(opts);
-          for await (const chunk of await router.routeStream(request, { onServed: servedBy(req), excludeProviders })) {
+          const stream = plan ? streamByPlan(router, request, plan, routeOpts, setRoute) : router.routeStream(request, routeOpts);
+          for await (const chunk of stream) {
             if (pii) {
               for (const [choiceIndex, choice] of (chunk.choices ?? []).entries() as Iterable<[number, { delta?: { content?: string | null; tool_calls?: Array<{ function?: { arguments?: string } }> } }]>) {
                 if (choice.delta?.content) choice.delta.content = pii.rehydrateStream(choice.delta.content, `choice:${choiceIndex}:content`);
@@ -588,7 +662,7 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
         recordUsage(opts, req, out.tokens, out.chars);
         return;
       }
-      const response = await router.route(request, { onServed: servedBy(req), excludeProviders: await providersOverBudget(opts) });
+      const response = plan ? await routeByPlan(router, request, plan, routeOpts, setRoute) : await router.route(request, routeOpts);
       const hydrated = pii ? { ...response, choices: response.choices?.map((choice) => ({
         ...choice,
         message: choice.message ? {
