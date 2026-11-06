@@ -18,12 +18,17 @@ export function dashboardPageRedirect(url: URL): Response | null {
   return Response.redirect(target.toString(), 301);
 }
 
-/** Dashboard pages linked as paths (https://dash.valefront.com/billing, PayPal's return address) -> the page's hash route. */
-const DASHBOARD_ROUTES = new Set(['/billing', '/keys', '/usage', '/spending', '/calculator', '/data', '/get-started']);
-export function dashboardRouteRedirect(url: URL): Response | null {
-  if (url.hostname === 'llm.valefront.com' || url.hostname === 'llm.theaiinc.com') return null;
-  if (!DASHBOARD_ROUTES.has(url.pathname)) return null;
-  return Response.redirect(new URL(`/#${url.pathname}${url.search}`, url.origin).toString(), 302);
+/**
+ * The customer dashboard's pages, linked as paths (https://dash.valefront.com/billing, PayPal's return address): the
+ * Worker serves the app for them and the app reads the page from the path (dashboard/src/hooks/use-path-route.ts).
+ * Only a browser's page load (GET/HEAD asking for HTML), so the old root API paths and webhooks are untouched.
+ */
+export const CUSTOMER_PAGES = new Set(['/get-started', '/keys', '/providers', '/playground', '/billing', '/spending', '/usage', '/calculator', '/data']);
+export function dashboardPagePath(request: Request, url: URL): boolean {
+  if (url.hostname === 'llm.valefront.com' || url.hostname === 'llm.theaiinc.com') return false;
+  if (request.method !== 'GET' && request.method !== 'HEAD') return false;
+  if (!CUSTOMER_PAGES.has(url.pathname.replace(/\/+$/, ''))) return false;
+  return (request.headers.get('accept') ?? '').includes('text/html');
 }
 
 /** Rewrites browser-cached root API paths to the dashboard API namespace on dashboard hosts. */

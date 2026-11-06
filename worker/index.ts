@@ -24,7 +24,7 @@ import { BYTEPLUS_BENCHMARK_ALIASES } from '../src/providers/byteplus';
 import { fetchBenchmarkSnapshot, mapBenchmarkSnapshot, refreshBenchmarks, type BenchmarkCache, type BenchmarkSnapshot } from '../src/core/benchmarks';
 import type { ModelListSnapshot } from '../src/core/router';
 import type { WorkersAiBinding } from '../src/providers/workers-ai';
-import { dashboardApiRequest, dashboardPageRedirect, dashboardRouteRedirect, legacyDashboardRedirect } from './host-routing';
+import { dashboardApiRequest, dashboardPagePath, dashboardPageRedirect, legacyDashboardRedirect } from './host-routing';
 
 /**
  * Hosted Valefront on Cloudflare Workers. The same Express app as the Node server (src/server.ts), in hosted keys
@@ -356,8 +356,15 @@ export default {
     if (url.pathname === '/' && url.hostname === 'llm.valefront.com') {
       return Response.redirect(new URL('https://dash.valefront.com/').toString(), 301);
     }
-    const dashboardRedirect = dashboardPageRedirect(url) ?? dashboardRouteRedirect(url);
+    const dashboardRedirect = dashboardPageRedirect(url);
     if (dashboardRedirect) return dashboardRedirect;
+    // A customer page as a path (/billing, /keys …): the dashboard app, which reads the page from the path.
+    if (dashboardPagePath(request, url)) {
+      const res = await env.ASSETS.fetch(new Request(new URL('/', url), request));
+      const page = new Response(res.body, res);
+      page.headers.set('Cache-Control', 'no-store');
+      return page;
+    }
 
     const asset = assetPath(url.pathname);
     if (asset) {
