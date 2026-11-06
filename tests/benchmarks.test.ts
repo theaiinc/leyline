@@ -99,11 +99,11 @@ describe('benchmark matching and ranking', () => {
       lmarenaUrl: 'https://example.test/empty-lmarena',
     });
     global.fetch = originalFetch;
-    const liveCodeBench = result.benchmarks.find((benchmark) => benchmark.id === 'livecodebench');
-    expect(liveCodeBench).toMatchObject({ available: false });
-    expect(liveCodeBench?.unavailableReason).toContain('LiveCodeBench');
-    expect(liveCodeBench?.unavailableReason).toMatch(/ on \d{4}-\d{2}-\d{2} /);
-    expect(liveCodeBench?.unavailableReason).toContain('https://');
+    const liveBench = result.benchmarks.find((benchmark) => benchmark.id === 'livebench');
+    expect(liveBench).toMatchObject({ available: false });
+    expect(liveBench?.unavailableReason).toContain('LiveBench');
+    expect(liveBench?.unavailableReason).toMatch(/ on \d{4}-\d{2}-\d{2} /);
+    expect(liveBench?.unavailableReason).toContain('https://');
   });
 
   it('parses LMArena datasets-server rows and keeps the best normalized model score', async () => {
@@ -202,3 +202,24 @@ describe('benchmark cache fallback', () => {
     expect(stored).toBe(fresh);
   });
 }); 
+describe("Epoch's current file names", () => {
+  it('reads LiveBench from live_bench_external.csv and the intelligence index from the ECI file', async () => {
+    const { zipSync, strToU8 } = await import('fflate');
+    const zip = zipSync({
+      'live_bench_external.csv': strToU8('Model version,Global average,Release date\nmodel-a,82.35,2025-03-25\n'),
+      'epoch_capabilities_index/eci_scores.csv': strToU8('Model,Display name,eci,eci_ci_low,eci_ci_high,date\nModel B,Model B,169.07,166.16,172.28,2026-09-03\n'),
+    });
+    const { fetchEpochSnapshot } = await import('../src/core/benchmarks');
+    const originalFetch = global.fetch;
+    global.fetch = async () => new Response(zip, { status: 200 });
+    try {
+      const snapshot = await fetchEpochSnapshot('https://example.test/epoch.zip');
+      const byId = Object.fromEntries(snapshot.benchmarks.map((b) => [b.id, b]));
+      expect(byId.livebench?.scores[0]).toMatchObject({ score: 82.35 });
+      expect(byId['intelligence-index']?.scores[0]).toMatchObject({ score: 169.07 });
+      expect(snapshot.benchmarks.some((b) => (b.id as string) === 'livecodebench')).toBe(false);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+});

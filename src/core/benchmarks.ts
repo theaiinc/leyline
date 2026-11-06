@@ -2,7 +2,6 @@ export type BenchmarkId =
   | 'hle'
   | 'gpqa-diamond'
   | 'swe-bench-verified'
-  | 'livecodebench'
   | 'aime'
   | 'lmarena-text-elo'
   | 'intelligence-index'
@@ -44,7 +43,6 @@ const BENCHMARK_NAMES: Record<BenchmarkId, string> = {
   hle: "Humanity's Last Exam",
   'gpqa-diamond': 'GPQA Diamond',
   'swe-bench-verified': 'SWE-bench Verified',
-  livecodebench: 'LiveCodeBench',
   aime: 'AIME',
   'lmarena-text-elo': 'LMArena text Elo',
   'intelligence-index': 'Composite intelligence index',
@@ -210,16 +208,10 @@ function unavailableSourceReason(benchmark: Benchmark, date: string, sources: Be
   const links = sourceForBenchmark(benchmark, sources).map((source) => source.url).join(', ');
   const sourceLinks = links || sources.map((source) => source.url).join(', ');
   const failures = failedSources.length > 0 ? ` Failed sources: ${failedSources.join(', ')}.` : '';
-  const cause = benchmark.id === 'livecodebench'
-    ? ' The configured Epoch AI ZIP contains LiveBench data, not LiveCodeBench data.'
-    : '';
-  return `${benchmark.name} source has no data on ${date} (source: ${sourceLinks}).${cause}${failures}`;
+  return `${benchmark.name} source has no data on ${date} (source: ${sourceLinks}).${failures}`;
 }
 
 function sourceForBenchmark(benchmark: Benchmark, sources: BenchmarkSource[]): BenchmarkSource[] {
-  if (benchmark.id === 'livecodebench') {
-    return sources.filter((source) => source.name === 'epoch');
-  }
   const matching = sources.filter((source) => source.attribution === benchmark.source || source.name === benchmark.source);
   return matching.length > 0 ? matching : sources;
 }
@@ -244,11 +236,12 @@ function benchmarkId(value: string): BenchmarkId | null {
   const aliases: Record<string, BenchmarkId> = {
     gpqa: 'gpqa-diamond', 'gpqa-diamond': 'gpqa-diamond',
     'swe-bench-verified': 'swe-bench-verified', 'swebench-verified': 'swe-bench-verified',
-    livecodebench: 'livecodebench', livebench: 'livebench',
+    livebench: 'livebench', 'live-bench': 'livebench',
     'terminal-bench': 'terminal-bench', terminalbench: 'terminal-bench',
     aime: 'aime', 'aime-2024': 'aime',
     'humanitys-last-exam': 'hle', hle: 'hle',
     'lmarena-text-elo': 'lmarena-text-elo',
+    'intelligence-index': 'intelligence-index',
   };
   return aliases[normalized] ?? null;
 }
@@ -330,9 +323,10 @@ function parseCsv(csv: string, benchmark: string, scoreColumn: string): Benchmar
   if (records.length < 2) return [];
   const headers = records[0].map((header) => header.replace(/^\uFEFF/, '').trim());
   const index = (name: string) => headers.findIndex((header) => header.toLowerCase() === name.toLowerCase());
-  const modelIndex = index('Model version');
+  // Benchmark files name the model "Model version" and date "Release date"; the ECI file "Model" and "date".
+  const modelIndex = index('Model version') >= 0 ? index('Model version') : index('Model');
   const scoreIndex = index(scoreColumn);
-  const dateIndex = index('Release date');
+  const dateIndex = index('Release date') >= 0 ? index('Release date') : index('date');
   return records.slice(1).flatMap((fields) => {
     const model = asString(fields[modelIndex]);
     const score = Number(fields[scoreIndex]);
@@ -349,6 +343,10 @@ export async function fetchEpochSnapshot(url: string): Promise<BenchmarkSnapshot
     'otis_mock_aime_2024_2025.csv',
     'hle_external.csv',
     'livebench_external.csv',
+    // Renamed by Epoch by 2026-11 (LiveBench was empty on the Benchmarks page); both names are read.
+    'live_bench_external.csv',
+    // The composite intelligence index: Epoch's Capabilities Index, one score from many benchmarks.
+    'eci_scores.csv',
     'terminalbench_external.csv',
   ]);
   const bytes = new Uint8Array(await response.arrayBuffer());
@@ -369,6 +367,8 @@ export async function fetchEpochSnapshot(url: string): Promise<BenchmarkSnapshot
       otis_mock_aime_2024_2025: { benchmark: 'aime', scoreColumn: 'mean_score' },
       hle_external: { benchmark: 'hle', scoreColumn: 'Accuracy' },
       livebench_external: { benchmark: 'livebench', scoreColumn: 'Global average' },
+      live_bench_external: { benchmark: 'livebench', scoreColumn: 'Global average' },
+      eci_scores: { benchmark: 'intelligence-index', scoreColumn: 'eci' },
       terminalbench_external: { benchmark: 'terminal-bench', scoreColumn: 'Accuracy mean' },
     };
     const stem = file.replace(/\.csv$/, '').replace(/-/g, '_');
