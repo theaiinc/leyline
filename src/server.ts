@@ -7,6 +7,7 @@ import { Router } from './core/router';
 import { CompletionRequest, ClassifyRequest, Provider, ApiKeyConfigurableProvider, RuntimeConfigurableProvider, servesChat } from './core/types';
 import { mountMediaRoutes } from './core/media-routes';
 import { MEDIA_MODELS, MEDIA_PRICING_SOURCES, isSoldMediaModel } from './core/media-catalog';
+import { renderPricingPage, wantsPricingPage } from './core/pricing-page';
 import { logger } from './core/logger';
 import { QuotaManager } from './core/quota-manager';
 import { config } from './config';
@@ -514,13 +515,17 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     return { ...value, models: value.models.map(tag), media: value.media.map(tag), promotions: list };
   };
 
-  app.get('/v1/pricing', async (_req, res) => {
+  app.get('/v1/pricing', async (req, res) => {
+    // A browser gets a readable page; apps (and ?format=json) get JSON. Caches keep the two apart.
+    res.vary('Accept');
+    const page = wantsPricingPage(req.headers.accept, req.query.format);
+    const send = (out: unknown) => (page ? res.type('html').send(renderPricingPage(out as Record<string, unknown>)) : res.json(out));
     const now = Date.now();
     const cached = pricingCache;
     if (cached && cached.expiresAt > now) {
       const out = await withPromotions(cached.value as PricingValue);
       res.set('Cache-Control', `public, max-age=${out.promotions?.length ? 60 : 300}`);
-      res.json(out);
+      send(out);
       return;
     }
 
@@ -536,7 +541,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     }
     const out = await withPromotions(await pricingInFlight as PricingValue);
     res.set('Cache-Control', `public, max-age=${out.promotions?.length ? 60 : 300}`);
-    res.json(out);
+    send(out);
   });
 
   const mcpHandler = createMcpHttpHandler(router);
