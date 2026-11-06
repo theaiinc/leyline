@@ -86,8 +86,17 @@ describe('POST /v1/images/generations', () => {
     expect((await h.store.balance(h.ws.id)).availableMicros).toBe(10_000_000 - 60_000);
   });
 
-  it('FLUX on WaveSpeed: one call with num_images and size w*h, charged 3 x $0.012', async () => {
+  it('WaveSpeed is not sold to customer keys (Valefront resells BytePlus only): 404, no provider call', async () => {
     const h = await setup();
+    await h.store.addAdjustment(h.ws.id, 1000, 'test credit', 'test:media-ws');
+    const res = await request(h.app).post('/v1/images/generations').set(h.auth).send({ model: 'wavespeed-ai/flux-dev', prompt: 'a leaf' });
+    expect(res.status).toBe(404);
+    expect(h.up.calls).toHaveLength(0);
+  });
+
+  it('FLUX on WaveSpeed, when an admin offers it: one call with num_images and size w*h, charged 3 x $0.012', async () => {
+    const h = await setup();
+    h.hosted.models.push('wavespeed-ai/flux-dev');
     await h.store.addAdjustment(h.ws.id, 1000, 'test credit', 'test:media3');
     const res = await request(h.app).post('/v1/images/generations').set(h.auth).send({ model: 'wavespeed-ai/flux-dev', prompt: 'a leaf', n: 3, size: '512x512' });
     expect(res.status).toBe(200);
@@ -142,7 +151,8 @@ describe('videos', () => {
     const h = await setup();
     const res = await request(h.app).get('/v1/pricing');
     const media = res.body.media as Array<{ id: string; per_image?: number; per_1m_video_tokens?: number }>;
-    expect(media.find((m) => m.id === 'wavespeed-ai/flux-dev')).toMatchObject({ per_image: 0.012 });
+    expect(media.find((m) => m.id === 'wavespeed-ai/flux-dev')).toBeUndefined();
+    expect(media.find((m) => m.id === 'seedream-4-0-250828')).toMatchObject({ per_image: 0.03 });
     expect(media.find((m) => m.id === 'seedance-1-0-pro-fast-251015')).toMatchObject({ per_1m_video_tokens: 1 });
   });
 });

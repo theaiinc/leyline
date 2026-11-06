@@ -73,6 +73,14 @@ export function isMediaModel(id: string): boolean {
   return BY_ID.has(id);
 }
 
+/**
+ * Sold by Valefront itself: only BytePlus models (Valefront's one redistribution agreement, Steve 2026-11-06). Others
+ * here (WaveSpeed) are not listed publicly or offered to keys by default; an admin can still offer one on adm.
+ */
+export function isSoldMediaModel(id: string): boolean {
+  return BY_ID.get(id)?.provider === 'BytePlus';
+}
+
 export function mediaModelsOf(provider: MediaProvider, kind?: MediaKind): MediaModel[] {
   return MEDIA_MODELS.filter((m) => m.provider === provider && (!kind || m.kind === kind));
 }

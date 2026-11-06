@@ -6,7 +6,7 @@ import path from 'path';
 import { Router } from './core/router';
 import { CompletionRequest, ClassifyRequest, Provider, ApiKeyConfigurableProvider, RuntimeConfigurableProvider, servesChat } from './core/types';
 import { mountMediaRoutes } from './core/media-routes';
-import { MEDIA_MODELS, MEDIA_PRICING_SOURCES } from './core/media-catalog';
+import { MEDIA_MODELS, MEDIA_PRICING_SOURCES, isSoldMediaModel } from './core/media-catalog';
 import { logger } from './core/logger';
 import { QuotaManager } from './core/quota-manager';
 import { config } from './config';
@@ -480,7 +480,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       // Paid add-ons, charged on top of model usage (src/core/addons.ts): PII protection per 1M input tokens.
       addons: publicAddons(),
       // Image and video models (src/core/media-catalog.ts): per image, or per 1M tokens of the finished video.
-      media: MEDIA_MODELS.map((m) => ({
+      media: MEDIA_MODELS.filter((m) => isSoldMediaModel(m.id)).map((m) => ({
         id: m.id, name: m.name, provider: m.provider, kind: m.kind, source: MEDIA_PRICING_SOURCES[m.provider],
         ...(m.image ? { per_image: m.image.perImageUsd, ...(m.image.above ? { per_image_above_pixels: { pixels: m.image.above.pixels, per_image: m.image.above.perImageUsd } } : {}) } : {}),
         ...(m.video ? { per_1m_video_tokens: m.video.perMTokensUsd, ...(m.video.perMTokensUsd1080p !== undefined ? { per_1m_video_tokens_1080p: m.video.perMTokensUsd1080p } : {}), max_resolution: m.video.maxResolution, durations: m.video.durations } : {}),
