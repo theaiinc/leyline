@@ -108,6 +108,8 @@ export type HostedOptions = {
   providerEnv?: Record<string, string | undefined>;
   /** Workspaces' own providers (BYOK, src/core/workspace-providers.ts); unset: none, every model is the pool's. */
   workspaceProviders?: WorkspaceProviders | null;
+  /** What Valefront sells from the shared pool to workspace keys (default: isPublicSaleModel, the BytePlus catalog). */
+  soldModel?: (model: string) => boolean;
   /** A shared-pool provider's live settings, key included, for adm's from-pool copy (set by server.ts). */
   poolProvider?: (name: string) => Promise<PoolCredentials | null>;
 };
@@ -123,6 +125,8 @@ type WithKey = Request & {
 
 /** The endpoints a workspace's own providers (BYOK) serve: chat, in the OpenAI, Anthropic and Responses formats. */
 const BYOK_PATHS = new Set(['/v1/chat/completions', '/v1/messages', '/v1/responses']);
+/** Where a customer adds their own providers. */
+export const DASH_PROVIDERS_URL = 'https://dash.valefront.com/#/providers';
 
 /** Served by a workspace's own provider (BYOK): never charged a model price, and no cost to Valefront. */
 export function servedByByok(provider: string | undefined): boolean {
@@ -211,6 +215,12 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
     (req as WithKey).byokModel = byokModel;
     const offered = isRouterPick(requested) || !!byokModel || opts.models.length === 0 || opts.models.some((m) => modelAllowed({ models: [m] }, requested)) || !!resolveAlias(opts, requested) || isSoldMediaModel(requested);
     if (!offered) return fail(404, 'model_not_found', `The model "${requested}" is not offered here; see /v1/models.`);
+    // A customer's key (any dash workspace, the owner's too) gets from the shared pool only what Valefront sells (the
+    // BytePlus catalog); any other provider is the customer's own, on "Your providers". Chat endpoints, where a
+    // workspace's own provider can serve the model instead; plain `auto` and auto:* already pick sold models only.
+    if (key.workspaceId && requested && !byokModel && !isRouterPick(requested) && BYOK_PATHS.has(req.path) && !(opts.soldModel ?? isPublicSaleModel)(resolveModel(opts.aliases, requested))) {
+      return fail(404, 'model_not_offered', `Valefront doesn't sell "${requested}". To use it with this key, add your own provider for it under Your providers on ${DASH_PROVIDERS_URL}; see /v1/models for the models Valefront offers.`);
+    }
     // The host's blocked list is for the shared pool: a workspace's own provider is the customer's to use.
     if (requested && !byokModel && isBlocked(opts, requested)) {
       return fail(403, 'model_disabled', `The model "${requested}" is turned off here; see /v1/models for what you can use.`);
@@ -642,7 +652,9 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
     // A workspace key also sees its workspace's own models (BYOK), which the host's blocked list doesn't cover.
     const byok = (req as WithKey).byok;
     const own = byok?.models() ?? [];
-    const ids = [...configured, ...providerModels, ...own].filter((m, i, all) => all.indexOf(m) === i && modelAllowed(key.caps, m) && (byok?.has(m) || !isBlocked(opts, m)));
+    // A workspace key: from the pool only what Valefront sells (BytePlus chat and media), plus its own models.
+    const sold = (m: string) => !key.workspaceId || (opts.soldModel ?? isPublicSaleModel)(resolveModel(opts.aliases, m)) || isSoldMediaModel(m);
+    const ids = [...configured, ...providerModels, ...own].filter((m, i, all) => all.indexOf(m) === i && modelAllowed(key.caps, m) && (byok?.has(m) || (!isBlocked(opts, m) && sold(m))));
     const capability = typeof req.query.capability === 'string' ? req.query.capability : undefined;
     const snapshot = await opts.benchmarks?.();
     const data = ids.map((id) => {
