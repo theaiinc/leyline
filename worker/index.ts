@@ -184,7 +184,11 @@ async function build(env: Env): Promise<Built> {
     const stale = !cached || Date.now() - cached.fetchedAt >= 24 * 60 * 60 * 1000;
     // Every model a provider lists here, with the names leaderboards use for it (owner aliases, BytePlus's dated
     // ids' public names). exportModelLists() is keyed by provider; reading it as an array matched nothing.
-    const benchmarkModels = () => [...new Set(Object.values(router.exportModelLists()).flatMap((list) => list.ids))].map((id) => ({
+    // BytePlus first: the first model a score matches wins, and Valefront sells BytePlus's models, so a leaderboard
+    // name OpenRouter also lists (deepseek/deepseek-v4-flash-0731) shows as the BytePlus model.
+    const benchmarkModels = () => [...new Set(Object.entries(router.exportModelLists())
+      .sort(([a], [b]) => Number(b === 'BytePlus') - Number(a === 'BytePlus'))
+      .flatMap(([, list]) => list.ids))].map((id) => ({
       id,
       aliases: [...Object.entries(hosted.aliases ?? {}).filter(([, target]) => target === id).map(([alias]) => alias), ...(BYTEPLUS_BENCHMARK_ALIASES[id] ?? [])],
     }));
