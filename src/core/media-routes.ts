@@ -1,7 +1,10 @@
 import express from 'express';
 import type { Express, NextFunction, Request, RequestHandler, Response } from 'express';
 import type { Router } from './router';
-import type { AudioFile, EmbeddingResult, SpeechResult, TranscriptionResult } from './types';
+import type { AudioFile, EmbeddingResult, ImageGenerationResult, Provider, SpeechResult, TranscriptionResult, VideoGenerationResult } from './types';
+import { randomBytes } from 'crypto';
+import type { DocStore } from './issued-keys';
+import { imageCostUsd, mediaModel, videoCostUsd, type MediaKind } from './media-catalog';
 import { resolveModel, servedBy, type HostedOptions } from './hosted';
 import { chatCompletionErrorResponse, formatProviderError } from './api-errors';
 import {
@@ -16,6 +19,9 @@ import {
  * - POST /v1/audio/transcriptions  multipart: file, model, language?, prompt?, response_format?, temperature?,
  *                                  timestamp_granularities[]?
  * - POST /v1/audio/speech          {model, input, voice?, response_format?, speed?, instructions?} -> audio bytes
+ * - POST /v1/images/generations    {model, prompt, n?, size?, response_format?: url | b64_json} -> {created, data, cost}
+ * - POST /v1/videos                {model, prompt, duration?, resolution?, ratio?} -> 202 {id, status: queued}
+ * - GET  /v1/videos/:id            -> {id, status, url?, cost?}; a finished video is charged once, here
  *
  * Same auth as chat (hosted: an issued key, its caps, the offered/turned-off models, the monthly budget), the
  * same model aliases, `auto` for the first configured provider's default, and `x-leyline-force-provider`.
@@ -30,6 +36,8 @@ export type MediaRouteOptions = {
   /** Count a finished request (hosted keys, tenant logs). */
   record: (req: Request, model: string, usage: { prompt_tokens?: number; completion_tokens?: number }, usd?: number) => void;
   bodyLimit: string;
+  /** Where video jobs and their one-time charges are kept (hosted: the key store); unset: this process only. */
+  jobs?: DocStore;
 };
 
 type WithAudio = Request & { audioFile?: AudioFile };
@@ -187,6 +195,124 @@ export function mountMediaRoutes(app: Express, router: Router, opts: MediaRouteO
       opts.record(req, used, { prompt_tokens: Math.ceil(body.input.length / 4), completion_tokens: 0 }, speechCostUsd(used, body.input.length));
     } catch (error) {
       sendError(res, '/v1/audio/speech', error);
+    }
+  });
+
+  // ── images and videos ──────────────────────────────────────────────────────────────────────────────────
+  // Priced before any provider is called (src/core/media-catalog.ts): a model without a price is refused, so we
+  // never pay a provider for something we can't charge. Never failed over: each provider submit is a billed task.
+
+  const MEDIA_DEFAULT: Record<MediaKind, string> = { image: 'seedream-4-0-250828', video: 'seedance-1-0-pro-fast-251015' };
+  const mediaTarget = (req: Request, kind: MediaKind) => {
+    const asked = model(req);
+    const id = !asked || asked === 'auto' ? MEDIA_DEFAULT[kind] : asked;
+    return mediaModel(id, kind);
+  };
+  const keyIdOf = (req: Request) => (req as Request & { issuedKey?: { id: string } }).issuedKey?.id ?? '';
+  const asRequested = (req: Request, id: string) => { (req as Request & { requestedModel?: string }).requestedModel = id; };
+
+  app.post('/v1/images/generations', opts.auth, async (req, res) => {
+    try {
+      const body = req.body ?? {};
+      if (typeof body.prompt !== 'string' || !body.prompt.trim()) return fail(res, 400, 'invalid_prompt', 'prompt is required.');
+      if (body.response_format !== undefined && body.response_format !== 'url' && body.response_format !== 'b64_json') {
+        return fail(res, 400, 'invalid_response_format', 'response_format must be url or b64_json.');
+      }
+      const m = mediaTarget(req, 'image');
+      if (!m) return fail(res, 404, 'model_not_found', `"${body.model}" is not an image model offered here; see /v1/models.`);
+      const n = body.n === undefined ? 1 : Number(body.n);
+      if (!Number.isInteger(n) || n < 1 || n > 4) return fail(res, 400, 'invalid_n', 'n must be 1 to 4.');
+      const size = typeof body.size === 'string' ? body.size : undefined;
+      // Seedream makes one image per call: n calls; WaveSpeed takes num_images.
+      const calls = m.provider === 'BytePlus' ? n : 1;
+      const data: ImageGenerationResult['data'] = [];
+      let provider = '';
+      for (let i = 0; i < calls; i++) {
+        const { result, provider: p } = await router.routeCapability<ImageGenerationResult>('image', m.id, (prov, selected) => prov.generateImage!({
+          model: selected, prompt: body.prompt, n: m.provider === 'BytePlus' ? 1 : n, ...(size ? { size } : {}), ...(body.response_format ? { response_format: body.response_format } : {}),
+        }), { forceProvider: m.provider, onServed: servedBy(req) });
+        provider = p;
+        data.push(...result.data);
+      }
+      if (data.length === 0) return fail(res, 502, 'no_image', 'The provider returned no image; nothing was charged.');
+      const cost = imageCostUsd(m, data.length, size);
+      asRequested(req, m.id);
+      opts.record(req, m.id, { prompt_tokens: 0, completion_tokens: 0 }, cost);
+      return res.json({ created: Math.floor(Date.now() / 1000), model: m.id, provider, data, cost, usage: { images: data.length } });
+    } catch (error) {
+      sendError(res, '/v1/images/generations', error);
+    }
+  });
+
+  // Video jobs: kept by id so any instance can answer the poll; charged once when first seen finished.
+  const memoryJobs = new Map<string, { value: unknown; gen: string }>();
+  const jobs: Pick<DocStore, 'get' | 'put'> = opts.jobs ?? {
+    async get<T>(key: string) { return (memoryJobs.get(key) as { value: T; gen: string } | undefined) ?? null; },
+    async put(key: string, value: unknown, ifGen?: string) {
+      if (ifGen === '0' && memoryJobs.has(key)) throw new Error('exists');
+      memoryJobs.set(key, { value, gen: '1' });
+      return '1';
+    },
+  };
+  type VideoJob = { id: string; provider: string; task: string; model: string; keyId: string; createdAt: number; duration?: number; resolution?: string };
+  const videoView = (job: VideoJob, v: Partial<VideoGenerationResult>, cost?: number) => ({
+    id: job.id, object: 'video', model: job.model, status: v.status ?? 'queued', created_at: Math.floor(job.createdAt / 1000),
+    ...(job.duration ? { duration: job.duration } : {}), ...(job.resolution ? { resolution: job.resolution } : {}),
+    ...(v.url ? { url: v.url } : {}), ...(v.error ? { error: v.error } : {}), ...(cost !== undefined ? { cost } : {}),
+  });
+
+  app.post('/v1/videos', opts.auth, async (req, res) => {
+    try {
+      const body = req.body ?? {};
+      if (typeof body.prompt !== 'string' || !body.prompt.trim()) return fail(res, 400, 'invalid_prompt', 'prompt is required.');
+      const m = mediaTarget(req, 'video');
+      if (!m) return fail(res, 404, 'model_not_found', `"${body.model}" is not a video model offered here; see /v1/models.`);
+      const { result, provider } = await router.routeCapability<VideoGenerationResult>('video', m.id, (prov, selected) => prov.generateVideo!({
+        model: selected, prompt: body.prompt,
+        ...(body.duration !== undefined ? { duration: Number(body.duration) } : {}),
+        ...(typeof body.resolution === 'string' ? { resolution: body.resolution } : {}),
+        ...(typeof body.ratio === 'string' ? { ratio: body.ratio } : {}),
+      }), { forceProvider: m.provider, onServed: servedBy(req) });
+      const job: VideoJob = {
+        id: `video_${randomBytes(12).toString('hex')}`, provider, task: result.id, model: m.id, keyId: keyIdOf(req), createdAt: Date.now(),
+        ...(result.duration ? { duration: result.duration } : {}), ...(result.resolution ? { resolution: result.resolution } : {}),
+      };
+      await jobs.put(`media-jobs/${job.id}`, job, '0');
+      return res.status(202).json(videoView(job, { status: 'queued' }));
+    } catch (error) {
+      sendError(res, '/v1/videos', error);
+    }
+  });
+
+  app.get('/v1/videos/:id', opts.auth, async (req, res) => {
+    try {
+      const job = (await jobs.get<VideoJob>(`media-jobs/${String(req.params.id)}`))?.value;
+      // Only the key that started it may read it (the owner's dashboard session, without a key, reads its own).
+      if (!job || job.keyId !== keyIdOf(req)) return fail(res, 404, 'video_not_found', 'Video not found.');
+      const prov = router.getProviders().find((p: Provider) => p.name === job.provider);
+      if (!prov?.getVideo) return fail(res, 503, 'provider_unavailable', `${job.provider} is not available to read this video right now.`);
+      const v = await prov.getVideo(job.task);
+      if (v.status !== 'succeeded') return res.json(videoView(job, v));
+      const m = mediaModel(job.model, 'video');
+      if (!m || !v.tokens) {
+        console.error(JSON.stringify({ event: 'video_unpriced', id: job.id, model: job.model, tokens: v.tokens ?? null }));
+        return res.json(videoView(job, v));
+      }
+      const cost = videoCostUsd(m, v.tokens, v.resolution ?? job.resolution);
+      let first = true;
+      try {
+        await jobs.put(`media-charges/${job.id}`, { cost, tokens: v.tokens, at: Date.now() }, '0');
+      } catch {
+        first = false;
+      }
+      if (first) {
+        servedBy(req)(job.provider, job.model);
+        asRequested(req, job.model);
+        opts.record(req, job.model, { prompt_tokens: 0, completion_tokens: v.tokens }, cost);
+      }
+      return res.json(videoView(job, v, cost));
+    } catch (error) {
+      sendError(res, '/v1/videos/:id', error);
     }
   });
 }

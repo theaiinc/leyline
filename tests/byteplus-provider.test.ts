@@ -77,11 +77,14 @@ describe('BytePlusProvider', () => {
     );
   });
 
-  it('polls a Seedance task until completion', async () => {
-    jest.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 'task-1', status: 'running' }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 'task-1', status: 'succeeded', output: { video_url: 'https://cdn.example/seedance.mp4' } }), { status: 200 }));
-    await expect(new BytePlusProvider('test-key').generateVideo({ model: 'seedance-1-0-pro-250528', prompt: 'a test video' }))
-      .resolves.toMatchObject({ id: 'task-1', status: 'succeeded', url: 'https://cdn.example/seedance.mp4' });
+  it('starts a Seedance task (queued) and reads it back with its tokens', async () => {
+    const fetchMock = jest.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 'task-1' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 'task-1', model: 'seedance-1-0-pro-250528', status: 'succeeded', content: { video_url: 'https://cdn.example/seedance.mp4' }, usage: { completion_tokens: 246000 }, resolution: '720p', duration: 5 }), { status: 200 }));
+    const p = new BytePlusProvider('test-key');
+    await expect(p.generateVideo({ model: 'seedance-1-0-pro-250528', prompt: 'a test video' }))
+      .resolves.toMatchObject({ id: 'task-1', status: 'queued', duration: 5, resolution: '720p' });
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]!.body))).toMatchObject({ model: 'seedance-1-0-pro-250528', duration: 5, resolution: '720p', watermark: false });
+    await expect(p.getVideo('task-1')).resolves.toMatchObject({ status: 'succeeded', url: 'https://cdn.example/seedance.mp4', tokens: 246000 });
   });
 });

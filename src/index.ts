@@ -101,6 +101,7 @@ import { LMStudioProvider } from './providers/lmstudio';
 import { LiteLLMProvider } from './providers/litellm';
 import { LlmApiProvider } from './providers/llm-api';
 import { AzureOpenAIProvider } from './providers/azure-openai';
+import { WaveSpeedProvider } from './providers/wavespeed';
 import { BytePlusProvider } from './providers/byteplus';
 import { DeepgramProvider } from './providers/deepgram';
 import { WorkersAiProvider, type WorkersAiBinding } from './providers/workers-ai';
@@ -229,6 +230,8 @@ export async function buildRouter(secretStore: SecretStore, opts: { workersAi?: 
   // Register BytePlus even before its runtime key is configured: its verified
   // ModelArk catalog powers the public offered-model and pricing surfaces.
   router.addProvider(new BytePlusProvider());
+  // Images (FLUX) from WaveSpeed, when its key is set (src/providers/wavespeed.ts).
+  if (process.env.WAVESPEED_API_KEY) router.addProvider(new WaveSpeedProvider());
   if (process.env.OLLAMA_ENABLED === 'true') {
     router.addProvider(new OllamaProvider());
   }

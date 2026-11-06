@@ -17,6 +17,7 @@ import { RequestPiiRedactor } from './pii-redaction';
 import { ADDON_PROVIDER, PII_ADDON_ID } from './addons';
 import { RepriceRefused, repriceSpend } from './spend-reprice';
 import { accessAdminOf } from './admin-billing';
+import { isMediaModel } from './media-catalog';
 
 function capabilitiesForModel(modelId: string): string[] {
   const id = modelId.toLowerCase();
@@ -145,7 +146,7 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
     }
     if (!key) return fail(401, 'invalid_api_key', 'Incorrect API key provided.');
     const requested = typeof req.body?.model === 'string' ? req.body.model : '';
-    const offered = !requested || requested === 'auto' || requested === 'auto-vision' || opts.models.length === 0 || opts.models.some((m) => modelAllowed({ models: [m] }, requested)) || !!resolveAlias(opts, requested);
+    const offered = !requested || requested === 'auto' || requested === 'auto-vision' || opts.models.length === 0 || opts.models.some((m) => modelAllowed({ models: [m] }, requested)) || !!resolveAlias(opts, requested) || isMediaModel(requested);
     if (!offered) return fail(404, 'model_not_found', `The model "${requested}" is not offered here; see /v1/models.`);
     if (requested && isBlocked(opts, requested)) {
       return fail(403, 'model_disabled', `The model "${requested}" is turned off here; see /v1/models for what you can use.`);
@@ -169,7 +170,7 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
       if (!isAdminEmail(opts, ws.email)) {
         const target = resolveModel(opts.aliases, requested);
         const routerPicks = !requested || requested === 'auto' || requested === 'auto-vision';
-        if (!routerPicks && !realPrice(opts, target)) {
+        if (!routerPicks && !realPrice(opts, target) && !isMediaModel(target)) {
           return fail(403, 'model_not_priced', `The model "${requested}" has no published price yet, so it can't be used with this key; see https://llm.valefront.com/v1/pricing.`);
         }
         let admission;
