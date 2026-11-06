@@ -181,6 +181,8 @@ export interface VideoGenerationResult {
   tokens?: number;
   resolution?: string;
   duration?: number;
+  /** Seconds of video made (talking avatars, billed by the second); set once it succeeded and was measured. */
+  seconds?: number;
 }
 
 export interface Provider {

@@ -41,6 +41,7 @@ export { LiteLLMProvider } from './providers/litellm';
 export { LlmApiProvider } from './providers/llm-api';
 export { AzureOpenAIProvider } from './providers/azure-openai';
 export { BytePlusProvider } from './providers/byteplus';
+export { BytePlusVisionProvider } from './providers/byteplus-vision';
 export { DeepgramProvider } from './providers/deepgram';
 export { WorkersAiProvider } from './providers/workers-ai';
 export type { WorkersAiBinding } from './providers/workers-ai';
@@ -102,6 +103,7 @@ import { LiteLLMProvider } from './providers/litellm';
 import { LlmApiProvider } from './providers/llm-api';
 import { AzureOpenAIProvider } from './providers/azure-openai';
 import { WaveSpeedProvider } from './providers/wavespeed';
+import { BytePlusVisionProvider } from './providers/byteplus-vision';
 import { BytePlusProvider } from './providers/byteplus';
 import { DeepgramProvider } from './providers/deepgram';
 import { WorkersAiProvider, type WorkersAiBinding } from './providers/workers-ai';
@@ -232,6 +234,8 @@ export async function buildRouter(secretStore: SecretStore, opts: { workersAi?: 
   router.addProvider(new BytePlusProvider());
   // Images (FLUX) from WaveSpeed, when its key is set (src/providers/wavespeed.ts).
   if (process.env.WAVESPEED_API_KEY) router.addProvider(new WaveSpeedProvider());
+  // Talking avatars (OmniHuman) from BytePlus Vision AI, when its Access Key is set (src/providers/byteplus-vision.ts).
+  if (process.env.BYTEPLUS_VISION_ACCESS_KEY_ID && process.env.BYTEPLUS_VISION_SECRET_ACCESS_KEY) router.addProvider(new BytePlusVisionProvider());
   if (process.env.OLLAMA_ENABLED === 'true') {
     router.addProvider(new OllamaProvider());
   }

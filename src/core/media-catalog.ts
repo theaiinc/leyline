@@ -7,12 +7,17 @@
  *   image, no input image). Videos are per million tokens of the finished video (text input, online inference), and
  *   BytePlus charges only for videos that were generated: a failed or moderated one costs nothing.
  * - WaveSpeed: https://wavespeed.ai/docs/docs-api/wavespeed-ai/flux-dev ($0.012 per image).
+ * - BytePlus Vision AI (OmniHuman talking avatars, its own API and Access Key, src/providers/byteplus-vision.ts):
+ *   https://www.byteplus.com/en/product/OmniHuman ("Pricing and billing: 0.07 USD/second" for OmniHuman 2.0). Billed
+ *   by the duration of the generated video, as BytePlus documents for OmniHuman 1.5
+ *   (https://docs.byteplus.com/docs/en/byteplus-vision/omnihuman1_5overview.md, "Pricing"); only a successful call
+ *   is billed.
  *
  * A model missing here is not sold for media: it is refused before any provider is called, never priced by default.
  */
 
 export type MediaKind = 'image' | 'video';
-export type MediaProvider = 'BytePlus' | 'WaveSpeed';
+export type MediaProvider = 'BytePlus' | 'BytePlusVision' | 'WaveSpeed';
 
 export type ImagePrice = {
   /** US dollars per generated image. */
@@ -31,6 +36,16 @@ export type VideoPrice = {
   durations: { min: number; max: number; default: number };
 };
 
+/** A talking avatar (one image + an audio track -> a lip-synced video), billed by the second of video made. */
+export type AvatarPrice = {
+  /** US dollars per second of the generated video. */
+  perSecondUsd: number;
+  /** Seconds the audio may last (inclusive), from the provider's API limits; the video is as long as the audio. */
+  audioSeconds: { min: number; max: number };
+  /** The provider's own model id (BytePlus Vision's req_key). */
+  reqKey: string;
+};
+
 export type MediaModel = {
   id: string;
   name: string;
@@ -38,12 +53,14 @@ export type MediaModel = {
   kind: MediaKind;
   image?: ImagePrice;
   video?: VideoPrice;
+  avatar?: AvatarPrice;
 };
 
 const BYTEPLUS_PRICING = 'https://docs.byteplus.com/en/docs/ModelArk/1544106';
 const WAVESPEED_PRICING = 'https://wavespeed.ai/docs/docs-api/wavespeed-ai/flux-dev';
+const BYTEPLUS_VISION_PRICING = 'https://www.byteplus.com/en/product/OmniHuman';
 
-export const MEDIA_PRICING_SOURCES: Record<MediaProvider, string> = { BytePlus: BYTEPLUS_PRICING, WaveSpeed: WAVESPEED_PRICING };
+export const MEDIA_PRICING_SOURCES: Record<MediaProvider, string> = { BytePlus: BYTEPLUS_PRICING, BytePlusVision: BYTEPLUS_VISION_PRICING, WaveSpeed: WAVESPEED_PRICING };
 
 export const MEDIA_MODELS: MediaModel[] = [
   // Images, BytePlus (Seedream / Dola Seedream: ByteDance's Doubao image models on ModelArk).
@@ -60,6 +77,8 @@ export const MEDIA_MODELS: MediaModel[] = [
   { id: 'dreamina-seedance-2-0-mini-260615', name: 'Dreamina Seedance 2.0 Mini', provider: 'BytePlus', kind: 'video', video: { perMTokensUsd: 3.5, maxResolution: '720p', durations: { min: 4, max: 15, default: 5 } } },
   { id: 'seedance-1-0-pro-250528', name: 'Seedance 1.0 Pro', provider: 'BytePlus', kind: 'video', video: { perMTokensUsd: 2.5, perMTokensUsd1080p: 2.5, maxResolution: '1080p', durations: { min: 2, max: 12, default: 5 } } },
   { id: 'seedance-1-0-pro-fast-251015', name: 'Seedance 1.0 Pro Fast', provider: 'BytePlus', kind: 'video', video: { perMTokensUsd: 1.0, perMTokensUsd1080p: 1.0, maxResolution: '1080p', durations: { min: 2, max: 12, default: 5 } } },
+  // Talking avatars, BytePlus Vision AI (OmniHuman 2.0: https://docs.byteplus.com/docs/en/byteplus-vision/omnihuman-2-0-video-generation.md).
+  { id: 'omnihuman-2.0', name: 'OmniHuman 2.0', provider: 'BytePlusVision', kind: 'video', avatar: { perSecondUsd: 0.07, audioSeconds: { min: 4, max: 300 }, reqKey: 'realman_avatar_picture_omni20_cv' } },
 ];
 
 const BY_ID = new Map(MEDIA_MODELS.map((m) => [m.id, m]));
@@ -78,7 +97,16 @@ export function isMediaModel(id: string): boolean {
  * here (WaveSpeed) are not listed publicly or offered to keys by default; an admin can still offer one on adm.
  */
 export function isSoldMediaModel(id: string): boolean {
-  return BY_ID.get(id)?.provider === 'BytePlus';
+  const provider = BY_ID.get(id)?.provider;
+  return provider === 'BytePlus' || provider === 'BytePlusVision';
+}
+
+/**
+ * Media a campaign can price (per image, per 1M video tokens). Talking avatars (per second) are not covered by
+ * campaigns yet: always charged their official price.
+ */
+export function isCampaignMediaModel(m: MediaModel): boolean {
+  return Boolean(m.image || m.video);
 }
 
 export function mediaModelsOf(provider: MediaProvider, kind?: MediaKind): MediaModel[] {
@@ -104,6 +132,16 @@ export function videoCostUsd(model: MediaModel, tokens: number, resolution?: str
   const p = model.video!;
   const rate = resolution === '1080p' && p.perMTokensUsd1080p !== undefined ? p.perMTokensUsd1080p : p.perMTokensUsd;
   return Math.round((Math.max(0, tokens) * rate) / 1_000_000 * 1_000_000) / 1_000_000;
+}
+
+/**
+ * What a finished talking-avatar video costs: its seconds (as measured from the video itself, to the millisecond) x
+ * the per-second price, exact to the micro-dollar. Not a whole-second round-up: BytePlus publishes no rounding rule.
+ */
+export function avatarCostUsd(model: MediaModel, seconds: number): number {
+  const p = model.avatar!;
+  const s = Math.round(Math.max(0, seconds) * 1000) / 1000;
+  return Math.round(s * p.perSecondUsd * 1_000_000) / 1_000_000;
 }
 
 /** The duration to ask for: the one requested within the model's range (whole seconds), else its default. */
