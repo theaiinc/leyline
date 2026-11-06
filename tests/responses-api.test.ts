@@ -252,13 +252,14 @@ describe('POST /v1/responses (OpenAI Responses API, for Codex)', () => {
     expect(bal.pendingMicros).toBe(200);
   });
 
-  it('a customer with no credit gets 402 insufficient_credit before anything reaches the provider', async () => {
+  it('a customer with no credit gets 429 insufficient_quota (Codex stops at once) before anything reaches the provider', async () => {
     const h = hostedBilling();
     const { key } = await customer(h);
     for (const stream of [false, true]) {
       const res = await responses(h, key, { model: 'gpt-5.5', input: 'hi', stream });
-      expect(res.status).toBe(402);
-      expect(res.body.error).toMatchObject({ code: 'insufficient_credit', type: 'insufficient_credit' });
+      expect(res.status).toBe(429);
+      expect(res.body.error).toMatchObject({ code: 'insufficient_quota', type: 'insufficient_quota' });
+      expect(res.body.error.message).toMatch(/Add credit/);
     }
     expect(h.upstream.seen.some((r) => r.model === 'gpt-5.5')).toBe(false);
   });
