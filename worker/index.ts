@@ -165,9 +165,10 @@ async function build(env: Env): Promise<Built> {
   // The providers' model lists as another instance last made them (for these same provider keys): listing them
   // all again took ~2.5 s before this instance could answer anything.
   const shared = await docs.get<SharedModelLists>(MODEL_LISTS_DOC).catch(() => null);
-  // The lists are for these keys *and* these providers: a deploy that adds one (Anthropic) must list it too, not
-  // reuse lists made without it until the half-hourly refresh.
-  const listsVersion = `${version}|${router.getProviders().map((p) => p.name).sort().join(',')}`;
+  // The lists are for these keys, these providers *and* this deploy: a deploy that adds one (Anthropic) must list it
+  // too, and one that changes a catalog's prices (BytePlus, 2026-11-06) must not keep charging the old ones until the
+  // half-hourly refresh.
+  const listsVersion = `${version}|${env.GIT_SHA ?? 'dev'}|${router.getProviders().map((p) => p.name).sort().join(',')}`;
   if (shared?.value.version === listsVersion) router.importModelLists(shared.value.lists);
   // The hosted model route falls back to the provider index when no fixed pool is configured.
   // Refresh missing/stale lists during Worker startup so a cold instance can advertise served models.
