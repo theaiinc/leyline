@@ -2,6 +2,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { BillingService, type BillingEmail, type BillingServiceOptions } from '../../src/core/billing-service';
 import { D1BillingStore, type WorkspaceRecord } from '../../src/core/billing-store';
+import { D1CampaignStore } from '../../src/core/campaigns';
 import type { DocumentFonts } from '../../src/core/billing-documents';
 import { sqliteD1 } from './sqlite-d1';
 
@@ -21,6 +22,8 @@ export function billingFixture(over: Partial<BillingServiceOptions> = {}, clock 
   const db = sqliteD1();
   const store = new D1BillingStore(db, () => clock.now);
   const emails: BillingEmail[] = [];
+  // Promotions on the same database (none exist until a test makes one).
+  const campaigns = new D1CampaignStore(db, () => clock.now);
   const service = new BillingService({
     store,
     fonts: async () => fonts,
@@ -29,9 +32,10 @@ export function billingFixture(over: Partial<BillingServiceOptions> = {}, clock 
     sendEmail: async (m) => { emails.push(m); },
     billingFrom: 'Valefront Billing <billing@valefront.com>',
     now: () => clock.now,
+    campaigns,
     ...over,
   });
-  return { db, store, service, emails, clock };
+  return { db, store, service, emails, clock, campaigns };
 }
 
 let n = 0;

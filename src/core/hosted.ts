@@ -5,6 +5,7 @@ import { AegisAuth, cookie, cookies, type AdminUser } from './admin-login';
 import { CostAlerts, DEFAULT_ALERTS, type AlertChannels, type AlertSettings } from './alerts';
 import { AnthropicStream, anthropicError, anthropicToOpenAI, estimateTokens, openAIToAnthropic, type AnthropicRequest } from './anthropic';
 import { builtinPrice } from './pricing';
+import type { ChargeBasis } from './campaigns';
 import { errorStatus } from './media';
 import { estimateBodyTokens } from './content';
 import { DEFAULT_PRICE, IssuedKeys, costUsd, manualPriceOf, modelAllowed, priceOf, type HostedSettings, type IssuedKey, type KeyCaps, type Price } from './issued-keys';
@@ -18,6 +19,10 @@ import { ADDON_PROVIDER, PII_ADDON_ID } from './addons';
 import { RepriceRefused, repriceSpend } from './spend-reprice';
 import { accessAdminOf } from './admin-billing';
 import { isMediaModel, isSoldMediaModel } from './media-catalog';
+import { mountAdminCampaigns } from './admin-campaigns';
+
+/** An image or video generation, for pricing it under a promotion (recordUsage). */
+export type MediaChargeBasis = Extract<ChargeBasis, { kind: 'image' | 'video' }>;
 
 function capabilitiesForModel(modelId: string): string[] {
   const id = modelId.toLowerCase();
@@ -242,7 +247,7 @@ function resolveAlias(opts: HostedOptions, model: string): string | null {
  * request body for input (an inline image a fixed estimate, not its base64 length), outChars for output. `usd`, when given, is the cost already worked out (audio is priced
  * by the minute or the character, src/core/media.ts).
  */
-export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_tokens?: number; completion_tokens?: number }, outChars = 0, usd?: number): void {
+export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_tokens?: number; completion_tokens?: number }, outChars = 0, usd?: number, media?: MediaChargeBasis): void {
   const r = req as WithKey;
   if (!r.issuedKey && !r.ownerRequest) return;
   const counted = usage && ((usage.prompt_tokens ?? 0) > 0 || (usage.completion_tokens ?? 0) > 0)
@@ -265,7 +270,14 @@ export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_
     const price = realPrice(opts, used, r.served?.provider);
     const charged = usd ?? (price ? costUsd(price, counted) : null);
     const tokens = (counted.prompt_tokens ?? 0) + (counted.completion_tokens ?? 0);
-    const billing = opts.billing.charge(r.workspace, { model: used, tokens, usd: charged })
+    // What the request was, so a promotion can price it: chat by its tokens, images and videos by what was made.
+    // Priced some other way (audio, by the minute or character): no promotion applies.
+    const basis: ChargeBasis | undefined = media ?? (usd === undefined && price ? { kind: 'chat', price, usage: counted } : undefined);
+    const key = r.issuedKey ?? null;
+    const billing = opts.billing.charge(r.workspace, { model: used, tokens, usd: charged, ...(basis ? { basis } : {}) })
+      .then((done) => (done.campaign && done.discountMicros > 0
+        ? opts.keys.recordPromotion(key, done.campaign, tokens, done.officialMicros / 1_000_000, done.discountMicros / 1_000_000)
+        : undefined))
       .catch((err) => console.error('[hosted] usage charge failed', r.workspace?.id, err));
     opts.background?.(billing);
     // PII protection (a paid add-on): its own fee on the input tokens, charged from credit even on free tokens, and
@@ -640,6 +652,8 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
     (req as Request & { admin?: string }).admin = who;
     next();
   };
+  // Promotions: the Campaigns page (admin-campaigns.ts).
+  mountAdminCampaigns(app, opts, guard);
   app.get('/admin/api/settings', guard, async (_req, res) => {
     res.json(await settingsView(opts));
   });
@@ -682,6 +696,7 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
         byProvider: usage.byProvider,
         byModel: usage.byServed,
         byDay: usage.byDay,
+        promotions: usage.promotions,
       };
       return res.json({ spend, months, monthlyBudgetUsd: opts.monthlyBudgetUsd ?? null, key: { id: key.id, name: key.name } });
     }

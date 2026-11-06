@@ -38,7 +38,7 @@ type Me = {
 type PiiMode = 'off' | 'regex' | 'presidio';
 type KeyView = {
   id: string; name: string; prefix: string; createdAt: number; revokedAt: number | null; lastUsedAt: number | null; piiProtection?: PiiMode;
-  usage: { month: string; requests: number; promptTokens: number; completionTokens: number; byModel: Record<string, { requests: number; tokens: number }>; addons?: Record<string, { requests: number; tokens: number; usd: number }> };
+  usage: { month: string; requests: number; promptTokens: number; completionTokens: number; byModel: Record<string, { requests: number; tokens: number }>; addons?: Record<string, { requests: number; tokens: number; usd: number }>; promotions?: Record<string, PromotionLine> };
 };
 /** The PII protection add-on as the server offers it (GET /dashboard/me/keys). */
 type PiiOffer = { id: string; name: string; unit: string; price: number; currency: string; modes: Array<'regex' | 'presidio'> };
@@ -71,7 +71,12 @@ type Billing = {
   free: { tokens: number; usedTokens: number; expiresAt: number; models: string[]; bonusTokens?: number; bonusUnlocked?: boolean } | null;
   methods: { worldfirst: boolean; paypal: { enabled: boolean; env: string | null }; sepay?: SepayMethod };
   vat: { defaultBp: number; byCountry: Record<string, number> };
+  promotions?: Promotions;
 };
+/** Promotions this workspace has (BillingService.promotions): live or upcoming automatic ones, and codes it redeemed. */
+type Promotion = { id: string; name: string; type: 'automatic' | 'code'; code?: string; starts_at: string; ends_at: string; models: string[]; discount: { kind: 'percent'; percent: number } | { kind: 'price' }; live: boolean };
+type Promotions = { available: boolean; campaigns: Promotion[] };
+type PromotionLine = { name: string; requests: number; tokens: number; officialUsd: number; discountUsd: number };
 
 const usd = (cents: number) => `${cents < 0 ? '-' : ''}$${(Math.abs(cents) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const date = (t: number) => new Date(t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
@@ -507,6 +512,14 @@ function UsagePage({ me }: { me: Me }) {
     }
     return out;
   }, [data]);
+  const promotions = useMemo(() => {
+    const out: Record<string, PromotionLine> = {};
+    for (const k of data?.keys ?? []) for (const [id, p] of Object.entries(k.usage.promotions ?? {})) {
+      const o = out[id] ?? { name: p.name, requests: 0, tokens: 0, officialUsd: 0, discountUsd: 0 };
+      out[id] = { name: p.name || o.name, requests: o.requests + p.requests, tokens: o.tokens + p.tokens, officialUsd: o.officialUsd + p.officialUsd, discountUsd: o.discountUsd + p.discountUsd };
+    }
+    return Object.entries(out);
+  }, [data]);
   return (<>
     <PageHeader title="Spending" description={data ? `Usage this month (${data.month}, UTC). Charges are on the ledger on the Billing page.` : undefined} />
     {data?.free ? <Section title="Free tokens">
@@ -522,6 +535,10 @@ function UsagePage({ me }: { me: Me }) {
     {pii.requests > 0 || (data?.keys ?? []).some((k) => (k.piiProtection ?? 'off') !== 'off') ? <Section title="Add-ons" description="Charged from credit on top of model usage; on the Billing page's ledger as their own line.">
       <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr className="border-b"><th className="p-2">Add-on</th><th className="p-2 text-right">Requests</th><th className="p-2 text-right">Input tokens</th><th className="p-2 text-right">Charged</th></tr></thead>
         <tbody><tr><td className="p-2 font-medium">PII protection{data?.addons?.piiProtection ? <span className="block text-xs font-normal text-muted-foreground">{piiPrice(data.addons.piiProtection)}</span> : null}</td><td className="p-2 text-right tabular-nums">{tokens(pii.requests)}</td><td className="p-2 text-right tabular-nums">{tokens(pii.tokens)}</td><td className="p-2 text-right tabular-nums">${pii.usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}</td></tr></tbody></table></div>
+    </Section> : null}
+    {promotions.length ? <Section title="Promotions" description="Requests charged at a promotion price: their cost at the official price, the discount, and what was charged.">
+      <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr className="border-b"><th className="p-2">Promotion</th><th className="p-2 text-right">Requests</th><th className="p-2 text-right">Official price</th><th className="p-2 text-right">Discount</th><th className="p-2 text-right">Charged</th></tr></thead>
+        <tbody>{promotions.map(([id, p]) => <tr key={id} className="border-b last:border-0"><td className="p-2 font-medium">{p.name}</td><td className="p-2 text-right tabular-nums">{tokens(p.requests)}</td><td className="p-2 text-right tabular-nums">{usd6(p.officialUsd)}</td><td className="p-2 text-right tabular-nums text-emerald-600 dark:text-emerald-300">−{usd6(p.discountUsd)}</td><td className="p-2 text-right tabular-nums">{usd6(Math.max(0, p.officialUsd - p.discountUsd))}</td></tr>)}</tbody></table></div>
     </Section> : null}
     <Section title="By key">
       {(data?.keys ?? []).map((k) => <div key={k.id} className="flex justify-between gap-3 border-b py-2 text-sm last:border-0"><span className="min-w-0">{k.name} <code className="text-xs text-muted-foreground">{k.prefix}…</code></span><span className="shrink-0 whitespace-nowrap tabular-nums">{tokens(k.usage.promptTokens + k.usage.completionTokens)} tokens</span></div>)}
@@ -805,6 +822,48 @@ function SepayPanel({ order: initial, onPaid, onClose, onCancel }: { order: Orde
   );
 }
 
+const usd6 = (n: number) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}`;
+const promoEnd = (iso: string) => new Date(iso).toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + ' UTC';
+
+/** dash Billing: enter a promo code; the promotions this workspace has. */
+function PromoCode({ promotions, onChange }: { promotions: Promotions; onChange: (p: Promotions) => void }) {
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  async function redeem() {
+    if (!code.trim()) return;
+    setBusy(true);
+    try {
+      const out = await api<{ campaign: Promotion; already: boolean; promotions: Promotions }>('/dashboard/me/billing/promo-code', { method: 'POST', body: { code: code.trim() } });
+      toast.success(out.already ? `${out.campaign.name} is already on this workspace.` : `${out.campaign.name}: promotion prices apply until ${promoEnd(out.campaign.ends_at)}.`);
+      onChange(out.promotions);
+      setCode('');
+    } catch (err) {
+      failToast(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="rounded-2xl border bg-card p-5">
+      <div className="mb-1 font-semibold">Promo code</div>
+      <p className="mb-3 text-xs text-muted-foreground">A promotion lowers the price of some models until it ends. Spending shows the official cost and the discount.</p>
+      <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); void redeem(); }}>
+        <Label htmlFor="promo-code" className="sr-only">Promo code</Label>
+        <Input id="promo-code" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="Enter a code" autoComplete="off" className="uppercase" />
+        <Button type="submit" variant="outline" disabled={busy || !code.trim()}>Apply</Button>
+      </form>
+      {promotions.campaigns.length ? (
+        <div className="mt-3 grid gap-2">{promotions.campaigns.map((c) => (
+          <div key={c.id} className="rounded-xl border p-3 text-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-medium">{c.name}</span><span className={cn('rounded-full px-2 py-0.5 text-[11px] font-medium', c.live ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300' : 'bg-muted text-muted-foreground')}>{c.live ? 'On now' : 'Starts soon'}</span></div>
+            <div className="mt-1 text-xs text-muted-foreground">{c.discount.kind === 'percent' ? `${c.discount.percent}% off` : 'Promotion prices'} on {c.models.map(friendlyModel).join(', ')} · until {promoEnd(c.ends_at)}{c.code ? <> · code <code>{c.code}</code></> : null}</div>
+          </div>
+        ))}</div>
+      ) : null}
+    </div>
+  );
+}
+
 function BillingPage({ me, reload }: { me: Me; reload: () => Promise<void> }) {
   const [billing, setBilling] = useState<Billing | null>(null);
   const [open, setOpen] = useState<Order | null>(null);
@@ -852,7 +911,7 @@ function BillingPage({ me, reload }: { me: Me; reload: () => Promise<void> }) {
     </span>
   );
   return (<>
-    <PageHeader title="Billing" description="Prepaid credit in US dollars, charged per request at each model's official price. Free tokens are used first." />
+    <PageHeader title="Billing" description="Prepaid credit in US dollars, charged per request at each model's official price (or a promotion price while one applies). Free tokens are used first." />
     {free && !free.bonusUnlocked ? <BonusBanner bonus={free.bonusTokens ?? 0} /> : null}
     <div className="mb-6 grid gap-4 rounded-2xl border bg-card p-5 md:grid-cols-[1fr_1.2fr] md:items-center md:p-6">
       <div>
@@ -888,6 +947,7 @@ function BillingPage({ me, reload }: { me: Me; reload: () => Promise<void> }) {
         </div>
       </div>
       <div className="grid min-w-0 gap-4">
+        {billing.promotions?.available ? <PromoCode promotions={billing.promotions} onChange={(p) => setBilling((b) => (b ? { ...b, promotions: p } : b))} /> : null}
         <div className="rounded-2xl border bg-card p-5">
           <div className="mb-1 font-semibold">Orders and receipts</div>
           <p className="mb-3 text-xs text-muted-foreground">Every payment gets a receipt by email. Customers in Vietnam can ask for a VAT invoice when adding credit.</p>

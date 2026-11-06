@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Activity, Calculator, CreditCard, FlaskConical, Handshake, KeyRound, LayoutDashboard, Layers, LogOut, Moon, RefreshCw, Route, Server, Sun, Wallet } from 'lucide-react';
+import { Activity, BadgePercent, Calculator, CreditCard, FlaskConical, Handshake, KeyRound, LayoutDashboard, Layers, LogOut, Moon, RefreshCw, Route, Server, Sun, Wallet } from 'lucide-react';
 import { navIds, type NavEntry } from '@/components/side-nav';
 import { AppShell } from '@/components/app-shell';
 import { Card, CardContent } from '@/components/ui/card';
@@ -15,6 +15,7 @@ import { useHashRoute } from '@/hooks/use-hash-route';
 import { cn } from '@/lib/utils';
 import { ActivityPage } from '@/pages/activity';
 import { CalculatorPage } from '@/pages/calculator';
+import { CampaignsPage } from '@/pages/campaigns';
 import { BenchmarksPage } from '@/pages/benchmarks';
 import { KeysPage } from '@/pages/keys';
 import { OfferedPage } from '@/pages/offered';
@@ -44,6 +45,8 @@ const SERVER_PAGES: Record<string, string> = { [CUSTOMER_BILLING]: '/billing/', 
 const BILLING: Nav[] = [
   { id: 'spending', label: 'Spending', icon: Wallet, hosted: true },
   { id: CUSTOMER_BILLING, label: 'Customer billing', icon: CreditCard, hosted: true },
+  // Promotions (adm only): automatic and promo-code campaigns.
+  { id: 'campaigns', label: 'Campaigns', icon: BadgePercent, hosted: true },
   { id: PARTNER_INQUIRIES, label: 'Partner inquiries', icon: Handshake, hosted: true },
   { id: 'calculator', label: 'Cost calculator', icon: Calculator },
 ];
@@ -112,6 +115,7 @@ export function App() {
           : current === 'routing' ? <RoutingPage d={d} />
             : current === 'keys' ? <KeysPage d={d} />
               : current === 'spending' ? <SpendingPage />
+                : current === 'campaigns' ? <CampaignsPage />
                 : current === 'offered' ? <OfferedPage d={d} />
                   : current === 'playground' ? <PlaygroundPage d={d} />
                     : current === 'calculator' ? <CalculatorPage />

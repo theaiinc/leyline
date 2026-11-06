@@ -5,6 +5,7 @@ import { createServer } from '../src/server';
 import { adminOf, applySettings, isAdminEmail, sessionOf, type HostedOptions } from '../src/core/hosted';
 import { BillingService, parseFrom } from '../src/core/billing-service';
 import { D1BillingStore, type D1BatchDatabase } from '../src/core/billing-store';
+import { D1CampaignStore } from '../src/core/campaigns';
 import { PayPalClient, paypalConfigFor } from '../src/core/paypal';
 import { SePayClient, sepayConfigFromEnv } from '../src/core/sepay';
 import type { ProviderMode } from '../src/core/provider-modes';
@@ -253,6 +254,8 @@ function configureBilling(hosted: HostedOptions, env: Env): void {
     free: freeTierConfig(vars),
     einvoice: sinvoiceFor,
     sepay: (() => { const cfg = sepayConfigFromEnv(vars); return cfg ? new SePayClient(cfg) : null; })(),
+    // Promotions (src/core/campaigns.ts; worker/migrations/0006_campaigns.sql), on the primary like billing.
+    campaigns: new D1CampaignStore(env.DB),
   });
   hosted.turnstile = env.TURNSTILE_SITE_KEY && env.TURNSTILE_SECRET
     ? { siteKey: env.TURNSTILE_SITE_KEY, verify: (token, ip) => verifyTurnstile(token, env.TURNSTILE_SECRET, ip) }
