@@ -107,6 +107,26 @@ describe('Router', () => {
         expect(response.choices[0].message.content).toContain('p2');
     });
 
+    it('a provider out of credit (HTTP 402) is skipped until it recovers; the request falls through', async () => {
+        let until = 0;
+        let calls = 0;
+        const broke = Object.assign(new MockProvider('broke'), {
+            isAvailable: async () => Date.now() >= until,
+            markUnavailable: () => { until = Date.now() + 15 * 60_000; },
+            complete: async () => { calls++; throw Object.assign(new Error('Request failed with status code 402'), { response: { status: 402, data: { error: { message: 'Insufficient balance' } } } }); },
+        });
+        router = new Router(quotaManager);
+        router.addProvider(broke);
+        router.addProvider(p2);
+        expect((await router.route({ model: 'test', messages: [] })).choices[0].message.content).toContain('p2');
+        expect(calls).toBe(1);
+        expect((await router.route({ model: 'test', messages: [] })).choices[0].message.content).toContain('p2');
+        expect(calls).toBe(1);
+        until = 0;
+        await router.route({ model: 'test', messages: [] }).catch(() => undefined);
+        expect(calls).toBe(2);
+    });
+
     it('should throw if all providers fail', async () => {
         p1.shouldFail = true;
         p2.shouldFail = true;
