@@ -167,9 +167,7 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
         return fail(503, 'billing_unavailable', 'Valefront could not check your balance just now; try again.');
       }
       if (!ws || ws.deletedAt) return fail(401, 'key_revoked', 'This API key has been revoked.');
-      // Every dash workspace is a customer account, an admin's too: adm (the shared pool) and dash are separate accounts
-      // under one email (Steve, 2026-11-06), so a workspace pays from its own credit like any customer.
-      {
+      if (!isAdminEmail(opts, ws.email)) {
         const target = resolveModel(opts.aliases, requested);
         const routerPicks = !requested || requested === 'auto' || requested === 'auto-vision';
         if (!routerPicks && !realPrice(opts, target) && !isMediaModel(target)) {

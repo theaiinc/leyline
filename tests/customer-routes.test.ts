@@ -93,16 +93,17 @@ describe('credit gates customer requests', () => {
     expect(h.upstream.seen.some((r) => r.model === 'unpriced-model')).toBe(false);
   });
 
-  it('shared-pool keys (no workspace) are never gated; an admin\'s dash workspace is a customer like any other', async () => {
+  it('owner keys (no workspace) and the admins\' own workspaces are never gated', async () => {
     const h = hostedBilling();
     const made = await request(h.app).post('/admin/api/keys').set('Authorization', 'Bearer admin-secret-token').send({ name: 'internal' });
     expect((await chat(h.app, made.body.key, 'unpriced-model')).status).toBe(200);
     expect((await chat(h.app, made.body.key, 'gpt-5.5')).status).toBe(200);
-    // adm and dash are separate accounts under one email: the admin's dash workspace pays from its own credit.
     const owner = cookieFor('sub-owner', 'owner@valefront.com');
     const key = (await signUp(h.app, owner)).body.key as string;
-    expect((await chat(h.app, key, 'gpt-5.5')).status).toBe(402);
-    expect((await chat(h.app, key, 'unpriced-model')).status).toBe(403);
+    expect((await chat(h.app, key, 'gpt-5.5')).status).toBe(200);
+    await h.settle();
+    const ws = (await h.store.workspaceBySub('sub-owner'))!;
+    expect((await h.store.balance(ws.id)).cents).toBe(0);
   });
 });
 
