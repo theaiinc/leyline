@@ -17,7 +17,7 @@ import { vndRate } from './core/fx';
 import { mountAdminPartners, mountPartnerInquiryApi } from './core/partner-inquiries';
 import { mountCustomerRoutes } from './core/customer-routes';
 import { routeByPlan, routeHeader, streamByPlan, strategyErrorResponse, type RoutePlan } from './core/routing-strategies';
-import { chatRoutePlan, adminOf, sessionOf, mountHosted, providersOverBudget, resumeAdminSession, recordUsage, requestModel, routerFor, servedBy, requireIssuedKey, requirePlaygroundKey, sameOrigin, type HostedOptions } from './core/hosted';
+import { chatRoutePlan, adminOf, sessionOf, mountHosted, providersOverBudget, resumeAdminSession, recordUsage, requestModel, routerFor, servedBy, requireIssuedKey, requirePlaygroundKey, sameOrigin, PLAYGROUND_CHAT_PATH, type HostedOptions } from './core/hosted';
 import { poolCredentials } from './core/workspace-providers';
 import { createRequireAegisToken, AegisTenant } from './core/aegis-auth';
 import { chatCompletionErrorResponse, formatProviderError, hydrateAxiosError } from './core/api-errors';
@@ -242,10 +242,11 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       })
     : requireClientApiKey;
 
-  const logTenantUsage = (req: Request, model: string, usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }, outChars = 0) => {
-    if (hosted) recordUsage(hosted, req, usage, outChars);
+  /** Counts a finished chat request; returns what it was charged (USD) when hosted. */
+  const logTenantUsage = (req: Request, model: string, usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }, outChars = 0): number | undefined => {
+    const charged = hosted ? recordUsage(hosted, req, usage, outChars) : undefined;
     const tenant = (req as Request & { tenant?: AegisTenant }).tenant;
-    if (!tenant || !usage) return;
+    if (!tenant || !usage) return charged;
     try {
       console.log(JSON.stringify({
         event: 'tenant_usage',
@@ -258,6 +259,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     } catch (e) {
       console.error('Failed to log tenant usage', e);
     }
+    return charged;
   };
 
   // The valefront.com "Partner with Valefront" form: its own CORS (valefront.com only), so before the open one.
@@ -1046,8 +1048,12 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     }
   };
 
-  // Existing: chat completions endpoint (with provider failover)
-  app.post('/v1/chat/completions', authMiddleware, async (req, res) => {
+  // Existing: chat completions endpoint (with provider failover). Hosted, the dash Playground's chat
+  // (POST /dashboard/me/playground/chat, mounted below) runs this same handler, admitted as the customer's chosen key.
+  const chatCompletions: express.RequestHandler = async (req, res) => {
+    // The dash Playground: the answer also carries what the run was charged (`cost`, USD; $0 on the workspace's own
+    // provider), the way the Playground's image and video answers do. The API's answer is unchanged.
+    const playground = req.path === PLAYGROUND_CHAT_PATH;
     await apiKeyInitialization;
     let request = normalizeCompletionRequest(req.body);
     // Hosted: a requested model can be an alias for what the owner's providers serve (never for a workspace's own model).
@@ -1167,8 +1173,13 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
           } : choice.message,
         })) } : response;
         if (pii) { await pii.finish(); }
-        res.json(hydrated);
-        logTenantUsage(req, request.model, response.usage);
+        if (playground) {
+          const cost = logTenantUsage(req, request.model, response.usage);
+          res.json({ ...hydrated, ...(cost !== undefined ? { cost } : {}) });
+        } else {
+          res.json(hydrated);
+          logTenantUsage(req, request.model, response.usage);
+        }
       }
     } catch (error: any) {
       const hydrated = await hydrateAxiosError(error);
@@ -1182,7 +1193,9 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
       // not under the text/event-stream type set for it.
       res.status(status).type('json').json(body);
     }
-  });
+  };
+  app.post('/v1/chat/completions', authMiddleware, chatCompletions);
+  if (hosted) app.post(PLAYGROUND_CHAT_PATH, requirePlaygroundKey(hosted), chatCompletions);
 
   // OpenAI Responses API (OpenAI Codex CLI speaks only this): translated to a chat request and routed exactly like
   // /v1/chat/completions above (same auth, admission, aliases, PII redaction, billing and spend), the result

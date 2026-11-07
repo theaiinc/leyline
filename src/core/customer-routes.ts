@@ -262,7 +262,14 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
         seen.add(id);
         return [{ id: m.id, name: m.name, kind: m.kind, provider: `BYOK:${p.label}`, source: MEDIA_PRICING_SOURCES[m.provider], byok: true }];
       }));
-      res.json({ providers: providers.map(providerView), kinds: BYOK_KINDS, wavespeedModels: wavespeedModelIds(), mediaModels });
+      // ... and the chat models its own chat providers serve (the Playground's Chat), the same way.
+      const chatSeen = new Set<string>();
+      const chatModels = providers.filter((p) => p.enabled && !isMediaKind(p.kind)).flatMap((p) => p.models.flatMap((id) => {
+        if (chatSeen.has(id)) return [];
+        chatSeen.add(id);
+        return [{ id, provider: `BYOK:${p.label}`, byok: true }];
+      }));
+      res.json({ providers: providers.map(providerView), kinds: BYOK_KINDS, wavespeedModels: wavespeedModelIds(), mediaModels, chatModels });
     } catch (err) {
       errorOut(res, err);
     }

@@ -123,8 +123,13 @@ type WithKey = Request & {
   byokOnly?: boolean;
 };
 
-/** The endpoints a workspace's own providers (BYOK) serve: chat, in the OpenAI, Anthropic and Responses formats. */
-const BYOK_PATHS = new Set(['/v1/chat/completions', '/v1/messages', '/v1/responses']);
+/** The dash Playground's chat: /v1/chat/completions, run as one of the signed-in customer's keys (requirePlaygroundKey). */
+export const PLAYGROUND_CHAT_PATH = '/dashboard/me/playground/chat';
+/**
+ * The endpoints a workspace's own providers (BYOK) serve: chat, in the OpenAI, Anthropic and Responses formats, and
+ * the dash Playground's chat (the same chat completions handler).
+ */
+const BYOK_PATHS = new Set(['/v1/chat/completions', '/v1/messages', '/v1/responses', PLAYGROUND_CHAT_PATH]);
 /** The endpoints a workspace's own media providers (WaveSpeed) serve: images and videos, the dash Playground's too. */
 const BYOK_MEDIA_PATHS = new Set(['/v1/images/generations', '/v1/videos', '/dashboard/me/playground/images', '/dashboard/me/playground/videos']);
 /** Where a customer adds their own providers. */
@@ -406,11 +411,11 @@ function resolveAlias(opts: HostedOptions, model: string): string | null {
  * of the model actually used: set by hand, else what its provider publishes (or Leyline's built-in list price, for
  * embeddings), else the default. Without usage from the provider it's estimated (four characters a token): the
  * request body for input (an inline image a fixed estimate, not its base64 length), outChars for output. `usd`, when given, is the cost already worked out (audio is priced
- * by the minute or the character, src/core/media.ts).
+ * by the minute or the character, src/core/media.ts). Returns what the request was charged (see `shown`).
  */
-export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_tokens?: number; completion_tokens?: number }, outChars = 0, usd?: number, media?: MediaChargeBasis): void {
+export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_tokens?: number; completion_tokens?: number }, outChars = 0, usd?: number, media?: MediaChargeBasis): number | undefined {
   const r = req as WithKey;
-  if (!r.issuedKey && !r.ownerRequest) return;
+  if (!r.issuedKey && !r.ownerRequest) return undefined;
   const counted = usage && ((usage.prompt_tokens ?? 0) > 0 || (usage.completion_tokens ?? 0) > 0)
     ? usage
     : { prompt_tokens: estimateBodyTokens(req.body), completion_tokens: Math.ceil(outChars / 4) };
@@ -431,11 +436,15 @@ export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_
     .then(() => checkAlerts(opts, r.issuedKey ?? null))
     .catch((err) => console.error('[hosted] usage record failed', err));
   opts.background?.(work);
+  // What this request costs, as the caller is told (the dash Playground): the customer's charge at the list price
+  // (before any promotion, before the PII fee), $0 on their own provider; else the spend line.
+  let shown: number | undefined = cost;
   // A customer pays real prices only: set by hand or published, never the default price.
   if (r.workspace && opts.billing && !byok) {
     const real = realPrice(opts, used, r.served?.provider);
     const price = real ? priceAt(real, counted, at) : undefined;
     const charged = usd ?? (price ? costUsd(price, counted, at) : null);
+    shown = charged ?? undefined;
     const tokens = (counted.prompt_tokens ?? 0) + (counted.completion_tokens ?? 0);
     // What the request was, so a promotion can price it: chat by its tokens, images and videos by what was made.
     // Priced some other way (audio, by the minute or character): no promotion applies.
@@ -461,6 +470,7 @@ export function recordUsage(opts: HostedOptions, req: Request, usage?: { prompt_
       opts.background?.(addon);
     }
   }
+  return shown;
 }
 
 // ── routing strategies (auto:cheapest / best / fastest / balanced, src/core/routing-strategies.ts) ──────────
