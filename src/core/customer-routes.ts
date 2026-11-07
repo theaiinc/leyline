@@ -9,7 +9,8 @@ import type { AdminUser } from './admin-login';
 import { SignupError, TERMS_VERSION, signUp } from './self-serve-workspaces';
 import { PII_ADDON_ID, PII_ADDON_NAME, customerPiiModes, piiPricePerMTokens } from './addons';
 import type { KeyCaps } from './issued-keys';
-import { BYOK_KINDS, WorkspaceProviderError, type WorkspaceProvider } from './workspace-providers';
+import { BYOK_KINDS, WorkspaceProviderError, isMediaKind, wavespeedModelIds, type WorkspaceProvider } from './workspace-providers';
+import { mediaModel, MEDIA_PRICING_SOURCES } from './media-catalog';
 
 /**
  * The customer's side of hosted Valefront, for anyone signed in with Aegis: /dashboard/me/… on the dashboard host.
@@ -235,7 +236,8 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
   });
 
   // ── your providers (BYOK: src/core/workspace-providers.ts) ─────────────────────────────────────────────
-  // Your own provider accounts (Azure OpenAI, an OpenAI-compatible gateway, Anthropic), used only by your keys for
+  // Your own provider accounts (Azure OpenAI, an OpenAI-compatible gateway, Anthropic, WaveSpeed for images and
+  // video), used only by your keys for
   // the models you list, billed by that provider. Keys are write-only: sent on add (or to replace), never returned.
   const providersOn = (_req: Request, res: Response, next: NextFunction) => {
     if (!opts.workspaceProviders) return res.status(503).json({ error: { code: 'providers_unavailable', message: 'Your own providers are not available on this server.' } });
@@ -251,7 +253,16 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
   };
   app.get('/dashboard/me/providers', ...theirs, async (req, res) => {
     try {
-      res.json({ providers: (await opts.workspaceProviders!.list(ws(req).id)).map(providerView), kinds: BYOK_KINDS });
+      const providers = await opts.workspaceProviders!.list(ws(req).id);
+      // The image and video models the workspace's own media providers serve (for the Playground), billed by them.
+      const seen = new Set<string>();
+      const mediaModels = providers.filter((p) => p.enabled && isMediaKind(p.kind)).flatMap((p) => p.models.flatMap((id) => {
+        const m = mediaModel(id);
+        if (!m || seen.has(id)) return [];
+        seen.add(id);
+        return [{ id: m.id, name: m.name, kind: m.kind, provider: `BYOK:${p.label}`, source: MEDIA_PRICING_SOURCES[m.provider], byok: true }];
+      }));
+      res.json({ providers: providers.map(providerView), kinds: BYOK_KINDS, wavespeedModels: wavespeedModelIds(), mediaModels });
     } catch (err) {
       errorOut(res, err);
     }

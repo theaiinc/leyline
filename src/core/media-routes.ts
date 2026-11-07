@@ -5,7 +5,7 @@ import type { AudioFile, EmbeddingResult, ImageGenerationResult, Provider, Speec
 import { randomBytes } from 'crypto';
 import type { DocStore } from './issued-keys';
 import { imageCostUsd, mediaModel, videoCostUsd, type MediaKind } from './media-catalog';
-import { resolveModel, servedBy, type HostedOptions, type MediaChargeBasis } from './hosted';
+import { byokMediaProviderNamed, byokMediaProviders, resolveModel, servedBy, servedByByok, type HostedOptions, type MediaChargeBasis } from './hosted';
 import { chatCompletionErrorResponse, formatProviderError } from './api-errors';
 import {
   CapabilityError, TRANSCRIPTION_FORMATS, embeddingToBase64, estimateAudioSeconds, estimateTextTokens, formatTranscription,
@@ -26,6 +26,10 @@ import {
  * Hosted, the dash Playground runs the same image and video handlers for a signed-in customer, as one of their keys
  * they pick by id (no secret in the browser): POST /dashboard/me/playground/images, POST …/videos,
  * GET …/videos/:id?keyId=… (opts.playgroundAuth).
+ *
+ * A workspace key's image or video request for a model one of its own media providers serves (WaveSpeed, "Your
+ * providers"; hosted.ts admitKey) runs on that provider, built from the workspace's key, never on the pool: counted on
+ * a $0 spend line BYOK:<label>, billed by the customer's WaveSpeed account.
  *
  * Same auth as chat (hosted: an issued key, its caps, the offered/turned-off models, the monthly budget), the
  * same model aliases, `auto` for the first configured provider's default, and `x-leyline-force-provider`.
@@ -237,7 +241,17 @@ export function mountMediaRoutes(app: Express, router: Router, opts: MediaRouteO
       const calls = m.provider === 'BytePlus' ? n : 1;
       const data: ImageGenerationResult['data'] = [];
       let provider = '';
-      for (let i = 0; i < calls; i++) {
+      // The workspace's own provider for this model (BYOK): the first one only (a submit is a billed task).
+      const [own] = await byokMediaProviders(req, m.id);
+      for (let i = 0; i < calls && own; i++) {
+        const result = await own.generateImage!({
+          model: m.id, prompt: body.prompt, n: m.provider === 'BytePlus' ? 1 : n, ...(size ? { size } : {}), ...(body.response_format ? { response_format: body.response_format } : {}),
+        });
+        provider = own.name;
+        servedBy(req)(own.name, m.id);
+        data.push(...result.data);
+      }
+      for (let i = 0; i < calls && !own; i++) {
         const { result, provider: p } = await router.routeCapability<ImageGenerationResult>('image', m.id, (prov, selected) => prov.generateImage!({
           model: selected, prompt: body.prompt, n: m.provider === 'BytePlus' ? 1 : n, ...(size ? { size } : {}), ...(body.response_format ? { response_format: body.response_format } : {}),
         }), { forceProvider: m.provider, onServed: servedBy(req) });
@@ -245,7 +259,8 @@ export function mountMediaRoutes(app: Express, router: Router, opts: MediaRouteO
         data.push(...result.data);
       }
       if (data.length === 0) return fail(res, 502, 'no_image', 'The provider returned no image; nothing was charged.');
-      const cost = imageCostUsd(m, data.length, size);
+      // Billed by the customer's own provider: nothing charged here (recordUsage counts it at $0 too).
+      const cost = servedByByok(provider) ? 0 : imageCostUsd(m, data.length, size);
       asRequested(req, m.id);
       opts.record(req, m.id, { prompt_tokens: 0, completion_tokens: 0 }, cost, { kind: 'image', model: m, count: data.length, ...(size ? { size } : {}) });
       return res.json({ created: Math.floor(Date.now() / 1000), model: m.id, provider, data, cost, usage: { images: data.length } });
@@ -278,12 +293,18 @@ export function mountMediaRoutes(app: Express, router: Router, opts: MediaRouteO
       if (typeof body.prompt !== 'string' || !body.prompt.trim()) return fail(res, 400, 'invalid_prompt', 'prompt is required.');
       const m = mediaTarget(req, 'video');
       if (!m) return fail(res, 404, 'model_not_found', `"${body.model}" is not a video model offered here; see /v1/models.`);
-      const { result, provider } = await router.routeCapability<VideoGenerationResult>('video', m.id, (prov, selected) => prov.generateVideo!({
+      const run = (prov: Provider, selected: string) => prov.generateVideo!({
         model: selected, prompt: body.prompt,
         ...(body.duration !== undefined ? { duration: Number(body.duration) } : {}),
         ...(typeof body.resolution === 'string' ? { resolution: body.resolution } : {}),
         ...(typeof body.ratio === 'string' ? { ratio: body.ratio } : {}),
-      }), { forceProvider: m.provider, onServed: servedBy(req) });
+      });
+      const [own] = await byokMediaProviders(req, m.id);
+      if (own && !own.generateVideo) return fail(res, 400, 'unsupported_model', `Your provider "${own.label ?? own.name}" does not make videos.`);
+      const { result, provider } = own
+        ? { result: await run(own, m.id), provider: own.name }
+        : await router.routeCapability<VideoGenerationResult>('video', m.id, run, { forceProvider: m.provider, onServed: servedBy(req) });
+      if (own) servedBy(req)(own.name, m.id);
       const job: VideoJob = {
         id: `video_${randomBytes(12).toString('hex')}`, provider, task: result.id, model: m.id, keyId: keyIdOf(req), createdAt: Date.now(),
         ...(result.duration ? { duration: result.duration } : {}), ...(result.resolution ? { resolution: result.resolution } : {}),
@@ -302,7 +323,7 @@ export function mountMediaRoutes(app: Express, router: Router, opts: MediaRouteO
       // Only the key that started it may read it (the owner's dashboard session, without a key, reads its own; the dash
       // Playground, as the customer's chosen key, only that key's).
       if (!job || job.keyId !== keyIdOf(req)) return fail(res, 404, 'video_not_found', 'Video not found.');
-      const prov = router.getProviders().find((p: Provider) => p.name === job.provider);
+      const prov = (await byokMediaProviderNamed(req, job.provider, job.model)) ?? router.getProviders().find((p: Provider) => p.name === job.provider);
       if (!prov?.getVideo) return fail(res, 503, 'provider_unavailable', `${job.provider} is not available to read this video right now.`);
       const v = await prov.getVideo(job.task);
       if (v.status !== 'succeeded') return res.json(videoView(job, v));
@@ -311,7 +332,7 @@ export function mountMediaRoutes(app: Express, router: Router, opts: MediaRouteO
         console.error(JSON.stringify({ event: 'video_unpriced', id: job.id, model: job.model, tokens: v.tokens ?? null }));
         return res.json(videoView(job, v));
       }
-      const cost = videoCostUsd(m, v.tokens, v.resolution ?? job.resolution);
+      const cost = servedByByok(job.provider) ? 0 : videoCostUsd(m, v.tokens, v.resolution ?? job.resolution);
       let first = true;
       try {
         await jobs.put(`media-charges/${job.id}`, { cost, tokens: v.tokens, at: Date.now() }, '0');

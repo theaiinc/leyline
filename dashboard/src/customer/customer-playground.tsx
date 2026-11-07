@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { KeyRound } from 'lucide-react';
-import { MediaPlayground } from '@/pages/media-playground';
+import { MediaPlayground, type MediaModel } from '@/pages/media-playground';
 import { PageHeader } from '@/components/common';
 import { api } from '@/api';
 import { Button } from '@/components/ui/button';
@@ -22,6 +22,11 @@ export function CustomerPlaygroundPage({ balanceCents, go }: { balanceCents: num
   const [error, setError] = useState('');
   const [keyId, setKeyId] = useState('');
   const [kind, setKind] = useState<Kind>('image');
+  // Image and video models of the workspace's own providers (WaveSpeed), billed by that provider.
+  const [ownModels, setOwnModels] = useState<MediaModel[]>([]);
+  useEffect(() => {
+    api<{ mediaModels?: MediaModel[] }>('/dashboard/me/providers').then((out) => setOwnModels(out.mediaModels ?? [])).catch(() => undefined);
+  }, []);
   useEffect(() => {
     api<{ keys: KeyOption[] }>('/dashboard/me/keys')
       .then((out) => {
@@ -66,7 +71,7 @@ export function CustomerPlaygroundPage({ balanceCents, go }: { balanceCents: num
                       <Button key={k} role="tab" aria-selected={kind === k} variant={kind === k ? 'default' : 'outline'} size="sm" onClick={() => setKind(k)}>{k === 'image' ? 'Image' : 'Video'}</Button>
                     ))}
                   </div>
-                  <MediaPlayground key={`${kind}:${keyId}`} kind={kind} keyId={keyId} onAddCredit={() => go('billing')} />
+                  <MediaPlayground key={`${kind}:${keyId}`} kind={kind} keyId={keyId} extraModels={ownModels} onAddCredit={() => go('billing')} />
                 </>
               ) : null}
             </>
