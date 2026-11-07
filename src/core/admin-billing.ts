@@ -2,7 +2,7 @@ import { ADMIN_PAGE_CSS, adminHeader } from './admin-page-style';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import { randomUUID } from 'crypto';
 import { BillingError, METHOD_LABELS, cleanAccount, cleanLegal, cleanVat, cleanVatInvoiceDetails, decimalToCents, formatUsd, vatLabel, type BillingOrder, type EInvoice } from './billing';
-import { MANUAL_EINVOICE_PDF_MAX_BYTES, SETTINGS, VAT_REQUEST_WINDOW_DAYS, type ExchangeRateSetting } from './billing-service';
+import { MANUAL_EINVOICE_PDF_MAX_BYTES, SETTINGS, VAT_REQUEST_WINDOW_DAYS, type EinvoiceRate, type ExchangeRateSetting } from './billing-service';
 import { INVOICE_LOOKUP_URL } from './einvoice-viettel';
 import { accessAdmin } from './cloudflare-access';
 import { ModeChangeError, PROVIDERS, providerStatus, setMode, type ProviderId } from './provider-modes';
@@ -233,7 +233,7 @@ export function mountAdminBilling(app: Express, opts: HostedOptions): void {
 
   router.get('/api/einvoice-requests', async (_req, res) => {
     const billing = opts.billing!;
-    const fx = (await billing.store.setting<ExchangeRateSetting>(SETTINGS.exchangeRate))?.value ?? null;
+    const fx = await billing.einvoiceRate();
     const requests = await billing.store.einvoiceRequests();
     res.json({
       exchangeRate: fx,
@@ -301,8 +301,8 @@ export function mountAdminBilling(app: Express, opts: HostedOptions): void {
       if (e.record.provider === 'manual') throw new BillingError('issued_by_hand', 'This invoice was issued by hand: replace it where it was issued.', 409);
       const provider = billing.opts.einvoice?.(e.mode);
       if (!provider) throw new BillingError('einvoice_unavailable', `Viettel S-Invoice (${e.mode}) is not configured.`, 409);
-      const fx = (await billing.store.setting<ExchangeRateSetting>(SETTINGS.exchangeRate))?.value;
-      if (!fx) throw new BillingError('fx_missing', 'Set the exchange rate first.', 409);
+      const fx = await billing.einvoiceRate();
+      if (!fx) throw new BillingError('fx_missing', 'No exchange rate is available: set one, or try again when the daily rate can be read.', 409);
       const reason = String(req.body?.reason ?? '').trim();
       if (!reason) throw new BillingError('reason_required', 'Give the reason for the replacement.');
       const details = cleanVatInvoiceDetails(req.body);
@@ -320,7 +320,7 @@ export function mountAdminBilling(app: Express, opts: HostedOptions): void {
   router.get('/', async (req, res) => {
     const billing = opts.billing!;
     const status = typeof req.query.status === 'string' && req.query.status ? req.query.status : undefined;
-    const [orders, account, seller, vat, methods, einvoices, fx, requests, automatic] = await Promise.all([billing.store.allOrders(status), billing.account(), billing.seller(), billing.vat(), billing.methods(), billing.store.allEinvoices(), billing.store.setting<ExchangeRateSetting>(SETTINGS.exchangeRate), billing.store.einvoiceRequests(), billing.einvoiceIsAutomatic()]);
+    const [orders, account, seller, vat, methods, einvoices, fx, requests, automatic] = await Promise.all([billing.store.allOrders(status), billing.account(), billing.seller(), billing.vat(), billing.methods(), billing.store.allEinvoices(), billing.einvoiceRate(), billing.store.einvoiceRequests(), billing.einvoiceIsAutomatic()]);
     const requestOrders = new Map(await Promise.all(requests.map(async (e) => [e.orderId, await billing.store.order(e.orderId)] as const)));
     const receipts = await Promise.all(orders.filter((o) => o.status === 'paid').map(async (o) => [o.id, await billing.store.receiptForOrder(o.id)] as const));
     const receiptOf = new Map(receipts);
@@ -333,7 +333,7 @@ export function mountAdminBilling(app: Express, opts: HostedOptions): void {
       method: methods.sepay,
       lastWebhookAt: await billing.store.lastSepayWebhookAt(),
     } : null;
-    res.type('html').send(adminPage({ who: (req as AdminRequest).billingAdmin!, note, status, orders, receiptOf, account, seller, vat, einvoices, fx: fx?.value ?? null, providers, sepay, requests, requestOrders, automatic }));
+    res.type('html').send(adminPage({ who: (req as AdminRequest).billingAdmin!, note, status, orders, receiptOf, account, seller, vat, einvoices, fx, providers, sepay, requests, requestOrders, automatic }));
   });
 
   app.use('/billing', (req, res, next) => (isAdminHost(opts, req) ? router(req, res, next) : next()));
@@ -360,7 +360,7 @@ function requestsSection(p: Parameters<typeof adminPage>[0]): string {
   const intro = `<p>${p.automatic
     ? 'Viettel S-Invoice is usable: new VAT invoices are issued automatically. Requests already here stay manual.'
     : '<strong>Viettel S-Invoice is not usable</strong> (live mode without all its live secrets): VAT invoices are not issued automatically. Each one asked for waits here; issue it by hand (e.g. on S-Invoice&#39;s portal) and record it, or reject it.'}
- Customers can ask up to ${VAT_REQUEST_WINDOW_DAYS} days after paying. VND at the e-invoice exchange rate: <strong>${fx ? `${esc(fx.vndPerUsd)} VND/USD (${esc(fx.date)})` : 'not set'}</strong>.</p>`;
+ Customers can ask up to ${VAT_REQUEST_WINDOW_DAYS} days after paying. VND at the e-invoice exchange rate: <strong>${fx ? `${esc(fx.vndPerUsd)} VND/USD (${esc(fx.date)}, ${fx.source === 'admin' ? 'set here' : fx.source === 'vietcombank' ? 'Vietcombank selling rate, as on dash' : 'reference rate, as on dash'})` : 'not available'}</strong>.</p>`;
   if (!p.requests.length) return `${intro}<p>No requests waiting.</p>`;
   const rows = p.requests.map((e) => {
     const o = p.requestOrders.get(e.orderId) ?? null;
@@ -388,7 +388,7 @@ function field(name: string, label: string, value: unknown, extra = ''): string 
 function adminPage(p: {
   who: string; note: string; status?: string; orders: BillingOrder[]; receiptOf: Map<string, import('./billing').Receipt | null>;
   account: import('./billing').BillingAccount | null; seller: import('./billing').LegalSettings; vat: import('./billing').VatSettings;
-  einvoices: EInvoice[]; fx: ExchangeRateSetting | null; providers: Awaited<ReturnType<typeof providerStatus>>;
+  einvoices: EInvoice[]; fx: EinvoiceRate | null; providers: Awaited<ReturnType<typeof providerStatus>>;
   sepay: { apiToken: boolean; webhookKey: boolean; accountFromEnv: boolean; account: import('./billing').VndBankAccount | null; method: { enabled: boolean; vndPerUsd: number | null; rateDate: string | null }; lastWebhookAt: number | null } | null;
   requests: EInvoice[]; requestOrders: Map<string, BillingOrder | null>; automatic: boolean;
 }): string {
@@ -428,8 +428,8 @@ ${p.note ? `<p class="note">${esc(p.note)}</p>` : ''}
 <h2>Orders</h2><p><a href="/billing/">All</a> · <a href="/billing/?status=pending">Pending</a> · <a href="/billing/?status=paid">Paid</a> · <a href="/billing/?status=cancelled">Cancelled</a></p>
 <div class="wrap"><table class="stack"><thead><tr><th>Created (UTC)</th><th>Reference</th><th>Buyer</th><th>Method</th><th class="n">Credit / total</th><th>Status</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="7">No orders.</td></tr>'}</tbody></table></div>
 <h2 id="vat-requests">VAT invoice requests (issued by hand)${p.requests.length ? ` (${p.requests.length})` : ''}</h2>${requestsSection(p)}
-<h2>Vietnamese VAT e-invoices (Viettel S-Invoice)</h2><p>Issued automatically through S-Invoice in their payment's mode (sandbox: waiting as pending until it is configured); in live mode without its secrets they are requests, above. Exchange rate: <strong>${p.fx ? `${esc(p.fx.vndPerUsd)} VND/USD, set ${esc(p.fx.date)}` : 'not set'}</strong>.</p>
-<form class="settings" method="post" action="/billing/settings/exchange-rate">${field('vndPerUsd', 'VND per 1 USD (for invoices issued from now)', p.fx?.vndPerUsd ?? '', 'required')}<div><button>Save rate and issue pending</button></div></form>
+<h2>Vietnamese VAT e-invoices (Viettel S-Invoice)</h2><p>Issued automatically through S-Invoice in their payment's mode (sandbox: waiting as pending until it is configured); in live mode without its secrets they are requests, above. Exchange rate: <strong>${p.fx ? (p.fx.source === 'admin' ? `${esc(p.fx.vndPerUsd)} VND/USD, set ${esc(p.fx.date)}` : `${esc(p.fx.vndPerUsd)} VND/USD, the day's ${p.fx.source === 'vietcombank' ? 'Vietcombank selling' : 'reference'} rate (${esc(p.fx.date)}), as on dash; set one below to fix it instead`) : 'not available'}</strong>.</p>
+<form class="settings" method="post" action="/billing/settings/exchange-rate">${field('vndPerUsd', 'VND per 1 USD (for invoices issued from now)', p.fx?.source === 'admin' ? p.fx.vndPerUsd : '', 'required')}<div><button>Save rate and issue pending</button></div></form>
 <form method="post" action="/billing/einvoices/process" style="margin:8px 0"><button>Run the retry job now</button></form>
 <div class="wrap"><table class="stack"><thead><tr><th>Paid</th><th>Buyer</th><th class="n">Total</th><th>Status</th><th></th></tr></thead><tbody>${erows || '<tr><td colspan="5">No VAT invoices requested.</td></tr>'}</tbody></table></div>
 <h2>WorldFirst receiving account (USD)</h2><form class="settings" method="post" action="/billing/settings/worldfirst">
