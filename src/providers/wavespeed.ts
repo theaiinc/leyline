@@ -85,6 +85,17 @@ export class WaveSpeedProvider implements Provider {
     };
   }
 
+  /**
+   * The account's balance (GET {base}/balance, https://wavespeed.ai/docs/check-balance): an authenticated read that
+   * creates no task, so it checks the key without generating (or paying for) anything. Throws with the HTTP status.
+   */
+  async balance(): Promise<number | null> {
+    const res = await this.fetchImpl(`${this.baseUrl}/balance`, { headers: this.headers(), signal: AbortSignal.timeout(15_000) });
+    if (!res.ok) throw Object.assign(new Error(`WaveSpeed balance check failed (HTTP ${res.status})`), { status: res.status });
+    const body = (await res.json().catch(() => ({}))) as { data?: { balance?: unknown } };
+    return typeof body?.data?.balance === 'number' ? body.data.balance : null;
+  }
+
   private headers(): Record<string, string> {
     return { authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json' };
   }

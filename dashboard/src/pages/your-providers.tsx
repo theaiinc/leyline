@@ -17,7 +17,7 @@ import { Textarea } from '@/components/ui/textarea';
  * replaced, never shown again.
  */
 
-type Kind = 'azure-openai' | 'openai-compatible' | 'anthropic';
+type Kind = 'azure-openai' | 'openai-compatible' | 'anthropic' | 'wavespeed';
 type ProviderView = {
   id: string; kind: Kind; label: string; baseUrl: string; deployment: string | null; apiVersion: string | null; models: string[];
   enabled: boolean; createdAt: number; updatedAt: number; spendLine: string;
@@ -28,7 +28,10 @@ const KINDS: Array<{ value: Kind; label: string; baseUrl: string; hint: string }
   { value: 'azure-openai', label: 'Azure OpenAI', baseUrl: 'https://<resource>.openai.azure.com/openai/v1', hint: 'Each model is a deployment name on your resource.' },
   { value: 'openai-compatible', label: 'OpenAI-compatible', baseUrl: 'https://openrouter.ai/api/v1', hint: 'OpenAI, OpenRouter, LLM API or any gateway with /chat/completions.' },
   { value: 'anthropic', label: 'Anthropic', baseUrl: 'https://api.anthropic.com/v1', hint: 'Claude models, with your Anthropic API key.' },
+  { value: 'wavespeed', label: 'WaveSpeed (images and video)', baseUrl: 'https://api.wavespeed.ai/api/v3', hint: 'WaveSpeed image and video models on /v1/images/generations and /v1/videos (and the Playground), with your WaveSpeed API key.' },
 ];
+/** Base URL and models are optional for these (a default base URL; WaveSpeed: every WaveSpeed model Valefront supports). */
+const OPTIONAL_URL: Kind[] = ['anthropic', 'wavespeed'];
 const kindLabel = (k: Kind) => KINDS.find((x) => x.value === k)?.label ?? k;
 const date = (t: number) => new Date(t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 const splitModels = (text: string) => text.split(/[\n,]/).map((m) => m.trim()).filter(Boolean);
@@ -49,8 +52,11 @@ export function YourProvidersPage() {
   const [tests, setTests] = useState<Record<string, TestResult>>({});
   const [replacing, setReplacing] = useState<{ id: string; key: string } | null>(null);
 
+  const [wavespeedModels, setWavespeedModels] = useState<string[]>([]);
   const load = useCallback(async () => {
-    setProviders((await api<{ providers: ProviderView[] }>('/dashboard/me/providers')).providers);
+    const out = await api<{ providers: ProviderView[]; wavespeedModels?: string[] }>('/dashboard/me/providers');
+    setProviders(out.providers);
+    setWavespeedModels(out.wavespeedModels ?? []);
   }, []);
   useEffect(() => { void load().catch(fail); }, [load]);
 
@@ -112,7 +118,7 @@ export function YourProvidersPage() {
     }
   }
 
-  const canAdd = label.trim() && apiKey.trim() && (kind === 'anthropic' || baseUrl.trim()) && (models.trim() || (kind === 'azure-openai' && deployment.trim()));
+  const canAdd = label.trim() && apiKey.trim() && (OPTIONAL_URL.includes(kind) || baseUrl.trim()) && (models.trim() || kind === 'wavespeed' || (kind === 'azure-openai' && deployment.trim()));
   return (<>
     <PageHeader title="Your providers" description="Your own provider accounts, used only by your keys. Requests to them are billed by that provider, not by Valefront." />
     <Card className="mb-4 gap-4">
@@ -131,15 +137,16 @@ export function YourProvidersPage() {
           </div>
           <div className="grid gap-1"><Label htmlFor="byok-label">Name</Label><Input id="byok-label" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. My Azure" maxLength={40} /></div>
           <div className="grid gap-1">
-            <Label htmlFor="byok-url">Base URL{kind === 'anthropic' ? <span className="font-normal text-muted-foreground"> (optional)</span> : null}</Label>
+            <Label htmlFor="byok-url">Base URL{OPTIONAL_URL.includes(kind) ? <span className="font-normal text-muted-foreground"> (optional)</span> : null}</Label>
             <Input id="byok-url" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder={spec.baseUrl} />
           </div>
           {kind === 'azure-openai' ? (
             <div className="grid gap-1"><Label htmlFor="byok-deployment">Deployment</Label><Input id="byok-deployment" value={deployment} onChange={(e) => setDeployment(e.target.value)} placeholder="e.g. gpt-5.5" /></div>
           ) : null}
           <div className="grid gap-1">
-            <Label htmlFor="byok-models">Models{kind === 'azure-openai' ? <span className="font-normal text-muted-foreground"> (default: the deployment)</span> : null}</Label>
-            <Textarea id="byok-models" value={models} onChange={(e) => setModels(e.target.value)} placeholder="One model id per line" rows={3} />
+            <Label htmlFor="byok-models">Models{kind === 'azure-openai' ? <span className="font-normal text-muted-foreground"> (default: the deployment)</span> : kind === 'wavespeed' ? <span className="font-normal text-muted-foreground"> (default: all of them)</span> : null}</Label>
+            <Textarea id="byok-models" value={models} onChange={(e) => setModels(e.target.value)} placeholder={kind === 'wavespeed' && wavespeedModels.length ? wavespeedModels.join('\n') : 'One model id per line'} rows={3} />
+            {kind === 'wavespeed' && wavespeedModels.length ? <p className="text-xs text-muted-foreground">Supported: {wavespeedModels.join(', ')}</p> : null}
           </div>
           <div className="grid gap-1"><Label htmlFor="byok-key">API key</Label><Input id="byok-key" type="password" autoComplete="off" value={apiKey} onChange={(e) => setApiKey(e.target.value)} /></div>
           <div><Button disabled={!canAdd || busy === 'add'} onClick={add}><Plus />Add provider</Button></div>
@@ -174,7 +181,7 @@ export function YourProvidersPage() {
                   <div className="flex flex-wrap gap-1.5">{p.models.map((m) => <code key={m} className="rounded bg-muted px-1.5 py-0.5 text-xs">{m}</code>)}</div>
                   {result ? (
                     <p className={result.ok ? 'text-xs text-emerald-600 dark:text-emerald-400' : 'text-xs text-destructive'}>
-                      {result.ok ? `Works: ${result.model} answered in ${result.ms} ms.` : `Failed for ${result.model}${result.status ? ` (HTTP ${result.status})` : ''}. Check the URL, the key and the model.`}
+                      {result.ok ? (p.kind === 'wavespeed' ? `Works: the key reads your WaveSpeed balance (${result.ms} ms; nothing generated).` : `Works: ${result.model} answered in ${result.ms} ms.`) : `Failed for ${result.model}${result.status ? ` (HTTP ${result.status})` : ''}. Check the URL, the key and the model.`}
                     </p>
                   ) : null}
                   {replacing?.id === p.id ? (

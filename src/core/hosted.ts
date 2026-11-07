@@ -24,7 +24,7 @@ import { mountAdminCampaigns } from './admin-campaigns';
 import { Memo, isRouterPick, planStrategy, strategyFor, isRoutingStrategy, routeByPlan, routeHeader, streamByPlan, strategyErrorResponse, ROUTING_STRATEGIES, type RoutePlan, type RoutingStrategy, type StrategyEnv } from './routing-strategies';
 import { BYTEPLUS_BENCHMARK_ALIASES, byteplusChatModelReadsImages } from '../providers/byteplus';
 import { logger, type LogEntry } from './logger';
-import type { CompletionRequest } from './types';
+import type { CompletionRequest, Provider } from './types';
 import { BYOK_PREFIX, WorkspaceProviderError, type PoolCredentials, type WorkspaceByok, type WorkspaceProviders } from './workspace-providers';
 
 /** An image or video generation, for pricing it under a promotion (recordUsage). */
@@ -125,6 +125,8 @@ type WithKey = Request & {
 
 /** The endpoints a workspace's own providers (BYOK) serve: chat, in the OpenAI, Anthropic and Responses formats. */
 const BYOK_PATHS = new Set(['/v1/chat/completions', '/v1/messages', '/v1/responses']);
+/** The endpoints a workspace's own media providers (WaveSpeed) serve: images and videos, the dash Playground's too. */
+const BYOK_MEDIA_PATHS = new Set(['/v1/images/generations', '/v1/videos', '/dashboard/me/playground/images', '/dashboard/me/playground/videos']);
 /** Where a customer adds their own providers. */
 export const DASH_PROVIDERS_URL = 'https://dash.valefront.com/#/providers';
 
@@ -147,6 +149,21 @@ export function requestModel(opts: HostedOptions, req: Request, model: string): 
 export function routerFor<R extends Router>(router: R, req: Request): Pick<Router, 'route' | 'routeStream'> {
   const byok = (req as WithKey).byok;
   return byok && byok.size ? byok.wrap(router) : router;
+}
+
+/**
+ * The workspace's own media providers (WaveSpeed BYOK) for this image or video request, when admission matched its
+ * model to them (admitKey); empty: not a BYOK media request, the pool serves it as before.
+ */
+export async function byokMediaProviders(req: Request, model: string): Promise<Provider[]> {
+  const r = req as WithKey;
+  return r.byok && r.byokModel === model && r.byok.mediaMatch(model) ? r.byok.mediaProvidersFor(model) : [];
+}
+
+/** The workspace's own media provider that started a video job (its name is `BYOK:<label>`), for reading the job. */
+export async function byokMediaProviderNamed(req: Request, name: string, model: string): Promise<Provider | null> {
+  const r = req as WithKey;
+  return name.startsWith(BYOK_PREFIX) && r.byok ? r.byok.mediaProviderNamed(name, model) : null;
 }
 
 /** Route option that remembers which provider and model served this request (for spend by provider and model). */
@@ -260,8 +277,12 @@ async function admitKey(opts: HostedOptions, req: Request, key: IssuedKey, fail:
       console.error(JSON.stringify({ event: 'workspace_providers_lookup_failed', workspaceId: key.workspaceId, error: err instanceof Error ? err.message : String(err) }));
     }
   }
-  // Chat only (chat completions, Anthropic messages, responses): other endpoints (embeddings, media) keep the pool.
-  const byokModel = byok && requested && !isRouterPick(requested) && BYOK_PATHS.has(req.path) ? byok.match(requested, resolveModel(opts.aliases, requested)) : null;
+  // Chat (chat completions, Anthropic messages, responses) goes to the workspace's chat providers; images and videos
+  // to its media providers (WaveSpeed), by the exact model id. Other endpoints (embeddings, audio) keep the pool.
+  const byokModel = !byok || !requested || isRouterPick(requested) ? null
+    : BYOK_PATHS.has(req.path) ? byok.match(requested, resolveModel(opts.aliases, requested))
+      : BYOK_MEDIA_PATHS.has(req.path) ? byok.mediaMatch(requested.trim())
+        : null;
   (req as WithKey).byok = byok && byok.size ? byok : null;
   (req as WithKey).byokModel = byokModel;
   const offered = isRouterPick(requested) || !!byokModel || opts.models.length === 0 || opts.models.some((m) => modelAllowed({ models: [m] }, requested)) || !!resolveAlias(opts, requested) || isSoldMediaModel(requested);
@@ -464,7 +485,7 @@ export function strategyEnv(router: Router, opts: HostedOptions | undefined, key
   // The workspace's own chat models (BYOK), when its key asks a strategy to pick (Steve: "Auto strategies can route to
   // byok models as well, as long as the user configured it"). Allowed for the key like any model; free to Valefront,
   // so not limited to free-tier models.
-  const own = new Set((byok?.models() ?? []).filter((m) => capabilitiesForModel(m).join() === 'chat' && (!key || modelAllowed(key.caps, m))));
+  const own = new Set((byok?.chatModels() ?? []).filter((m) => capabilitiesForModel(m).join() === 'chat' && (!key || modelAllowed(key.caps, m))));
   return {
     offered: async () => {
       if (byokOnly) return [...own];
@@ -1049,6 +1070,31 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
       if (err instanceof WorkspaceProviderError) return res.status(err.status).json({ error: err.message, code: err.code });
       console.error('[hosted] from-pool copy failed', err instanceof Error ? err.message : err);
       res.status(500).json({ error: 'copy failed' });
+    }
+  });
+
+  /**
+   * Add a provider to a workspace with the key in the request body (the operator's own copy of a customer's key, or a
+   * provider the pool doesn't have, e.g. WaveSpeed): { kind, label, apiKey, baseUrl?, models?, deployment?,
+   * apiVersion?, enabled? }. Same checks and encryption as dash's "Your providers"; the key is never returned or logged.
+   */
+  app.post('/admin/api/workspaces/:workspaceId/providers', guard, async (req, res) => {
+    const workspaces = opts.workspaceProviders;
+    if (!workspaces || !opts.billing) return res.status(503).json({ error: 'workspace_providers_unavailable' });
+    const workspaceId = String(req.params.workspaceId);
+    const b = req.body ?? {};
+    try {
+      const ws = await opts.billing.store.workspace(workspaceId);
+      if (!ws || ws.deletedAt) return res.status(404).json({ error: 'workspace_not_found' });
+      const by = (req as Request & { admin?: string }).admin!;
+      const saved = await workspaces.add(workspaceId, { kind: b.kind, label: b.label, baseUrl: b.baseUrl, deployment: b.deployment, apiVersion: b.apiVersion, models: b.models, apiKey: b.apiKey, enabled: b.enabled }, by);
+      console.log(JSON.stringify({ event: 'workspace_provider_added_by_admin', workspaceId, id: saved.id, kind: saved.kind, label: saved.label, models: saved.models, by }));
+      await opts.billing.store.audit({ type: 'workspace_provider.added', workspaceId, meta: { id: saved.id, label: saved.label, kind: saved.kind, byAdmin: by } });
+      res.status(201).json({ provider: saved });
+    } catch (err) {
+      if (err instanceof WorkspaceProviderError) return res.status(err.status).json({ error: err.message, code: err.code });
+      console.error('[hosted] admin provider add failed', err instanceof Error ? err.message : err);
+      res.status(500).json({ error: 'add failed' });
     }
   });
 

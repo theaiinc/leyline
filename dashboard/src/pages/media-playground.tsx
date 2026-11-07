@@ -19,8 +19,10 @@ import { cn } from '@/lib/utils';
  * of the signed-in workspace; the key's secret never reaches the browser. Otherwise /v1 with `authHeaders`.
  */
 export type MediaKind = 'image' | 'video';
-type MediaModel = {
+export type MediaModel = {
   id: string; name: string; provider: string; kind: MediaKind; source?: string;
+  /** Served by one of the workspace's own providers (Your providers): billed by that provider, not by Valefront. */
+  byok?: boolean;
   per_image?: number; per_image_above_pixels?: { pixels: number; per_image: number };
   per_1m_video_tokens?: number; per_1m_video_tokens_1080p?: number; max_resolution?: '720p' | '1080p';
   durations?: { min: number; max: number; default: number };
@@ -47,8 +49,10 @@ function estimateVideoTokens(resolution: string, seconds: number): number {
   return Math.round((w * h * 24 * seconds) / 1024);
 }
 
-export function MediaPlayground({ kind, authHeaders = {}, keyId, onAddCredit }: {
+export function MediaPlayground({ kind, authHeaders = {}, keyId, extraModels = [], onAddCredit }: {
   kind: MediaKind; authHeaders?: Record<string, string>; keyId?: string;
+  /** More models to offer: the workspace's own (WaveSpeed on Your providers), listed after Valefront's. */
+  extraModels?: MediaModel[];
   /** Shown with a "no credit" refusal (402): the customer dash's Billing page. */
   onAddCredit?: () => void;
 }) {
@@ -74,7 +78,7 @@ export function MediaPlayground({ kind, authHeaders = {}, keyId, onAddCredit }: 
   useEffect(() => {
     fetch(apiUrl('/v1/pricing'), { credentials: 'same-origin' }).then((r) => r.json()).then((d: { media?: MediaModel[] }) => setModels(d.media ?? [])).catch(() => undefined);
   }, []);
-  const list = models.filter((m) => m.kind === kind);
+  const list = [...models, ...extraModels.filter((x) => !models.some((m) => m.id === x.id))].filter((m) => m.kind === kind);
   // Start on the cheapest everyday model, not the priciest (a playground run is a real, charged request).
   const DEFAULT: Record<MediaKind, string> = { image: 'seedream-4-0-250828', video: 'seedance-1-0-pro-fast-251015' };
   const model = list.find((m) => m.id === modelId) ?? list.find((m) => m.id === DEFAULT[kind]) ?? list[0];
@@ -93,6 +97,7 @@ export function MediaPlayground({ kind, authHeaders = {}, keyId, onAddCredit }: 
 
   const price = useMemo(() => {
     if (!model) return null;
+    if (model.byok) return { total: 0, note: `Billed by your ${model.provider.replace(/^BYOK:/, '')} account`, own: true };
     if (kind === 'image' && model.per_image !== undefined) {
       const [w, h] = size.split('x').map(Number);
       const each = model.per_image_above_pixels && w! * h! > model.per_image_above_pixels.pixels ? model.per_image_above_pixels.per_image : model.per_image;
@@ -224,7 +229,7 @@ export function MediaPlayground({ kind, authHeaders = {}, keyId, onAddCredit }: 
               <div className="flex gap-2 pt-1">
                 <Button variant="outline" onClick={() => { setPrompt(''); setCurrent(null); setStatus('idle'); setError(''); setErrorCode(''); }}><Eraser />Clear</Button>
                 <Button className="flex-1" disabled={busy || !model || !prompt.trim()} onClick={() => void generate()}>
-                  {busy ? <Loader2 className="animate-spin" /> : <Sparkles />}{busy ? 'Generating…' : `Generate${price ? ` ${price.estimate ? '≈ ' : ''}${usd(price.total)}` : ''}`}
+                  {busy ? <Loader2 className="animate-spin" /> : <Sparkles />}{busy ? 'Generating…' : `Generate${price && !price.own ? ` ${price.estimate ? '≈ ' : ''}${usd(price.total)}` : ''}`}
                 </Button>
               </div>
               {kind === 'video' ? <p className="text-xs text-muted-foreground">Videos usually take 30 seconds to a few minutes. You're charged only when one is finished, by its actual tokens.</p> : null}
