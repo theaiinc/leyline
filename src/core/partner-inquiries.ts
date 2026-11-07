@@ -1,4 +1,4 @@
-import { ADMIN_PAGE_CSS, adminHeader } from './admin-page-style';
+import { adminDocument, filterTabs } from './admin-page-style';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import { randomUUID } from 'crypto';
 import { accessAdminOf, adminNav, isAdminHost } from './admin-billing';
@@ -487,10 +487,7 @@ export function mountAdminPartners(app: Express, opts: HostedOptions): void {
 function partnersPage(p: { who: string; note: string; status?: InquiryStatus; inquiries: PartnerInquiry[]; counts: Record<InquiryStatus, number> }): string {
   const e = escHtml;
   const total = p.counts.new + p.counts.contacted + p.counts.closed;
-  const filter = (s: InquiryStatus | undefined, label: string, n: number) => {
-    const text = `${label} (${n})`;
-    return s === p.status ? `<strong>${text}</strong>` : `<a href="/partners/${s ? `?status=${s}` : ''}">${text}</a>`;
-  };
+  const filter = (s: InquiryStatus | undefined, label: string, n: number) => ({ href: `/partners/${s ? `?status=${s}` : ''}`, label: `${label} (${n})`, current: s === p.status });
   const multi = (t: string | null) => (t ? `<div class="pre">${e(t)}</div>` : '');
   const rows = p.inquiries.map((i) => {
     const site = i.website && /^https?:\/\//i.test(i.website) ? `<br><small><a href="${e(i.website)}" rel="noopener noreferrer nofollow" target="_blank">${e(i.website)}</a></small>` : '';
@@ -504,12 +501,10 @@ function partnersPage(p: { who: string; note: string; status?: InquiryStatus; in
 <td><form class="status" method="post" action="/partners/${e(i.id)}/status"><input type="hidden" name="filter" value="${e(p.status ?? '')}"><select name="status">${options}</select>
 <textarea name="note" rows="2" placeholder="Note">${e(i.note)}</textarea><button>Save</button></form>${i.updatedBy ? `<small>${e(i.updatedBy)}, ${e(new Date(i.updatedAt!).toISOString().slice(0, 16).replace('T', ' '))}</small><br>` : ''}${emails}</td></tr>`;
   }).join('');
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Valefront partner inquiries</title>
-<style>${ADMIN_PAGE_CSS}.pre{white-space:pre-wrap;max-height:12em;overflow:auto;max-width:420px}tr.s-new td:first-child{box-shadow:inset 3px 0 0 var(--ring)}tr.s-closed{opacity:.7}form.status{display:flex;flex-direction:column;gap:6px;min-width:180px}</style></head><body>${adminHeader('partners')}<main>
-<h1>Partner inquiries</h1><p>From the "Partner with Valefront" form on valefront.com. Signed in through Cloudflare Access as <strong>${e(p.who)}</strong>.</p>
+  const css = '.pre{white-space:pre-wrap;overflow-wrap:break-word;max-height:12em;overflow:auto;min-width:16rem;max-width:26rem}tr.s-new td:first-child{box-shadow:inset 3px 0 0 var(--ring)}tr.s-closed{opacity:.7}td form.status{flex-direction:column;align-items:stretch;flex-wrap:nowrap;min-width:12rem}td form.status button{align-self:flex-start}';
+  return adminDocument({ current: 'partner-inquiries', title: 'Partner inquiries', who: p.who, css, body: `<h1>Partner inquiries</h1><p>From the "Partner with Valefront" form on valefront.com. Signed in through Cloudflare Access as <strong>${e(p.who)}</strong>.</p>
 ${p.note ? `<p class="note">${e(p.note)}</p>` : ''}
-<p>${filter(undefined, 'All', total)} · ${filter('new', 'New', p.counts.new)} · ${filter('contacted', 'Contacted', p.counts.contacted)} · ${filter('closed', 'Closed', p.counts.closed)}</p>
+${filterTabs([filter(undefined, 'All', total), filter('new', 'New', p.counts.new), filter('contacted', 'Contacted', p.counts.contacted), filter('closed', 'Closed', p.counts.closed)])}
 <div class="wrap"><table><thead><tr><th>Received (UTC)</th><th>Company</th><th>Contact</th><th>Partnership</th><th>Models offered / message</th><th>Status</th></tr></thead>
-<tbody>${rows || '<tr><td colspan="6">No inquiries.</td></tr>'}</tbody></table></div>
-</main></body></html>`;
+<tbody>${rows || '<tr><td colspan="6">No inquiries.</td></tr>'}</tbody></table></div>` });
 }
