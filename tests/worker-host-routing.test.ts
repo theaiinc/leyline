@@ -1,4 +1,6 @@
-import { dashboardApiRequest, dashboardPagePath, dashboardPageRedirect, legacyDashboardRedirect } from '../worker/host-routing';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { ADMIN_PAGES, ADMIN_SERVER_PATHS, CUSTOMER_PAGES, adminPagePath, dashboardApiRequest, dashboardPagePath, dashboardPageRedirect, legacyDashboardRedirect } from '../worker/host-routing';
 
 describe('legacy dashboard host routing', () => {
   test.each(['/', '/dashboard', '/dashboard/', '/auth/login', '/auth/callback'])(
@@ -67,5 +69,56 @@ describe('dashboard pages linked as paths', () => {
 
   test('the PayPal webhook is not rewritten into the dashboard API', () => {
     expect(dashboardApiRequest(new Request('https://dash.valefront.com/webhooks/paypal', { method: 'POST' }))).toBeNull();
+  });
+});
+
+describe('owner dashboard pages on the admin host linked as paths', () => {
+  const ADM = 'adm.valefront.com';
+  const get = (u: string, accept = 'text/html,application/xhtml+xml') => new Request(u, { headers: { accept } });
+  const page = (p: string, accept?: string, host = ADM) => adminPagePath(get(`https://${host}${p}`, accept), new URL(`https://${host}${p}`), ADM);
+
+  test.each([...ADMIN_PAGES, '/benchmarks/', '/spending?key=k1'])('https://adm.valefront.com%s is served as the app', (p) => {
+    expect(page(p)).toBe(true);
+  });
+
+  test.each([
+    '/', '/billing', '/billing/', '/billing/?status=pending', '/partners', '/partners/', '/partners/abc/status', '/admin',
+    '/admin/api/spend', '/auth/login', '/dashboard', '/dashboard/session', '/v1/models', '/v1/benchmarks/refresh', '/mcp',
+    '/healthz', '/readyz', '/webhooks/paypal', '/cdn-cgi/access/logout', '/customer-billing', '/partner-inquiries', '/nope',
+    '/benchmarks/extra',
+  ])('server and unknown path %s on the admin host is left to the server', (p) => {
+    expect(page(p)).toBe(false);
+  });
+
+  test('no owner dashboard page shadows a server path on the admin host', () => {
+    for (const p of ADMIN_PAGES) expect(ADMIN_SERVER_PATHS).not.toContain(p);
+    // dash's /billing page is a server page on adm: it is not an admin page.
+    expect(CUSTOMER_PAGES.has('/billing') && !ADMIN_PAGES.has('/billing') && !ADMIN_PAGES.has('/partners')).toBe(true);
+  });
+
+  test('the app\'s own fetches, non-GET requests and other hosts are not served the app', () => {
+    expect(page('/benchmarks', 'application/json')).toBe(false);
+    expect(page('/providers', '*/*')).toBe(false);
+    const u = `https://${ADM}/keys`;
+    expect(adminPagePath(new Request(u, { method: 'POST', headers: { accept: 'text/html' } }), new URL(u), ADM)).toBe(false);
+    expect(page('/benchmarks', undefined, 'dash.valefront.com')).toBe(false);
+    expect(page('/benchmarks', undefined, 'llm.valefront.com')).toBe(false);
+  });
+
+  test('a page\'s legacy API path still reaches the server API (only page loads are the app)', () => {
+    expect(dashboardApiRequest(new Request(`https://${ADM}/providers`))?.url).toBe(`https://${ADM}/dashboard/providers`);
+  });
+
+  test('dash pages are unchanged: adm-only pages are not customer pages', () => {
+    const u = 'https://dash.valefront.com/benchmarks';
+    expect(dashboardPagePath(get(u), new URL(u))).toBe(false);
+  });
+
+  test('every page in the owner dashboard nav is an admin page path, and the server pages are links', () => {
+    const app = readFileSync(path.join(__dirname, '../dashboard/src/app.tsx'), 'utf8');
+    const ids = [...app.matchAll(/\{ id: '([\w-]+)'/g)].map((m) => m[1]);
+    expect(ids.length).toBeGreaterThan(5);
+    for (const id of ids) expect(ADMIN_PAGES.has(`/${id}`)).toBe(true);
+    expect(app).toContain("[CUSTOMER_BILLING]: '/billing/', [PARTNER_INQUIRIES]: '/partners/'");
   });
 });

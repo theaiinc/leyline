@@ -1,3 +1,4 @@
+import { openPage } from '@/hooks/use-path-route';
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -64,14 +65,7 @@ export function SpendingPage() {
       .catch(error => toast.error(error instanceof Error ? error.message : 'Could not load spending'));
   }, [month, keyId]);
   const selectedKey = keyId ? keys.find(k => k.id === keyId) : undefined;
-  const clearKey = () => {
-    if (window.location.search) {
-      window.history.pushState({}, '', `${window.location.pathname}#/spending`);
-      window.dispatchEvent(new PopStateEvent('popstate'));
-    } else {
-      window.location.hash = '#/spending';
-    }
-  };
+  const clearKey = () => openPage('/spending');
   useEffect(() => {
     api<{ keys: IssuedKey[] }>('/admin/api/keys').then(r => setKeys(r.keys)).catch(() => undefined);
   }, []);
@@ -276,7 +270,7 @@ export function SpendingPage() {
                         {byKey.map(k => (
                           <TableRow key={k.id}>
                             <TableCell className="pl-6">
-                              <button type="button" className="text-left font-medium hover:underline" onClick={() => { window.location.hash = `#/spending?key=${encodeURIComponent(k.id)}`; }}>{k.name}</button>
+                              <button type="button" className="text-left font-medium hover:underline" onClick={() => openPage(`/spending?key=${encodeURIComponent(k.id)}`)}>{k.name}</button>
                               <code className="block font-mono text-xs text-muted-foreground">{k.prefix}…</code>
                             </TableCell>
                             <TableCell className="text-right tabular-nums">

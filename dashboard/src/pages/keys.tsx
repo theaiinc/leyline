@@ -1,3 +1,4 @@
+import { openPage } from '@/hooks/use-path-route';
 import { useEffect, useState, type FormEvent } from 'react';
 import { MoreHorizontal, Plus } from 'lucide-react';
 import { toast } from 'sonner';
@@ -145,15 +146,7 @@ export function KeysPage({ d }: { d: Dashboard }) {
                           type="button"
                           className="text-left font-medium hover:underline"
                           aria-label={`View spending for ${k.name}`}
-                          onClick={() => {
-                            const target = `/spending?key=${encodeURIComponent(k.id)}`;
-                            if (window.location.pathname.startsWith('/spending')) {
-                              window.history.pushState({}, '', target);
-                              window.dispatchEvent(new PopStateEvent('popstate'));
-                            } else {
-                              window.location.hash = `#/spending?key=${encodeURIComponent(k.id)}`;
-                            }
-                          }}
+                          onClick={() => openPage(`/spending?key=${encodeURIComponent(k.id)}`)}
                         >
                           {k.name}
                         </button>

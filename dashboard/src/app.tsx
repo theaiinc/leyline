@@ -11,7 +11,7 @@ import { ToneBadge } from '@/components/common';
 import { apiUrl, fetchSession, type Session } from '@/api';
 import { CustomerApp } from '@/customer/customer-app';
 import { useDashboard } from '@/hooks/use-dashboard';
-import { useHashRoute } from '@/hooks/use-hash-route';
+import { usePathRoute } from '@/hooks/use-path-route';
 import { cn } from '@/lib/utils';
 import { ActivityPage } from '@/pages/activity';
 import { CalculatorPage } from '@/pages/calculator';
@@ -78,12 +78,13 @@ export function Root() {
   useEffect(() => { void fetchSession().then(setSession); }, []);
   if (!session) return null;
   if (session.hosted && !session.admin) return <CustomerApp dark={dark} toggleTheme={toggleTheme} />;
-  return <App />;
+  // Hosted, the owner's dashboard is adm.valefront.com, whose pages are paths (/benchmarks); locally they stay #/x.
+  return <App paths={Boolean(session.hosted)} />;
 }
 
-export function App() {
+export function App({ paths = false }: { paths?: boolean } = {}) {
   const d = useDashboard();
-  const [page, go] = useHashRoute('overview');
+  const [page, go] = usePathRoute('overview', { paths });
   const [dark, toggleTheme] = useTheme();
   const hosted = Boolean(d.session?.hosted);
   const nav = navFor(hosted);

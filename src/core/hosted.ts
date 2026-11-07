@@ -936,7 +936,7 @@ export function mountHosted(app: Express, router: Router, opts: HostedOptions): 
   }
 
   // ── admin: the page and the key API ─────────────────────────────────────────────────────────────────
-  app.get('/admin', (_req, res) => res.redirect(302, opts.adminHost ? `https://${opts.adminHost}/#/keys` : '/dashboard/#/keys'));
+  app.get('/admin', (_req, res) => res.redirect(302, opts.adminHost ? `https://${opts.adminHost}/keys` : '/dashboard/#/keys'));
 
   const guard = (req: Request, res: Response, next: NextFunction) => {
     const who = adminOf(opts, req);

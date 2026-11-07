@@ -1,3 +1,4 @@
+import { openPage } from '@/hooks/use-path-route';
 import { useEffect, useState, type FormEvent } from 'react';
 import { Image as ImageIcon, Send, Video } from 'lucide-react';
 import { costForTokens, displayUsage, formatUsd, type DisplayUsage, type ModelPrice } from '@/lib/cost';
@@ -169,7 +170,7 @@ export function PlaygroundPage({ d }: { d: Dashboard }) {
           {error ? <Alert variant="destructive" className="mt-4"><AlertDescription>{error}</AlertDescription></Alert> : null}
           {answer ? <pre className="mt-4 rounded-lg border bg-muted/50 p-4 text-sm whitespace-pre-wrap">{answer}</pre> : null}
           {usage ? <div className="mt-4 rounded-lg border p-4 text-sm grid gap-1"><strong>Run usage</strong><span>Served by {usage.servedModel}</span><span>{usage.input.toLocaleString()} input · {usage.output.toLocaleString()} output{usage.cached ? ` · ${usage.cached.toLocaleString()} cached` : ''}</span><span>Charged {usage.cost === undefined ? 'price not published' : formatUsd(usage.cost)} · {latency ?? 0}ms</span><span>Playground session total: {formatUsd(sessionTotal)}</span></div> : null}
-          <p className="mt-4 text-sm"><a className="underline" href="#calculator">Open cost calculator</a></p>
+          <p className="mt-4 text-sm"><button type="button" className="underline" onClick={() => openPage('/calculator')}>Open cost calculator</button></p>
           </>}
         </CardContent>
       </Card>
