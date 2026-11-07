@@ -17,7 +17,7 @@ import { vndRate } from './core/fx';
 import { mountAdminPartners, mountPartnerInquiryApi } from './core/partner-inquiries';
 import { mountCustomerRoutes } from './core/customer-routes';
 import { routeByPlan, routeHeader, streamByPlan, strategyErrorResponse, type RoutePlan } from './core/routing-strategies';
-import { chatRoutePlan, adminOf, sessionOf, mountHosted, providersOverBudget, resumeAdminSession, recordUsage, requestModel, routerFor, servedBy, requireIssuedKey, sameOrigin, type HostedOptions } from './core/hosted';
+import { chatRoutePlan, adminOf, sessionOf, mountHosted, providersOverBudget, resumeAdminSession, recordUsage, requestModel, routerFor, servedBy, requireIssuedKey, requirePlaygroundKey, sameOrigin, type HostedOptions } from './core/hosted';
 import { poolCredentials } from './core/workspace-providers';
 import { createRequireAegisToken, AegisTenant } from './core/aegis-auth';
 import { chatCompletionErrorResponse, formatProviderError, hydrateAxiosError } from './core/api-errors';
@@ -1355,7 +1355,7 @@ export const createServer = (router: Router, quotaManager: QuotaManager, options
     hosted,
     ready: apiKeyInitialization,
     bodyLimit: config.bodyLimit,
-    ...(hosted ? { jobs: hosted.keys.docs } : {}),
+    ...(hosted ? { jobs: hosted.keys.docs, playgroundAuth: requirePlaygroundKey(hosted) } : {}),
     record: (req, model, usage, usd, media) => {
       if (hosted) recordUsage(hosted, req, usage, 0, usd, media);
       const tenant = (req as Request & { tenant?: AegisTenant }).tenant;

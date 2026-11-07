@@ -14,6 +14,9 @@ import { cn } from '@/lib/utils';
  * and task, Input on the left (prompt + the model's parameters, Clear / Generate $price), Output on the right
  * (status, Preview / JSON), and this session's runs below. Models and prices come from /v1/pricing `media` (the
  * models Valefront sells, at the provider's official price).
+ *
+ * `keyId` (the customer dash): requests go to the session-authenticated /dashboard/me/playground/… routes as that key
+ * of the signed-in workspace; the key's secret never reaches the browser. Otherwise /v1 with `authHeaders`.
  */
 export type MediaKind = 'image' | 'video';
 type MediaModel = {
@@ -44,7 +47,11 @@ function estimateVideoTokens(resolution: string, seconds: number): number {
   return Math.round((w * h * 24 * seconds) / 1024);
 }
 
-export function MediaPlayground({ kind, authHeaders }: { kind: MediaKind; authHeaders: Record<string, string> }) {
+export function MediaPlayground({ kind, authHeaders = {}, keyId, onAddCredit }: {
+  kind: MediaKind; authHeaders?: Record<string, string>; keyId?: string;
+  /** Shown with a "no credit" refusal (402): the customer dash's Billing page. */
+  onAddCredit?: () => void;
+}) {
   const [models, setModels] = useState<MediaModel[]>([]);
   const [modelId, setModelId] = useState('');
   const [prompt, setPrompt] = useState(SAMPLE[kind]);
@@ -57,6 +64,7 @@ export function MediaPlayground({ kind, authHeaders }: { kind: MediaKind; authHe
   const [view, setView] = useState<'preview' | 'json'>('preview');
   const [status, setStatus] = useState<'idle' | 'queued' | 'running' | 'succeeded' | 'failed'>('idle');
   const [error, setError] = useState('');
+  const [errorCode, setErrorCode] = useState('');
   const [current, setCurrent] = useState<Run | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
   const [elapsed, setElapsed] = useState(0);
@@ -102,21 +110,27 @@ export function MediaPlayground({ kind, authHeaders }: { kind: MediaKind; authHe
     ? { model: model?.id, prompt, size, n }
     : { model: model?.id, prompt, duration, resolution, ratio };
   const endpoint = kind === 'image' ? '/v1/images/generations' : '/v1/videos';
+  const target = keyId
+    ? { create: `/dashboard/me/playground/${kind === 'image' ? 'images' : 'videos'}`, poll: (id: string) => `/dashboard/me/playground/videos/${encodeURIComponent(id)}?keyId=${encodeURIComponent(keyId)}`, body: { ...body, keyId } }
+    : { create: endpoint, poll: (id: string) => `/v1/videos/${encodeURIComponent(id)}`, body };
   const curl = `curl ${apiUrl(endpoint)} \\\n  -H "Authorization: Bearer $VALEFRONT_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(body)}'${kind === 'video' ? `\n\n# then poll until "status" is "succeeded":\ncurl ${apiUrl('/v1/videos/<id>')} -H "Authorization: Bearer $VALEFRONT_API_KEY"` : ''}`;
 
   async function generate() {
     if (!model || !prompt.trim()) return;
-    setError(''); setView('preview'); setStatus('queued'); started.current = Date.now(); setElapsed(0);
+    setError(''); setErrorCode(''); setView('preview'); setStatus('queued'); started.current = Date.now(); setElapsed(0);
     const headers = { 'Content-Type': 'application/json', ...authHeaders };
     try {
-      const res = await fetch(apiUrl(endpoint), { method: 'POST', credentials: 'same-origin', headers, body: JSON.stringify(body) });
-      let data = await res.json();
-      if (!res.ok) throw new Error(data?.error?.message || `Request failed (${res.status})`);
+      const res = await fetch(apiUrl(target.create), { method: 'POST', credentials: 'same-origin', headers, body: JSON.stringify(target.body) });
+      let data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setErrorCode(typeof data?.error?.code === 'string' ? data.error.code : '');
+        throw new Error(data?.error?.message || `Request failed (${res.status})`);
+      }
       if (kind === 'video') {
         setStatus('running');
         for (let i = 0; i < 120 && !['succeeded', 'failed', 'cancelled', 'expired'].includes(data.status); i++) {
           await new Promise((r) => setTimeout(r, 4000));
-          const poll = await fetch(apiUrl(`/v1/videos/${encodeURIComponent(data.id)}`), { credentials: 'same-origin', headers: authHeaders });
+          const poll = await fetch(apiUrl(target.poll(data.id)), { credentials: 'same-origin', headers: authHeaders });
           data = await poll.json();
           if (!poll.ok) throw new Error(data?.error?.message || 'Checking the video failed');
         }
@@ -208,7 +222,7 @@ export function MediaPlayground({ kind, authHeaders }: { kind: MediaKind; authHe
                 </>
               )}
               <div className="flex gap-2 pt-1">
-                <Button variant="outline" onClick={() => { setPrompt(''); setCurrent(null); setStatus('idle'); setError(''); }}><Eraser />Clear</Button>
+                <Button variant="outline" onClick={() => { setPrompt(''); setCurrent(null); setStatus('idle'); setError(''); setErrorCode(''); }}><Eraser />Clear</Button>
                 <Button className="flex-1" disabled={busy || !model || !prompt.trim()} onClick={() => void generate()}>
                   {busy ? <Loader2 className="animate-spin" /> : <Sparkles />}{busy ? 'Generating…' : `Generate${price ? ` ${price.estimate ? '≈ ' : ''}${usd(price.total)}` : ''}`}
                 </Button>
@@ -231,7 +245,12 @@ export function MediaPlayground({ kind, authHeaders }: { kind: MediaKind; authHe
               </div>
             </CardHeader>
             <CardContent>
-              {error ? <p className="mb-3 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</p> : null}
+              {error ? (
+                <div className="mb-3 grid gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+                  <p>{error}</p>
+                  {errorCode === 'insufficient_credit' && onAddCredit ? <div><Button size="sm" onClick={onAddCredit}>Add credit</Button></div> : null}
+                </div>
+              ) : null}
               {view === 'json' ? <pre className="max-h-[32rem] overflow-auto rounded-md bg-muted p-3 text-xs">{current ? JSON.stringify(current.json, null, 2) : '{}'}</pre>
                 : current && current.urls.length ? (
                   <div className={cn('grid gap-3', current.urls.length > 1 && 'sm:grid-cols-2')}>

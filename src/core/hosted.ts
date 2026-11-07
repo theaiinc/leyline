@@ -172,12 +172,18 @@ function presentedKey(req: Request): string {
   return typeof x === 'string' ? x.trim() : '';
 }
 
+type Fail = (status: number, code: string, message: string) => unknown;
+
+function failIn(format: 'openai' | 'anthropic', res: Response): Fail {
+  return (status, code, message) => (format === 'anthropic'
+    ? res.status(status).json(anthropicError(status, message))
+    : res.status(status).json({ error: { message, type: status === 401 ? 'invalid_request_error' : status === 402 ? 'insufficient_credit' : status === 429 ? 'rate_limit_error' : 'permission_error', code } }));
+}
+
 /** Checks the issued key and its caps; errors in the shape of the API being called. */
 export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthropic') {
   return async (req: Request, res: Response, next: NextFunction) => {
-    const fail = (status: number, code: string, message: string) => (format === 'anthropic'
-      ? res.status(status).json(anthropicError(status, message))
-      : res.status(status).json({ error: { message, type: status === 401 ? 'invalid_request_error' : status === 402 ? 'insufficient_credit' : status === 429 ? 'rate_limit_error' : 'permission_error', code } }));
+    const fail = failIn(format, res);
     const presented = presentedKey(req);
     // The owner, signed in on the dashboard (its playground): no key, no caps, not counted.
     if (!presented && adminOf(opts, req) && sameOrigin(opts, req)) {
@@ -195,100 +201,144 @@ export function requireIssuedKey(opts: HostedOptions, format: 'openai' | 'anthro
       return fail(503, 'key_store_unavailable', 'Leyline could not check the API key just now; try again.');
     }
     if (!key) return fail(401, 'invalid_api_key', 'Incorrect API key provided.');
-    const requested = typeof req.body?.model === 'string' ? req.body.model : '';
-    if (/^auto:/i.test(requested.trim()) && !isRoutingStrategy(requested.trim().slice(5).toLowerCase())) {
-      return fail(400, 'unknown_routing_strategy', `Unknown routing strategy "${requested}": use ${ROUTING_STRATEGIES.map((s) => `auto:${s}`).join(', ')}, auto, or a model id.`);
-    }
-    // A customer's own providers (BYOK): a model one of them lists goes there, for this workspace's keys only.
-    let byok: WorkspaceByok | null = null;
-    if (key.workspaceId && opts.workspaceProviders) {
-      try {
-        byok = await opts.workspaceProviders.forWorkspace(key.workspaceId);
-      } catch (err) {
-        // Never fails a request that worked before BYOK existed: without the list, every model is the pool's (as before).
-        console.error(JSON.stringify({ event: 'workspace_providers_lookup_failed', workspaceId: key.workspaceId, error: err instanceof Error ? err.message : String(err) }));
-      }
-    }
-    // Chat only (chat completions, Anthropic messages, responses): other endpoints (embeddings, media) keep the pool.
-    const byokModel = byok && requested && !isRouterPick(requested) && BYOK_PATHS.has(req.path) ? byok.match(requested, resolveModel(opts.aliases, requested)) : null;
-    (req as WithKey).byok = byok && byok.size ? byok : null;
-    (req as WithKey).byokModel = byokModel;
-    const offered = isRouterPick(requested) || !!byokModel || opts.models.length === 0 || opts.models.some((m) => modelAllowed({ models: [m] }, requested)) || !!resolveAlias(opts, requested) || isSoldMediaModel(requested);
-    if (!offered) return fail(404, 'model_not_found', `The model "${requested}" is not offered here; see /v1/models.`);
-    // A customer's key (any dash workspace, the owner's too) gets from the shared pool only what Valefront sells (the
-    // BytePlus catalog); any other provider is the customer's own, on "Your providers". Chat endpoints, where a
-    // workspace's own provider can serve the model instead; plain `auto` and auto:* already pick sold models only.
-    if (key.workspaceId && requested && !byokModel && !isRouterPick(requested) && BYOK_PATHS.has(req.path) && !(opts.soldModel ?? isPublicSaleModel)(resolveModel(opts.aliases, requested))) {
-      return fail(404, 'model_not_offered', `Valefront doesn't sell "${requested}". To use it with this key, add your own provider for it under Your providers on ${DASH_PROVIDERS_URL}; see /v1/models for the models Valefront offers.`);
-    }
-    // The host's blocked list is for the shared pool: a workspace's own provider is the customer's to use.
-    if (requested && !byokModel && isBlocked(opts, requested)) {
-      return fail(403, 'model_disabled', `The model "${requested}" is turned off here; see /v1/models for what you can use.`);
-    }
-    const admitAt = Date.now();
-    const refusal = await opts.keys.admit(key, requested, await ownerLimitFor(opts, key));
-    (req as WithKey).timings = { lookupMs: admitAt - lookupAt, admitMs: Date.now() - admitAt };
-    if (refusal) return fail(refusal.status, refusal.code, refusal.message);
-    // A customer's key: the workspace must be in good standing, the model must have a real price, and there must be
-    // credit (or free tokens) left. Owner/internal keys (no workspace) and the admins' own workspaces never are.
-    if (key.workspaceId) {
-      if (!opts.billing) return fail(503, 'billing_unavailable', 'Valefront could not check your balance just now; try again.');
-      let ws: WorkspaceRecord | null;
-      try {
-        ws = await opts.billing.store.workspace(key.workspaceId);
-      } catch (err) {
-        console.error('[hosted] workspace lookup failed', err);
-        return fail(503, 'billing_unavailable', 'Valefront could not check your balance just now; try again.');
-      }
-      if (!ws || ws.deletedAt) return fail(401, 'key_revoked', 'This API key has been revoked.');
-      if (!isAdminEmail(opts, ws.email)) {
-        const target = resolveModel(opts.aliases, requested);
-        const routerPicks = isRouterPick(requested);
-        if (byokModel) {
-          // The customer's own provider bills them: no model price, no credit needed (PII protection still does).
-          let own;
-          try {
-            own = await opts.billing.admitByok(ws, { piiProtection: piiProtectionOn(key) });
-          } catch (err) {
-            console.error('[hosted] workspace check failed', err);
-            return fail(503, 'billing_unavailable', 'Valefront could not check your balance just now; try again.');
-          }
-          if (own.refusal) return fail(own.refusal.status, own.refusal.code, own.refusal.message);
-        } else {
-          if (!routerPicks && !realPrice(opts, target) && !isMediaModel(target)) {
-            return fail(403, 'model_not_priced', `The model "${requested}" has no published price yet, so it can't be used with this key; see https://llm.valefront.com/v1/pricing.`);
-          }
-          let admission;
-          try {
-            admission = await opts.billing.admit(ws, routerPicks ? requested : target, { piiProtection: piiProtectionOn(key) });
-          } catch (err) {
-            console.error('[hosted] credit check failed', err);
-            return fail(503, 'billing_unavailable', 'Valefront could not check your balance just now; try again.');
-          }
-          if ('refusal' in admission) {
-            // No credit, but a routing strategy can still pick one of the workspace's own models (billed by them).
-            const strategy = routerPicks && byok?.size && BYOK_PATHS.has(req.path) ? (() => { try { return strategyFor(requested, key.caps.routingStrategy); } catch { return null; } })() : null;
-            const own = strategy && admission.refusal.status !== 403 ? await opts.billing.admitByok(ws, { piiProtection: piiProtectionOn(key) }).catch(() => null) : null;
-            if (!own || own.refusal) return fail(admission.refusal.status, admission.refusal.code, admission.refusal.message);
-            (req as WithKey).byokOnly = true;
-          } else if (routerPicks && admission.mode === 'free' && !admission.paid) {
-            // Admitted on free tokens alone (no balance): a routing strategy may pick only free-tier models.
-            (req as WithKey).freeTokensOnly = true;
-          }
-        }
-        (req as WithKey).workspace = ws;
-      }
-    }
-    (req as WithKey).issuedKey = key;
-    (req as WithKey).requestedModel = requested;
-    (req as WithKey).pii = new RequestPiiRedactor({
-      mode: key.caps.piiRedaction ?? 'off',
-      allowlist: key.caps.piiAllowlist ?? [],
-      presidioAnalyzerUrl: process.env.PRESIDIO_ANALYZER_URL,
-      log: (event) => console.log(JSON.stringify(event)),
-    });
-    next();
+    return admitKey(opts, req, key, fail, next, lookupAt);
   };
+}
+
+/**
+ * The Playground on dash (POST /dashboard/me/playground/…): the signed-in customer picks one of their workspace's
+ * keys by id (body or query `keyId`) and the request runs exactly as if that key had made it: its caps, models,
+ * PII mode, spend lines and billing (admitKey, recordUsage). The key's secret is never needed (keys are stored
+ * hashed): the server acts as the key record. A key of another workspace is "not found"; a revoked one is refused.
+ * Writes need the dashboard's own origin, like every /dashboard/me write.
+ */
+export function requirePlaygroundKey(opts: HostedOptions) {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    const fail = failIn('openai', res);
+    const who = sessionOf(opts, req);
+    if (!who) return fail(401, 'sign_in_required', 'Sign in to continue.');
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      if (!sameOrigin(opts, req)) return fail(403, 'forbidden', 'Cross-site request refused.');
+      // JSON only: a cross-site HTML form can't send it (and the session cookie is SameSite=Lax as well).
+      if (!req.is('application/json')) return fail(415, 'invalid_content_type', 'Send JSON.');
+    }
+    if (!opts.billing) return fail(503, 'billing_unavailable', 'Valefront could not check your balance just now; try again.');
+    const raw = req.method === 'GET' ? req.query.keyId : req.body?.keyId;
+    const keyId = typeof raw === 'string' ? raw.trim() : '';
+    if (!keyId) return fail(400, 'key_required', 'Choose one of your API keys (keyId).');
+    const lookupAt = Date.now();
+    let key: IssuedKey | null;
+    let ws: WorkspaceRecord | null;
+    try {
+      ws = await opts.billing.store.workspaceBySub(who.sub);
+      key = ws ? await opts.keys.get(keyId) : null;
+    } catch (err) {
+      console.error('[hosted] playground key lookup failed', err);
+      return fail(503, 'key_store_unavailable', 'Valefront could not check the API key just now; try again.');
+    }
+    if (!ws) return fail(409, 'workspace_required', 'Finish signing up first.');
+    if (!key || !key.workspaceId || key.workspaceId !== ws.id) return fail(404, 'key_not_found', 'Key not found.');
+    if (key.revokedAt) return fail(409, 'key_revoked', 'This key is revoked; choose another or create one on the API keys page.');
+    if (req.body && typeof req.body === 'object') delete req.body.keyId;
+    return admitKey(opts, req, key, fail, next, lookupAt);
+  };
+}
+
+/** A found key's checks (models, caps, workspace standing and credit), then the request is admitted as that key. */
+async function admitKey(opts: HostedOptions, req: Request, key: IssuedKey, fail: Fail, next: NextFunction, lookupAt: number) {
+  const requested = typeof req.body?.model === 'string' ? req.body.model : '';
+  if (/^auto:/i.test(requested.trim()) && !isRoutingStrategy(requested.trim().slice(5).toLowerCase())) {
+    return fail(400, 'unknown_routing_strategy', `Unknown routing strategy "${requested}": use ${ROUTING_STRATEGIES.map((s) => `auto:${s}`).join(', ')}, auto, or a model id.`);
+  }
+  // A customer's own providers (BYOK): a model one of them lists goes there, for this workspace's keys only.
+  let byok: WorkspaceByok | null = null;
+  if (key.workspaceId && opts.workspaceProviders) {
+    try {
+      byok = await opts.workspaceProviders.forWorkspace(key.workspaceId);
+    } catch (err) {
+      // Never fails a request that worked before BYOK existed: without the list, every model is the pool's (as before).
+      console.error(JSON.stringify({ event: 'workspace_providers_lookup_failed', workspaceId: key.workspaceId, error: err instanceof Error ? err.message : String(err) }));
+    }
+  }
+  // Chat only (chat completions, Anthropic messages, responses): other endpoints (embeddings, media) keep the pool.
+  const byokModel = byok && requested && !isRouterPick(requested) && BYOK_PATHS.has(req.path) ? byok.match(requested, resolveModel(opts.aliases, requested)) : null;
+  (req as WithKey).byok = byok && byok.size ? byok : null;
+  (req as WithKey).byokModel = byokModel;
+  const offered = isRouterPick(requested) || !!byokModel || opts.models.length === 0 || opts.models.some((m) => modelAllowed({ models: [m] }, requested)) || !!resolveAlias(opts, requested) || isSoldMediaModel(requested);
+  if (!offered) return fail(404, 'model_not_found', `The model "${requested}" is not offered here; see /v1/models.`);
+  // A customer's key (any dash workspace, the owner's too) gets from the shared pool only what Valefront sells (the
+  // BytePlus catalog); any other provider is the customer's own, on "Your providers". Chat endpoints, where a
+  // workspace's own provider can serve the model instead; plain `auto` and auto:* already pick sold models only.
+  if (key.workspaceId && requested && !byokModel && !isRouterPick(requested) && BYOK_PATHS.has(req.path) && !(opts.soldModel ?? isPublicSaleModel)(resolveModel(opts.aliases, requested))) {
+    return fail(404, 'model_not_offered', `Valefront doesn't sell "${requested}". To use it with this key, add your own provider for it under Your providers on ${DASH_PROVIDERS_URL}; see /v1/models for the models Valefront offers.`);
+  }
+  // The host's blocked list is for the shared pool: a workspace's own provider is the customer's to use.
+  if (requested && !byokModel && isBlocked(opts, requested)) {
+    return fail(403, 'model_disabled', `The model "${requested}" is turned off here; see /v1/models for what you can use.`);
+  }
+  const admitAt = Date.now();
+  const refusal = await opts.keys.admit(key, requested, await ownerLimitFor(opts, key));
+  (req as WithKey).timings = { lookupMs: admitAt - lookupAt, admitMs: Date.now() - admitAt };
+  if (refusal) return fail(refusal.status, refusal.code, refusal.message);
+  // A customer's key: the workspace must be in good standing, the model must have a real price, and there must be
+  // credit (or free tokens) left. Owner/internal keys (no workspace) and the admins' own workspaces never are.
+  if (key.workspaceId) {
+    if (!opts.billing) return fail(503, 'billing_unavailable', 'Valefront could not check your balance just now; try again.');
+    let ws: WorkspaceRecord | null;
+    try {
+      ws = await opts.billing.store.workspace(key.workspaceId);
+    } catch (err) {
+      console.error('[hosted] workspace lookup failed', err);
+      return fail(503, 'billing_unavailable', 'Valefront could not check your balance just now; try again.');
+    }
+    if (!ws || ws.deletedAt) return fail(401, 'key_revoked', 'This API key has been revoked.');
+    if (!isAdminEmail(opts, ws.email)) {
+      const target = resolveModel(opts.aliases, requested);
+      const routerPicks = isRouterPick(requested);
+      if (byokModel) {
+        // The customer's own provider bills them: no model price, no credit needed (PII protection still does).
+        let own;
+        try {
+          own = await opts.billing.admitByok(ws, { piiProtection: piiProtectionOn(key) });
+        } catch (err) {
+          console.error('[hosted] workspace check failed', err);
+          return fail(503, 'billing_unavailable', 'Valefront could not check your balance just now; try again.');
+        }
+        if (own.refusal) return fail(own.refusal.status, own.refusal.code, own.refusal.message);
+      } else {
+        if (!routerPicks && !realPrice(opts, target) && !isMediaModel(target)) {
+          return fail(403, 'model_not_priced', `The model "${requested}" has no published price yet, so it can't be used with this key; see https://llm.valefront.com/v1/pricing.`);
+        }
+        let admission;
+        try {
+          admission = await opts.billing.admit(ws, routerPicks ? requested : target, { piiProtection: piiProtectionOn(key) });
+        } catch (err) {
+          console.error('[hosted] credit check failed', err);
+          return fail(503, 'billing_unavailable', 'Valefront could not check your balance just now; try again.');
+        }
+        if ('refusal' in admission) {
+          // No credit, but a routing strategy can still pick one of the workspace's own models (billed by them).
+          const strategy = routerPicks && byok?.size && BYOK_PATHS.has(req.path) ? (() => { try { return strategyFor(requested, key.caps.routingStrategy); } catch { return null; } })() : null;
+          const own = strategy && admission.refusal.status !== 403 ? await opts.billing.admitByok(ws, { piiProtection: piiProtectionOn(key) }).catch(() => null) : null;
+          if (!own || own.refusal) return fail(admission.refusal.status, admission.refusal.code, admission.refusal.message);
+          (req as WithKey).byokOnly = true;
+        } else if (routerPicks && admission.mode === 'free' && !admission.paid) {
+          // Admitted on free tokens alone (no balance): a routing strategy may pick only free-tier models.
+          (req as WithKey).freeTokensOnly = true;
+        }
+      }
+      (req as WithKey).workspace = ws;
+    }
+  }
+  (req as WithKey).issuedKey = key;
+  (req as WithKey).requestedModel = requested;
+  (req as WithKey).pii = new RequestPiiRedactor({
+    mode: key.caps.piiRedaction ?? 'off',
+    allowlist: key.caps.piiAllowlist ?? [],
+    presidioAnalyzerUrl: process.env.PRESIDIO_ANALYZER_URL,
+    log: (event) => console.log(JSON.stringify(event)),
+  });
+  next();
 }
 
 /**

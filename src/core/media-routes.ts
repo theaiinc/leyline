@@ -23,6 +23,10 @@ import {
  * - POST /v1/videos                {model, prompt, duration?, resolution?, ratio?} -> 202 {id, status: queued}
  * - GET  /v1/videos/:id            -> {id, status, url?, cost?}; a finished video is charged once, here
  *
+ * Hosted, the dash Playground runs the same image and video handlers for a signed-in customer, as one of their keys
+ * they pick by id (no secret in the browser): POST /dashboard/me/playground/images, POST …/videos,
+ * GET …/videos/:id?keyId=… (opts.playgroundAuth).
+ *
  * Same auth as chat (hosted: an issued key, its caps, the offered/turned-off models, the monthly budget), the
  * same model aliases, `auto` for the first configured provider's default, and `x-leyline-force-provider`.
  * Usage counts as tokens for embeddings; audio is priced by the minute (transcription) or the character (speech).
@@ -39,6 +43,11 @@ export type MediaRouteOptions = {
   bodyLimit: string;
   /** Where video jobs and their one-time charges are kept (hosted: the key store); unset: this process only. */
   jobs?: DocStore;
+  /**
+   * Hosted: the dash Playground's session check (requirePlaygroundKey), which admits the request as one of the
+   * signed-in customer's own keys. Mounts the same image and video handlers at /dashboard/me/playground/….
+   */
+  playgroundAuth?: RequestHandler;
 };
 
 type WithAudio = Request & { audioFile?: AudioFile };
@@ -212,7 +221,7 @@ export function mountMediaRoutes(app: Express, router: Router, opts: MediaRouteO
   const keyIdOf = (req: Request) => (req as Request & { issuedKey?: { id: string } }).issuedKey?.id ?? '';
   const asRequested = (req: Request, id: string) => { (req as Request & { requestedModel?: string }).requestedModel = id; };
 
-  app.post('/v1/images/generations', opts.auth, async (req, res) => {
+  const generateImage: RequestHandler = async (req, res) => {
     try {
       const body = req.body ?? {};
       if (typeof body.prompt !== 'string' || !body.prompt.trim()) return fail(res, 400, 'invalid_prompt', 'prompt is required.');
@@ -243,7 +252,8 @@ export function mountMediaRoutes(app: Express, router: Router, opts: MediaRouteO
     } catch (error) {
       sendError(res, '/v1/images/generations', error);
     }
-  });
+  };
+  app.post('/v1/images/generations', opts.auth, generateImage);
 
   // Video jobs: kept by id so any instance can answer the poll; charged once when first seen finished.
   const memoryJobs = new Map<string, { value: unknown; gen: string }>();
@@ -262,7 +272,7 @@ export function mountMediaRoutes(app: Express, router: Router, opts: MediaRouteO
     ...(v.url ? { url: v.url } : {}), ...(v.error ? { error: v.error } : {}), ...(cost !== undefined ? { cost } : {}),
   });
 
-  app.post('/v1/videos', opts.auth, async (req, res) => {
+  const startVideo: RequestHandler = async (req, res) => {
     try {
       const body = req.body ?? {};
       if (typeof body.prompt !== 'string' || !body.prompt.trim()) return fail(res, 400, 'invalid_prompt', 'prompt is required.');
@@ -283,12 +293,14 @@ export function mountMediaRoutes(app: Express, router: Router, opts: MediaRouteO
     } catch (error) {
       sendError(res, '/v1/videos', error);
     }
-  });
+  };
+  app.post('/v1/videos', opts.auth, startVideo);
 
-  app.get('/v1/videos/:id', opts.auth, async (req, res) => {
+  const readVideo: RequestHandler = async (req, res) => {
     try {
       const job = (await jobs.get<VideoJob>(`media-jobs/${String(req.params.id)}`))?.value;
-      // Only the key that started it may read it (the owner's dashboard session, without a key, reads its own).
+      // Only the key that started it may read it (the owner's dashboard session, without a key, reads its own; the dash
+      // Playground, as the customer's chosen key, only that key's).
       if (!job || job.keyId !== keyIdOf(req)) return fail(res, 404, 'video_not_found', 'Video not found.');
       const prov = router.getProviders().find((p: Provider) => p.name === job.provider);
       if (!prov?.getVideo) return fail(res, 503, 'provider_unavailable', `${job.provider} is not available to read this video right now.`);
@@ -316,5 +328,14 @@ export function mountMediaRoutes(app: Express, router: Router, opts: MediaRouteO
     } catch (error) {
       sendError(res, '/v1/videos/:id', error);
     }
-  });
+  };
+  app.get('/v1/videos/:id', opts.auth, readVideo);
+
+  if (opts.playgroundAuth) {
+    // Same handlers, admitted as the customer's chosen key: same price, credit check, caps and spend lines. A video
+    // job belongs to the key that started it, so polling needs that key (of the same workspace) too.
+    app.post('/dashboard/me/playground/images', opts.playgroundAuth, generateImage);
+    app.post('/dashboard/me/playground/videos', opts.playgroundAuth, startVideo);
+    app.get('/dashboard/me/playground/videos/:id', opts.playgroundAuth, readVideo);
+  }
 }
