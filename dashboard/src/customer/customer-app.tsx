@@ -53,6 +53,8 @@ type Profile = { name: string; email: string; company?: string; taxId?: string; 
 type Order = {
   id: string; method: 'worldfirst' | 'paypal' | 'sepay'; status: 'pending' | 'paid' | 'cancelled'; amountCents: number; vatRateBp: number; vatCents: number; totalCents: number;
   reference: string; createdAt: number; paidAt: number | null; approveUrl?: string; vatInvoice?: boolean;
+  /** Paid, buyer in Vietnam, within the window, and no VAT invoice yet (or a rejected one): "Request VAT invoice". */
+  vatInvoiceRequestable?: boolean;
   bankTransfer?: { account: Record<string, string>; amount: number; reference: string; instructions: string[] };
   /** SePay (Vietnamese bank QR): the exact VND to transfer, with the order reference as the content. */
   sepay?: SepayInfo;
@@ -61,6 +63,10 @@ type SepayInfo = {
   qrUrl: string; bankName: string; bankId: string; accountNumber: string; accountName: string; amountVnd: number; receivedVnd: number; leftVnd: number;
   transferContent: string; vndPerUsd: number; rateDate: string; expiresAt: number; expired: boolean;
 };
+type EInvoiceView = {
+  id: string; orderId: string; status: string; invoiceNo: string | null; codeOfTax: string | null; reservationCode: string | null; issuedAt: number | null; totalCents: number; email: string;
+  manual?: boolean; rejectReason?: string | null; lookupUrl?: string | null; file?: boolean;
+};
 type SepayMethod = { enabled: boolean; vndPerUsd: number | null; rateDate: string | null; bankName: string | null; quoteMinutes: number };
 type PayMethod = 'paypal' | 'worldfirst' | 'sepay';
 type Billing = {
@@ -68,7 +74,9 @@ type Billing = {
   ledger: Array<{ id: string; amountCents: number; kind: string; description: string; createdAt: number }>;
   orders: Order[];
   receipts: Array<{ id: string; orderId: string; number: string; issuedAt: number; amountCents: number; totalCents: number; emailStatus: string | null }>;
-  einvoices: Array<{ id: string; orderId: string; status: string; invoiceNo: string | null; codeOfTax: string | null; reservationCode: string | null; issuedAt: number | null; totalCents: number; email: string }>;
+  einvoices: EInvoiceView[];
+  /** automatic: issued through S-Invoice right after payment; otherwise on request, by hand. */
+  vatInvoices?: { automatic: boolean; requestWindowDays: number };
   profile: Profile | null;
   free: { tokens: number; usedTokens: number; expiresAt: number; models: string[]; bonusTokens?: number; bonusUnlocked?: boolean } | null;
   methods: { worldfirst: boolean; paypal: { enabled: boolean; env: string | null }; sepay?: SepayMethod };
@@ -712,7 +720,9 @@ function AddCredit({ me, billing, onOrder, onSaved }: { me: Me; billing: Billing
                 <div className="grid gap-1"><Label htmlFor="vat-mst">Tax code (MST): 10 or 13 digits</Label><Input id="vat-mst" inputMode="numeric" value={vat.taxCode} onChange={setV('taxCode')} placeholder="0123456789 or 0123456789-001" /></div>
                 <div className="grid gap-1"><Label htmlFor="vat-email">Email to receive the invoice</Label><Input id="vat-email" type="email" value={vat.email} onChange={setV('email')} /></div>
                 <div className="grid gap-1 sm:col-span-2"><Label htmlFor="vat-address">Company address</Label><Input id="vat-address" value={vat.address} onChange={setV('address')} /></div>
-                <p className="text-xs text-muted-foreground sm:col-span-2">Issued as an e-invoice through Viettel S-Invoice after payment, and emailed to you. Saved for next time.</p>
+                <p className="text-xs text-muted-foreground sm:col-span-2">{billing.vatInvoices?.automatic === false
+                  ? 'We issue it by hand after payment and email it to you, usually within 2 business days. Saved for next time.'
+                  : 'Issued as an e-invoice through Viettel S-Invoice after payment, and emailed to you. Saved for next time.'}</p>
               </div>
             ) : null}
           </div>
@@ -895,6 +905,57 @@ function PromoCode({ promotions, onChange }: { promotions: Promotions; onChange:
   );
 }
 
+/** A VAT invoice's state on an order: the file or its number and lookup code, "requested", or why it was turned down. */
+function EInvoiceStatus({ i }: { i: EInvoiceView }) {
+  if (i.status === 'issued' && i.invoiceNo) {
+    return <>
+      {i.file ? <a className="underline" href={apiUrl(`/dashboard/me/billing/einvoices/${i.id}.pdf`)}>VAT invoice {i.invoiceNo}</a> : <span>VAT invoice {i.invoiceNo}</span>}
+      {i.reservationCode ? <span className="text-muted-foreground">Lookup code <code>{i.reservationCode}</code>{i.lookupUrl ? <> at <a className="underline" href={i.lookupUrl} target="_blank" rel="noreferrer">{i.lookupUrl.replace(/^https:\/\//, '')}</a></> : null}</span> : null}
+    </>;
+  }
+  if (i.status === 'requested') return <span className="text-muted-foreground">VAT invoice requested — we&apos;ll email it to {i.email}</span>;
+  if (i.status === 'rejected') return <span className="text-destructive">VAT invoice request declined{i.rejectReason ? `: ${i.rejectReason}` : ''}</span>;
+  return <span className="text-muted-foreground">{i.status === 'pending' ? 'VAT invoice being issued' : `VAT invoice ${i.status}`}</span>;
+}
+
+/**
+ * "Request VAT invoice" for a paid order without one: with the saved VAT invoice details, or a short form for them
+ * first (saved for next time, as at checkout).
+ */
+function RequestVatInvoice({ billing, order, again, onDone }: { billing: Billing; order: Order; again?: boolean; onDone: () => Promise<void> }) {
+  const saved = billing.profile?.vatInvoice;
+  const [form, setForm] = useState<VatInvoice | null>(null);
+  const [busy, setBusy] = useState(false);
+  const set = (k: keyof VatInvoice) => (e: { target: { value: string } }) => setForm((f) => (f ? { ...f, [k]: e.target.value } : f));
+  async function send(details?: VatInvoice) {
+    setBusy(true);
+    try {
+      if (details) await api('/dashboard/me/billing/vat-invoice', { method: 'PUT', body: details });
+      const r = await api<{ einvoice: { status: string } }>(`/dashboard/me/billing/orders/${order.id}/vat-invoice`, { method: 'POST', body: {} });
+      toast.success(r.einvoice.status === 'requested' ? "VAT invoice requested. We'll email it to you." : r.einvoice.status === 'issued' ? 'VAT invoice issued and emailed to you.' : 'VAT invoice on its way.');
+      setForm(null);
+      await onDone();
+    } catch (err) {
+      failToast(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+  const label = again ? 'Request again' : 'Request VAT invoice';
+  if (!form) {
+    return <Button variant="outline" size="sm" className="h-7" disabled={busy} onClick={() => (saved && !again ? void send() : setForm(saved ?? { companyName: billing.profile?.company ?? '', taxCode: billing.profile?.taxId ?? '', address: billing.profile?.address ?? '', email: billing.profile?.email ?? billing.email }))}>{busy ? 'Working…' : label}</Button>;
+  }
+  return (
+    <div className="mt-1 grid w-full gap-2 rounded-lg border p-3 sm:grid-cols-2">
+      <div className="grid gap-1 sm:col-span-2"><Label htmlFor={`rv-company-${order.id}`}>Company name (tên đơn vị)</Label><Input id={`rv-company-${order.id}`} value={form.companyName} onChange={set('companyName')} /></div>
+      <div className="grid gap-1"><Label htmlFor={`rv-mst-${order.id}`}>Tax code (MST): 10 or 13 digits</Label><Input id={`rv-mst-${order.id}`} inputMode="numeric" value={form.taxCode} onChange={set('taxCode')} placeholder="0123456789 or 0123456789-001" /></div>
+      <div className="grid gap-1"><Label htmlFor={`rv-email-${order.id}`}>Email to receive the invoice</Label><Input id={`rv-email-${order.id}`} type="email" value={form.email} onChange={set('email')} /></div>
+      <div className="grid gap-1 sm:col-span-2"><Label htmlFor={`rv-address-${order.id}`}>Company address</Label><Input id={`rv-address-${order.id}`} value={form.address} onChange={set('address')} /></div>
+      <div className="flex gap-2 sm:col-span-2"><Button size="sm" disabled={busy} onClick={() => void send(form)}>{busy ? 'Working…' : 'Request VAT invoice'}</Button><Button variant="ghost" size="sm" onClick={() => setForm(null)}>Cancel</Button></div>
+    </div>
+  );
+}
+
 function BillingPage({ me, reload }: { me: Me; reload: () => Promise<void> }) {
   const [billing, setBilling] = useState<Billing | null>(null);
   const [open, setOpen] = useState<Order | null>(null);
@@ -981,7 +1042,7 @@ function BillingPage({ me, reload }: { me: Me; reload: () => Promise<void> }) {
         {billing.promotions?.available ? <PromoCode promotions={billing.promotions} onChange={(p) => setBilling((b) => (b ? { ...b, promotions: p } : b))} /> : null}
         <div className="rounded-2xl border bg-card p-5">
           <div className="mb-1 font-semibold">Orders and receipts</div>
-          <p className="mb-3 text-xs text-muted-foreground">Every payment gets a receipt by email. Customers in Vietnam can ask for a VAT invoice when adding credit.</p>
+          <p className="mb-3 text-xs text-muted-foreground">Every payment gets a receipt by email. Customers in Vietnam can ask for a VAT invoice when adding credit, or here up to {billing.vatInvoices?.requestWindowDays ?? 30} days after paying.</p>
           {billing.orders.length === 0 ? <p className="text-sm text-muted-foreground">No orders yet.</p> : (
             <div className="grid gap-2">{billing.orders.map((o) => {
               const r = receiptFor.get(o.id);
@@ -992,9 +1053,8 @@ function BillingPage({ me, reload }: { me: Me; reload: () => Promise<void> }) {
                   <div className="text-xs text-muted-foreground">{date(o.createdAt)} · {METHOD_NAMES[o.method]} · <code>{o.reference}</code>{o.vatCents ? ` · ${usd(o.totalCents)} incl. VAT` : ''}</div>
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
                     {r ? <><a className="underline" href={apiUrl(`/dashboard/me/billing/receipts/${r.id}`)} target="_blank" rel="noreferrer">Receipt {r.number}</a><a className="text-muted-foreground underline" href={apiUrl(`/dashboard/me/billing/receipts/${r.id}.pdf`)}>PDF</a></> : null}
-                    {i ? (i.status === 'issued' && i.invoiceNo
-                      ? <a className="underline" href={apiUrl(`/dashboard/me/billing/einvoices/${i.id}.pdf`)}>VAT invoice {i.invoiceNo}</a>
-                      : <span className="text-muted-foreground">{i.status === 'pending' ? 'VAT invoice being issued' : `VAT invoice ${i.status}`}</span>) : null}
+                    {i ? <EInvoiceStatus i={i} /> : null}
+                    {o.vatInvoiceRequestable && billing.profile?.country === 'VN' ? <RequestVatInvoice billing={billing} order={o} again={i?.status === 'rejected'} onDone={load} /> : null}
                     {o.status === 'pending' && o.method === 'worldfirst' ? <Button variant="outline" size="sm" className="h-7" onClick={() => view(o)}>Bank details</Button> : null}
                     {o.status === 'pending' && o.method === 'sepay' ? <Button variant="outline" size="sm" className="h-7" onClick={() => view(o)}>Show QR</Button> : null}
                     {o.status === 'pending' ? <Button variant="ghost" size="sm" className="h-7" onClick={() => cancel(o)}>Cancel</Button> : null}
