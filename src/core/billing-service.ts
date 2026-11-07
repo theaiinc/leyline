@@ -79,6 +79,8 @@ export const SETTINGS = { account: 'worldfirst_account', legal: 'legal', vat: 'v
 
 /** VND per USD for e-invoices in USD (Vietnamese law wants the rate on the invoice); set on the admin host. */
 export type ExchangeRateSetting = { vndPerUsd: number; date: string };
+/** The rate a VAT e-invoice uses: the admin's own if set, else the day's published rate (the one dash shows, fx.ts). */
+export type EinvoiceRate = ExchangeRateSetting & { source: 'admin' | VndRate['source'] };
 
 /**
  * What charge() did, in micro-dollars: officialMicros is the payable part at the official price, chargedMicros what
@@ -159,6 +161,17 @@ export class BillingService {
   /** The VND rate set on the admin host (the one VAT invoices use), if any. */
   async exchangeRate(): Promise<ExchangeRateSetting | null> {
     return (await this.store.setting<ExchangeRateSetting>(SETTINGS.exchangeRate))?.value ?? null;
+  }
+
+  /**
+   * The USD -> VND rate for VAT e-invoices: the one set on the admin host, if any; else the day's published rate (the
+   * Vietcombank selling rate dash shows and SePay quotes with, fx.ts). Null only when neither is available.
+   */
+  async einvoiceRate(): Promise<EinvoiceRate | null> {
+    const set = await this.exchangeRate();
+    if (set && set.vndPerUsd > 0) return { ...set, source: 'admin' };
+    const r = await this.rate();
+    return r ? { vndPerUsd: r.vnd_per_usd, date: r.date, source: r.source } : null;
   }
 
   /** Is S-Invoice usable now (einvoiceAutomatic)? Live is configured when its provider exists (all live secrets set). */
@@ -670,9 +683,9 @@ export class BillingService {
       await this.store.einvoiceWaiting(id, `Viettel S-Invoice (${e.mode}) is not configured yet`);
       return this.store.einvoice(id);
     }
-    const fx = (await this.store.setting<ExchangeRateSetting>(SETTINGS.exchangeRate))?.value;
+    const fx = await this.einvoiceRate();
     if (!fx || !(fx.vndPerUsd > 0)) {
-      await this.store.einvoiceWaiting(id, 'The USD to VND exchange rate for e-invoices is not set (admin host)');
+      await this.store.einvoiceWaiting(id, 'No USD to VND exchange rate is available for e-invoices (none set on the admin host, and the daily rate could not be read)');
       return this.store.einvoice(id);
     }
     if (!(await this.store.claimEinvoice(id))) return this.store.einvoice(id);
