@@ -337,7 +337,7 @@ describe('SePay on the admin host', () => {
     await request(h.app).post('/webhooks/sepay').set('Authorization', 'Apikey wh-key-123').send(webhookBody(order.quote!.transferContent, 200_000));
     const page = await request(h.app).get('/billing/').set('Host', 'adm.valefront.com').set('Cf-Access-Jwt-Assertion', h.access.token({ email: 'owner@valefront.com' }));
     expect(page.status).toBe(200);
-    for (const want of ['SePay (Vietnamese bank QR, VND)', `Vietcombank ${ACCOUNT}`, 'webhook key: <strong style="color:#147a3d">yes</strong>', '26385 VND/USD (2026-11-07)',
+    for (const want of ['SePay (Vietnamese bank QR, VND)', `Vietcombank ${ACCOUNT}`, 'webhook key: <span class="badge ok">yes</span>', '26385 VND/USD (2026-11-07)',
       'https://llm.valefront.com/webhooks/sepay', '263,850 VND at 26385', 'underpaid by 63,850 VND', `/billing/orders/${order.id}/mark-paid`]) {
       expect(page.text).toContain(want);
     }
