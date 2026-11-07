@@ -20,17 +20,21 @@ import { Textarea } from '@/components/ui/textarea';
 type Kind = 'azure-openai' | 'openai-compatible' | 'anthropic' | 'wavespeed';
 type ProviderView = {
   id: string; kind: Kind; label: string; baseUrl: string; deployment: string | null; apiVersion: string | null; models: string[];
+  /** WaveSpeed: every model the key can use (models is then empty). */
+  allModels?: boolean;
   enabled: boolean; createdAt: number; updatedAt: number; spendLine: string;
 };
 type TestResult = { ok: boolean; model: string; status: number | null; ms: number };
+/** WaveSpeed's live model list per provider (GET /dashboard/me/providers/wavespeed-models); count null: not readable now. */
+type WsSummary = { id: string; live: boolean; count: number | null };
 
 const KINDS: Array<{ value: Kind; label: string; baseUrl: string; hint: string }> = [
   { value: 'azure-openai', label: 'Azure OpenAI', baseUrl: 'https://<resource>.openai.azure.com/openai/v1', hint: 'Each model is a deployment name on your resource.' },
   { value: 'openai-compatible', label: 'OpenAI-compatible', baseUrl: 'https://openrouter.ai/api/v1', hint: 'OpenAI, OpenRouter, LLM API or any gateway with /chat/completions.' },
   { value: 'anthropic', label: 'Anthropic', baseUrl: 'https://api.anthropic.com/v1', hint: 'Claude models, with your Anthropic API key.' },
-  { value: 'wavespeed', label: 'WaveSpeed (images and video)', baseUrl: 'https://api.wavespeed.ai/api/v3', hint: 'WaveSpeed image and video models on /v1/images/generations and /v1/videos (and the Playground), with your WaveSpeed API key.' },
+  { value: 'wavespeed', label: 'WaveSpeed (images and video)', baseUrl: 'https://api.wavespeed.ai/api/v3', hint: 'Every model your WaveSpeed account can use (images, video, audio) on /v1/images/generations and /v1/videos (and the Playground), with your WaveSpeed API key, billed by WaveSpeed.' },
 ];
-/** Base URL and models are optional for these (a default base URL; WaveSpeed: every WaveSpeed model Valefront supports). */
+/** Base URL and models are optional for these (a default base URL; WaveSpeed: every model the key can use). */
 const OPTIONAL_URL: Kind[] = ['anthropic', 'wavespeed'];
 const kindLabel = (k: Kind) => KINDS.find((x) => x.value === k)?.label ?? k;
 const date = (t: number) => new Date(t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
@@ -52,11 +56,16 @@ export function YourProvidersPage() {
   const [tests, setTests] = useState<Record<string, TestResult>>({});
   const [replacing, setReplacing] = useState<{ id: string; key: string } | null>(null);
 
-  const [wavespeedModels, setWavespeedModels] = useState<string[]>([]);
+  const [wsLists, setWsLists] = useState<Record<string, WsSummary>>({});
+  const [restricting, setRestricting] = useState<{ id: string; text: string } | null>(null);
   const load = useCallback(async () => {
-    const out = await api<{ providers: ProviderView[]; wavespeedModels?: string[] }>('/dashboard/me/providers');
+    const out = await api<{ providers: ProviderView[] }>('/dashboard/me/providers');
     setProviders(out.providers);
-    setWavespeedModels(out.wavespeedModels ?? []);
+    if (out.providers.some((p) => p.kind === 'wavespeed' && p.enabled)) {
+      // The live count of each WaveSpeed provider's models (read with its key; cached a few minutes on the server).
+      const ws = await api<{ providers: WsSummary[] }>('/dashboard/me/providers/wavespeed-models').catch(() => ({ providers: [] as WsSummary[] }));
+      setWsLists(Object.fromEntries(ws.providers.map((p) => [p.id, p])));
+    }
   }, []);
   useEffect(() => { void load().catch(fail); }, [load]);
 
@@ -144,9 +153,9 @@ export function YourProvidersPage() {
             <div className="grid gap-1"><Label htmlFor="byok-deployment">Deployment</Label><Input id="byok-deployment" value={deployment} onChange={(e) => setDeployment(e.target.value)} placeholder="e.g. gpt-5.5" /></div>
           ) : null}
           <div className="grid gap-1">
-            <Label htmlFor="byok-models">Models{kind === 'azure-openai' ? <span className="font-normal text-muted-foreground"> (default: the deployment)</span> : kind === 'wavespeed' ? <span className="font-normal text-muted-foreground"> (default: all of them)</span> : null}</Label>
-            <Textarea id="byok-models" value={models} onChange={(e) => setModels(e.target.value)} placeholder={kind === 'wavespeed' && wavespeedModels.length ? wavespeedModels.join('\n') : 'One model id per line'} rows={3} />
-            {kind === 'wavespeed' && wavespeedModels.length ? <p className="text-xs text-muted-foreground">Supported: {wavespeedModels.join(', ')}</p> : null}
+            <Label htmlFor="byok-models">Models{kind === 'azure-openai' ? <span className="font-normal text-muted-foreground"> (default: the deployment)</span> : kind === 'wavespeed' ? <span className="font-normal text-muted-foreground"> (optional)</span> : null}</Label>
+            <Textarea id="byok-models" value={models} onChange={(e) => setModels(e.target.value)} placeholder={kind === 'wavespeed' ? 'Leave empty for all models your WaveSpeed account can use, or one model id per line to allow only those (e.g. wavespeed-ai/flux-dev)' : 'One model id per line'} rows={3} />
+            {kind === 'wavespeed' ? <p className="text-xs text-muted-foreground">Empty: every model WaveSpeed lists for your key, including new ones as WaveSpeed adds them.</p> : null}
           </div>
           <div className="grid gap-1"><Label htmlFor="byok-key">API key</Label><Input id="byok-key" type="password" autoComplete="off" value={apiKey} onChange={(e) => setApiKey(e.target.value)} /></div>
           <div><Button disabled={!canAdd || busy === 'add'} onClick={add}><Plus />Add provider</Button></div>
@@ -178,7 +187,30 @@ export function YourProvidersPage() {
                     <Button variant="outline" size="sm" disabled={busy === p.id} onClick={() => setReplacing({ id: p.id, key: '' })}>Replace key</Button>
                     <Button variant="outline" size="sm" disabled={busy === p.id} onClick={() => remove(p)}>Remove</Button>
                   </div>
-                  <div className="flex flex-wrap gap-1.5">{p.models.map((m) => <code key={m} className="rounded bg-muted px-1.5 py-0.5 text-xs">{m}</code>)}</div>
+                  {p.kind === 'wavespeed' ? (
+                    <div className="grid gap-2">
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        {p.allModels ? (
+                          <span>All models your WaveSpeed account can use{wsLists[p.id]?.count != null ? ` (${wsLists[p.id]!.count})` : p.enabled ? ' (the list could not be read just now; any WaveSpeed model id still works)' : ''}</span>
+                        ) : (
+                          <span>Only these{wsLists[p.id]?.count != null ? ` (${wsLists[p.id]!.count} on WaveSpeed's list)` : ''}:</span>
+                        )}
+                        <Button variant="link" size="sm" className="h-auto p-0 text-xs" onClick={() => setRestricting({ id: p.id, text: p.models.join('\n') })}>{p.allModels ? 'Allow only some' : 'Edit'}</Button>
+                        {!p.allModels ? <Button variant="link" size="sm" className="h-auto p-0 text-xs" disabled={busy === p.id} onClick={() => update(p, { models: 'all' }, `"${p.label}" serves all your WaveSpeed models.`)}>Use all models</Button> : null}
+                      </div>
+                      {!p.allModels ? <div className="flex flex-wrap gap-1.5">{p.models.map((m) => <code key={m} className="rounded bg-muted px-1.5 py-0.5 text-xs">{m}</code>)}</div> : null}
+                      {restricting?.id === p.id ? (
+                        <div className="grid gap-2 border-t pt-3">
+                          <Label htmlFor={`byok-restrict-${p.id}`}>Models to allow (one per line; empty: all)</Label>
+                          <Textarea id={`byok-restrict-${p.id}`} rows={3} value={restricting.text} onChange={(e) => setRestricting({ id: p.id, text: e.target.value })} placeholder="wavespeed-ai/flux-dev" />
+                          <div className="flex gap-2">
+                            <Button size="sm" disabled={busy === p.id} onClick={async () => { const list = splitModels(restricting.text); await update(p, { models: list.length ? list : 'all' }, list.length ? `"${p.label}" serves ${list.length} model${list.length === 1 ? '' : 's'}.` : `"${p.label}" serves all your WaveSpeed models.`); setRestricting(null); }}>Save</Button>
+                            <Button size="sm" variant="ghost" onClick={() => setRestricting(null)}>Cancel</Button>
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : <div className="flex flex-wrap gap-1.5">{p.models.map((m) => <code key={m} className="rounded bg-muted px-1.5 py-0.5 text-xs">{m}</code>)}</div>}
                   {result ? (
                     <p className={result.ok ? 'text-xs text-emerald-600 dark:text-emerald-400' : 'text-xs text-destructive'}>
                       {result.ok ? (p.kind === 'wavespeed' ? `Works: the key reads your WaveSpeed balance (${result.ms} ms; nothing generated).` : `Works: ${result.model} answered in ${result.ms} ms.`) : `Failed for ${result.model}${result.status ? ` (HTTP ${result.status})` : ''}. Check the URL, the key and the model.`}

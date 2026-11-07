@@ -246,7 +246,7 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
   const theirs = [...mine, providersOn];
   const providerView = (p: WorkspaceProvider) => ({
     id: p.id, kind: p.kind, label: p.label, baseUrl: p.baseUrl, deployment: p.deployment, apiVersion: p.apiVersion, models: p.models,
-    enabled: p.enabled, createdAt: p.createdAt, updatedAt: p.updatedAt, spendLine: `BYOK:${p.label}`,
+    allModels: p.allModels, enabled: p.enabled, createdAt: p.createdAt, updatedAt: p.updatedAt, spendLine: `BYOK:${p.label}`,
   });
   const notSuspended = (req: Request) => {
     if (ws(req).suspendedAt) throw new BillingError('workspace_suspended', 'This workspace is suspended.', 403);
@@ -270,6 +270,37 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
         return [{ id, provider: `BYOK:${p.label}`, byok: true }];
       }));
       res.json({ providers: providers.map(providerView), kinds: BYOK_KINDS, wavespeedModels: wavespeedModelIds(), mediaModels, chatModels });
+    } catch (err) {
+      errorOut(res, err);
+    }
+  });
+  /**
+   * The models the workspace's WaveSpeed providers serve, from WaveSpeed's own list read with their keys (cached a
+   * few minutes; src/core/wavespeed-models.ts): { providers: [{id, label, allModels, live, count}], models: [{id,
+   * name, type, kind, provider, byok, description?, basePrice?}] }. With ?model=<id>: { model } with its fields
+   * (schema), for the Playground's form. `live: false` with `count: null`: WaveSpeed couldn't be read just now (any
+   * WaveSpeed model id still works).
+   */
+  app.get('/dashboard/me/providers/wavespeed-models', ...theirs, async (req, res) => {
+    try {
+      const byok = await opts.workspaceProviders!.forWorkspace(ws(req).id);
+      const catalog = await byok.mediaCatalog();
+      const wanted = typeof req.query.model === 'string' ? req.query.model.trim() : '';
+      const seen = new Set<string>();
+      const models = catalog.flatMap(({ provider, list }) => (list.models ?? []).flatMap((m) => {
+        if (seen.has(m.id)) return [];
+        seen.add(m.id);
+        const { schema, ...rest } = m;
+        return [{ ...(wanted ? { ...rest, ...(schema ? { schema } : {}) } : rest), provider: `BYOK:${provider.label}`, byok: true }];
+      }));
+      if (wanted) {
+        const model = models.find((m) => m.id === wanted);
+        return model ? res.json({ model }) : res.status(404).json({ error: { code: 'model_not_found', message: 'WaveSpeed does not list this model for your key (it may still work).' } });
+      }
+      res.json({
+        providers: catalog.map(({ provider, list }) => ({ id: provider.id, label: provider.label, allModels: provider.allModels, live: list.live, count: list.models ? list.models.length : null, fetchedAt: list.fetchedAt })),
+        models,
+      });
     } catch (err) {
       errorOut(res, err);
     }

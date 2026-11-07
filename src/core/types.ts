@@ -181,6 +181,10 @@ export interface ImageGenerationRequest {
 export interface ImageGenerationResult {
   data: Array<{ url?: string; b64_json?: string; revised_prompt?: string }>;
   model: string;
+  /** The provider's raw outputs, when some are not files (a WaveSpeed model can answer with text or JSON). */
+  outputs?: unknown[];
+  /** The provider's task id (WaveSpeed). */
+  taskId?: string;
 }
 
 export interface VideoGenerationRequest {
@@ -198,6 +202,8 @@ export interface VideoGenerationResult {
   url?: string;
   error?: string;
   model: string;
+  /** The provider's raw outputs once finished (WaveSpeed: every output, not only the first file). */
+  outputs?: unknown[];
   /** Tokens the finished video used (what BytePlus bills); set once it succeeded. */
   tokens?: number;
   resolution?: string;
