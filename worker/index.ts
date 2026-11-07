@@ -24,7 +24,7 @@ import { BYTEPLUS_BENCHMARK_ALIASES } from '../src/providers/byteplus';
 import { fetchBenchmarkSnapshot, mapBenchmarkSnapshot, refreshBenchmarks, type BenchmarkCache, type BenchmarkSnapshot } from '../src/core/benchmarks';
 import type { ModelListSnapshot } from '../src/core/router';
 import type { WorkersAiBinding } from '../src/providers/workers-ai';
-import { dashboardApiRequest, dashboardPagePath, dashboardPageRedirect, legacyDashboardRedirect } from './host-routing';
+import { adminPagePath, dashboardApiRequest, dashboardPagePath, dashboardPageRedirect, legacyDashboardRedirect } from './host-routing';
 
 /**
  * Hosted Valefront on Cloudflare Workers. The same Express app as the Node server (src/server.ts), in hosted keys
@@ -337,8 +337,10 @@ export default {
     const url = new URL(request.url);
     // The platform admin host (behind Cloudflare Access): the owner's dashboard page and files (nothing private in
     // them), and everything else to the app, whose own Access check (adminHostGate) decides on every request.
-    if (url.hostname === (env.ADMIN_HOST || 'adm.valefront.com')) {
-      const asset = assetPath(url.pathname);
+    const adminHost = env.ADMIN_HOST || 'adm.valefront.com';
+    if (url.hostname === adminHost) {
+      // An owner dashboard page as a path (/benchmarks, /keys …): the app, which reads the page from the path.
+      const asset = adminPagePath(request, url, adminHost) ? '/' : assetPath(url.pathname);
       if (asset) {
         const res = await env.ASSETS.fetch(new Request(new URL(asset, url), request));
         if (asset !== '/') return res;

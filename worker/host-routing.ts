@@ -31,6 +31,24 @@ export function dashboardPagePath(request: Request, url: URL): boolean {
   return (request.headers.get('accept') ?? '').includes('text/html');
 }
 
+/**
+ * The owner dashboard's pages on the platform admin host (adm.valefront.com/benchmarks …), the ids of its nav
+ * (dashboard/src/app.tsx NAV and BILLING). Like CUSTOMER_PAGES, only a browser's page load is served the app; the
+ * app's own fetches to the same root paths (legacy API paths rewritten to /dashboard/…) and every server path on that
+ * host stay with Express. Customer billing and partner inquiries are not app pages: they are the server's /billing/
+ * and /partners/ pages (admin-billing.ts, partner-inquiries.ts), which the app links to, so no name here may be one
+ * of ADMIN_SERVER_PATHS.
+ */
+export const ADMIN_PAGES = new Set(['/overview', '/benchmarks', '/providers', '/routing', '/keys', '/offered', '/playground', '/activity', '/spending', '/campaigns', '/calculator']);
+/** First path segments the server answers on the admin host; never served the app. */
+export const ADMIN_SERVER_PATHS = ['/admin', '/auth', '/billing', '/partners', '/dashboard', '/v1', '/mcp', '/healthz', '/readyz', '/webhooks', '/cdn-cgi'];
+export function adminPagePath(request: Request, url: URL, adminHost: string): boolean {
+  if (url.hostname !== adminHost) return false;
+  if (request.method !== 'GET' && request.method !== 'HEAD') return false;
+  if (!ADMIN_PAGES.has(url.pathname.replace(/\/+$/, ''))) return false;
+  return (request.headers.get('accept') ?? '').includes('text/html');
+}
+
 /** Rewrites browser-cached root API paths to the dashboard API namespace on dashboard hosts. */
 export function dashboardApiRequest(request: Request): Request | null {
   const url = new URL(request.url);
