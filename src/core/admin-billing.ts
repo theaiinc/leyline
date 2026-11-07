@@ -2,7 +2,8 @@ import { ADMIN_PAGE_CSS, adminHeader } from './admin-page-style';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import { randomUUID } from 'crypto';
 import { BillingError, METHOD_LABELS, cleanAccount, cleanLegal, cleanVat, cleanVatInvoiceDetails, decimalToCents, formatUsd, vatLabel, type BillingOrder, type EInvoice } from './billing';
-import { SETTINGS, type ExchangeRateSetting } from './billing-service';
+import { MANUAL_EINVOICE_PDF_MAX_BYTES, SETTINGS, VAT_REQUEST_WINDOW_DAYS, type ExchangeRateSetting } from './billing-service';
+import { INVOICE_LOOKUP_URL } from './einvoice-viettel';
 import { accessAdmin } from './cloudflare-access';
 import { ModeChangeError, PROVIDERS, providerStatus, setMode, type ProviderId } from './provider-modes';
 import type { HostedOptions } from './hosted';
@@ -24,6 +25,9 @@ import type { HostedOptions } from './hosted';
  *   POST /einvoices/:id/retry        retry a failed VAT e-invoice
  *   POST /einvoices/:id/cancel       cancel an issued e-invoice at Viettel (with the agreement's description)
  *   POST /einvoices/:id/replace      issue a replacement e-invoice with corrected buyer details
+ *   GET  /api/einvoice-requests      VAT invoices waiting to be issued by hand (S-Invoice not usable), as JSON
+ *   POST /einvoices/:id/issue-manually  a requested one was issued by hand: number, lookup code, optional PDF; emailed
+ *   POST /einvoices/:id/reject       turn a request down, with the reason the customer sees
  *
  * Partner inquiries (the valefront.com form) are administered under /partners (partner-inquiries.ts).
  */
@@ -71,6 +75,8 @@ export function isAdminHost(opts: HostedOptions, req: Request): boolean {
 
 export function mountAdminBilling(app: Express, opts: HostedOptions): void {
   const router = express.Router();
+  // Issuing by hand may carry the invoice's PDF (base64, at most MANUAL_EINVOICE_PDF_MAX_BYTES); every other form is small.
+  router.use('/einvoices/:id/issue-manually', express.urlencoded({ extended: false, limit: '2mb' }));
   router.use(express.urlencoded({ extended: false, limit: '64kb' }));
   router.use((req: Request, res: Response, next: NextFunction) => {
     // adminHostGate already checked Cloudflare Access and the request's origin.
@@ -225,11 +231,55 @@ export function mountAdminBilling(app: Express, opts: HostedOptions): void {
     }
   });
 
+  router.get('/api/einvoice-requests', async (_req, res) => {
+    const billing = opts.billing!;
+    const fx = (await billing.store.setting<ExchangeRateSetting>(SETTINGS.exchangeRate))?.value ?? null;
+    const requests = await billing.store.einvoiceRequests();
+    res.json({
+      exchangeRate: fx,
+      requests: await Promise.all(requests.map(async (e) => {
+        const order = await billing.store.order(e.orderId);
+        return {
+          id: e.id, orderId: e.orderId, reference: order?.reference ?? null, mode: e.mode, paidAt: e.paidAt, requestedAt: e.createdAt, details: e.details,
+          amountCents: e.amountCents, vatRateBp: e.vatRateBp, vatCents: e.vatCents, totalCents: e.totalCents, currency: e.currency,
+          totalVnd: fx ? vndOf(e.totalCents, fx.vndPerUsd) : null, sepayQuoteVnd: order?.quote?.vndAmount ?? null,
+        };
+      })),
+    });
+  });
+
+  router.post('/einvoices/:id/issue-manually', async (req, res) => {
+    try {
+      const b = (req.body ?? {}) as Record<string, unknown>;
+      const raw = typeof b.pdfBase64 === 'string' ? b.pdfBase64.replace(/^data:[^,]*,/, '').replace(/\s+/g, '') : '';
+      if (raw && !/^[A-Za-z0-9+/]+=*$/.test(raw)) throw new BillingError('pdf_invalid', 'The PDF could not be read; choose the file again.');
+      const pdf = raw ? new Uint8Array(Buffer.from(raw, 'base64')) : null;
+      const { einvoice, issued } = await opts.billing!.issueEinvoiceManually(String(req.params.id), {
+        by: (req as AdminRequest).billingAdmin!, invoiceNo: b.invoiceNo, lookupCode: b.lookupCode, lookupUrl: b.lookupUrl, codeOfTax: b.codeOfTax, pdf,
+      });
+      if (req.headers.accept?.includes('application/json')) return res.json({ issued, status: einvoice.status, invoiceNo: einvoice.record?.invoiceNo ?? null, emailStatus: einvoice.emailStatus ?? null });
+      back(res, issued ? `VAT invoice ${einvoice.record!.invoiceNo} recorded for ${einvoice.details.companyName}; email ${einvoice.emailStatus ?? 'not sent (no billing email on this host)'}.` : `Already issued as ${einvoice.record?.invoiceNo}; nothing changed.`);
+    } catch (err) {
+      fail(req, res, err);
+    }
+  });
+
+  router.post('/einvoices/:id/reject', async (req, res) => {
+    try {
+      const e = await opts.billing!.rejectEinvoiceRequest(String(req.params.id), { by: (req as AdminRequest).billingAdmin!, reason: req.body?.reason });
+      if (req.headers.accept?.includes('application/json')) return res.json({ status: e.status });
+      back(res, `VAT invoice request for ${e.details.companyName} rejected.`);
+    } catch (err) {
+      fail(req, res, err);
+    }
+  });
+
   router.post('/einvoices/:id/cancel', async (req, res) => {
     try {
       const billing = opts.billing!;
       const e = await billing.store.einvoice(String(req.params.id));
       if (!e?.record || e.status !== 'issued') throw new BillingError('not_issued', 'Only an issued e-invoice can be cancelled.', 409);
+      if (e.record.provider === 'manual') throw new BillingError('issued_by_hand', 'This invoice was issued by hand: cancel it where it was issued.', 409);
       const provider = billing.opts.einvoice?.(e.mode);
       if (!provider) throw new BillingError('einvoice_unavailable', `Viettel S-Invoice (${e.mode}) is not configured.`, 409);
       const description = String(req.body?.description ?? '').trim();
@@ -248,6 +298,7 @@ export function mountAdminBilling(app: Express, opts: HostedOptions): void {
       const billing = opts.billing!;
       const e = await billing.store.einvoice(String(req.params.id));
       if (!e?.record || e.status !== 'issued') throw new BillingError('not_issued', 'Only an issued e-invoice can be replaced.', 409);
+      if (e.record.provider === 'manual') throw new BillingError('issued_by_hand', 'This invoice was issued by hand: replace it where it was issued.', 409);
       const provider = billing.opts.einvoice?.(e.mode);
       if (!provider) throw new BillingError('einvoice_unavailable', `Viettel S-Invoice (${e.mode}) is not configured.`, 409);
       const fx = (await billing.store.setting<ExchangeRateSetting>(SETTINGS.exchangeRate))?.value;
@@ -269,7 +320,8 @@ export function mountAdminBilling(app: Express, opts: HostedOptions): void {
   router.get('/', async (req, res) => {
     const billing = opts.billing!;
     const status = typeof req.query.status === 'string' && req.query.status ? req.query.status : undefined;
-    const [orders, account, seller, vat, methods, einvoices, fx] = await Promise.all([billing.store.allOrders(status), billing.account(), billing.seller(), billing.vat(), billing.methods(), billing.store.allEinvoices(), billing.store.setting<ExchangeRateSetting>(SETTINGS.exchangeRate)]);
+    const [orders, account, seller, vat, methods, einvoices, fx, requests, automatic] = await Promise.all([billing.store.allOrders(status), billing.account(), billing.seller(), billing.vat(), billing.methods(), billing.store.allEinvoices(), billing.store.setting<ExchangeRateSetting>(SETTINGS.exchangeRate), billing.store.einvoiceRequests(), billing.einvoiceIsAutomatic()]);
+    const requestOrders = new Map(await Promise.all(requests.map(async (e) => [e.orderId, await billing.store.order(e.orderId)] as const)));
     const receipts = await Promise.all(orders.filter((o) => o.status === 'paid').map(async (o) => [o.id, await billing.store.receiptForOrder(o.id)] as const));
     const receiptOf = new Map(receipts);
     const note = typeof req.query.note === 'string' ? req.query.note : '';
@@ -281,7 +333,7 @@ export function mountAdminBilling(app: Express, opts: HostedOptions): void {
       method: methods.sepay,
       lastWebhookAt: await billing.store.lastSepayWebhookAt(),
     } : null;
-    res.type('html').send(adminPage({ who: (req as AdminRequest).billingAdmin!, note, status, orders, receiptOf, account, seller, vat, einvoices, fx: fx?.value ?? null, providers, sepay }));
+    res.type('html').send(adminPage({ who: (req as AdminRequest).billingAdmin!, note, status, orders, receiptOf, account, seller, vat, einvoices, fx: fx?.value ?? null, providers, sepay, requests, requestOrders, automatic }));
   });
 
   app.use('/billing', (req, res, next) => (isAdminHost(opts, req) ? router(req, res, next) : next()));
@@ -297,6 +349,38 @@ API token: ${yes(s.apiToken)} (polling, "check now") · webhook key: ${yes(s.web
 <form method="post" action="/billing/sepay/poll" style="margin:8px 0"><button>Check SePay transactions now</button></form>`;
 }
 
+/** VND for a USD total at the e-invoice exchange rate (whole dong, rounded), as a VAT invoice in VND would show it. */
+function vndOf(totalCents: number, vndPerUsd: number): number {
+  return Math.round((totalCents * vndPerUsd) / 100);
+}
+
+/** Manual VAT invoice requests: what to put on the invoice, and the forms to record it issued or reject it. */
+function requestsSection(p: Parameters<typeof adminPage>[0]): string {
+  const fx = p.fx;
+  const intro = `<p>${p.automatic
+    ? 'Viettel S-Invoice is usable: new VAT invoices are issued automatically. Requests already here stay manual.'
+    : '<strong>Viettel S-Invoice is not usable</strong> (live mode without all its live secrets): VAT invoices are not issued automatically. Each one asked for waits here; issue it by hand (e.g. on S-Invoice&#39;s portal) and record it, or reject it.'}
+ Customers can ask up to ${VAT_REQUEST_WINDOW_DAYS} days after paying. VND at the e-invoice exchange rate: <strong>${fx ? `${esc(fx.vndPerUsd)} VND/USD (${esc(fx.date)})` : 'not set'}</strong>.</p>`;
+  if (!p.requests.length) return `${intro}<p>No requests waiting.</p>`;
+  const rows = p.requests.map((e) => {
+    const o = p.requestOrders.get(e.orderId) ?? null;
+    const d = e.details;
+    const money = `${esc(formatUsd(e.amountCents))} + VAT ${esc(vatLabel(e.vatRateBp))} ${esc(formatUsd(e.vatCents))} = <strong>${esc(formatUsd(e.totalCents))}</strong>`
+      + (fx ? `<br><small>${esc(vndOf(e.totalCents, fx.vndPerUsd).toLocaleString('en-US'))} VND at ${esc(fx.vndPerUsd)}</small>` : '')
+      + (o?.quote ? `<br><small>paid ${esc(o.quote.vndAmount.toLocaleString('en-US'))} VND by SePay at ${esc(o.quote.vndPerUsd)} (${esc(o.quote.rateDate)})</small>` : '');
+    const issue = `<form method="post" action="/billing/einvoices/${esc(e.id)}/issue-manually" onsubmit="return confirm('Record this VAT invoice as issued and email it to the buyer?')">
+${field('invoiceNo', 'Invoice number', '', 'required size="16"')}${field('lookupCode', 'Lookup code (mã tra cứu)', '', 'size="16"')}${field('codeOfTax', 'Tax authority code (CQT)', '', 'size="20"')}${field('lookupUrl', 'Lookup address', INVOICE_LOOKUP_URL, 'size="32"')}
+<label>PDF (optional, at most ${MANUAL_EINVOICE_PDF_MAX_BYTES / 1_000_000} MB)<input type="file" accept="application/pdf" onchange="var f=this.files[0],h=this.form.pdfBase64;h.value='';if(!f)return;if(f.size>${MANUAL_EINVOICE_PDF_MAX_BYTES}){alert('At most ${MANUAL_EINVOICE_PDF_MAX_BYTES / 1_000_000} MB.');this.value='';return;}var r=new FileReader();r.onload=function(){h.value=String(r.result).split(',')[1]||''};r.readAsDataURL(f)"></label><input type="hidden" name="pdfBase64">
+<button>Mark issued</button></form>
+<form method="post" action="/billing/einvoices/${esc(e.id)}/reject" onsubmit="return confirm('Reject this request? The customer sees the reason.')"><input name="reason" placeholder="Reason (the customer sees it)" required size="28"><button>Reject</button></form>`;
+    return `<tr><td data-label="Paid">${esc(new Date(e.paidAt).toISOString().slice(0, 10))}<br><small>asked ${esc(new Date(e.createdAt).toISOString().slice(0, 10))}</small></td>
+<td data-label="Order">${o ? `<code>${esc(o.reference)}</code><br><small>${esc(METHOD_LABELS[o.method])}</small>` : esc(e.orderId)}${e.mode === 'sandbox' ? ' <strong>SANDBOX</strong>' : ''}</td>
+<td data-label="Buyer (VAT invoice details)"><strong>${esc(d.companyName)}</strong><br><small>MST ${esc(d.taxCode)}<br>${esc(d.address)}<br>${esc(d.email)}</small></td>
+<td data-label="Amount" class="n">${money}</td><td data-label="">${issue}</td></tr>`;
+  }).join('');
+  return `${intro}<div class="wrap"><table class="stack"><thead><tr><th>Paid (UTC)</th><th>Order</th><th>Buyer (VAT invoice details)</th><th class="n">Amount</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
 function field(name: string, label: string, value: unknown, extra = ''): string {
   return `<label>${esc(label)}<input name="${name}" value="${esc(value)}" ${extra}></label>`;
 }
@@ -306,6 +390,7 @@ function adminPage(p: {
   account: import('./billing').BillingAccount | null; seller: import('./billing').LegalSettings; vat: import('./billing').VatSettings;
   einvoices: EInvoice[]; fx: ExchangeRateSetting | null; providers: Awaited<ReturnType<typeof providerStatus>>;
   sepay: { apiToken: boolean; webhookKey: boolean; accountFromEnv: boolean; account: import('./billing').VndBankAccount | null; method: { enabled: boolean; vndPerUsd: number | null; rateDate: string | null }; lastWebhookAt: number | null } | null;
+  requests: EInvoice[]; requestOrders: Map<string, BillingOrder | null>; automatic: boolean;
 }): string {
   const yes = (b: boolean) => (b ? '<strong style="color:#147a3d">yes</strong>' : '<strong style="color:#b42318">no</strong>');
   const prows = p.providers.map((pr) => {
@@ -317,11 +402,11 @@ function adminPage(p: {
   }).join('');
   const erows = p.einvoices.map((e) => {
     const actions = e.status === 'failed' ? `<form method="post" action="/billing/einvoices/${esc(e.id)}/retry"><button>Retry</button></form>`
-      : e.status === 'issued' ? `<details><summary>Cancel / replace</summary>
+      : e.status === 'issued' && e.record?.provider !== 'manual' ? `<details><summary>Cancel / replace</summary>
 <form method="post" action="/billing/einvoices/${esc(e.id)}/cancel" onsubmit="return confirm('Cancel this e-invoice at Viettel?')"><input name="description" placeholder="Cancellation agreement" required><button>Cancel at Viettel</button></form>
 <form method="post" action="/billing/einvoices/${esc(e.id)}/replace">${field('companyName', 'Company', e.details.companyName, 'required')}${field('taxCode', 'MST', e.details.taxCode, 'required')}${field('address', 'Address', e.details.address, 'required')}${field('email', 'Email', e.details.email, 'required')}${field('reason', 'Reason', '', 'required')}<button>Issue replacement</button></form></details>` : '';
     return `<tr><td>${esc(new Date(e.createdAt).toISOString().slice(0, 10))}</td><td>${esc(e.details.companyName)}<br><small>MST ${esc(e.details.taxCode)} · ${esc(e.details.email)}</small></td><td class="n">${esc(formatUsd(e.totalCents))}</td>
-<td>${e.mode === 'sandbox' ? '<strong>SANDBOX</strong> ' : ''}${esc(e.status)}${e.record ? `<br><small>${esc(e.record.invoiceNo)}${e.record.codeOfTax ? ` · CQT ${esc(e.record.codeOfTax)}` : ''} · email ${esc(e.emailStatus ?? 'not sent')}</small>` : ''}${e.lastError ? `<br><small>${esc(e.lastError)} (${e.attempts} attempts)</small>` : ''}</td><td>${actions}</td></tr>`;
+<td>${e.mode === 'sandbox' ? '<strong>SANDBOX</strong> ' : ''}${esc(e.status)}${e.manual ? ' (by hand)' : ''}${e.rejectReason && e.status === 'rejected' ? `<br><small>${esc(e.rejectReason)}</small>` : ''}${e.record ? `<br><small>${esc(e.record.invoiceNo)}${e.record.codeOfTax ? ` · CQT ${esc(e.record.codeOfTax)}` : ''} · email ${esc(e.emailStatus ?? 'not sent')}</small>` : ''}${e.lastError ? `<br><small>${esc(e.lastError)} (${e.attempts} attempts)</small>` : ''}</td><td>${actions}</td></tr>`;
   }).join('');
   const rows = p.orders.map((o) => {
     const r = p.receiptOf.get(o.id);
@@ -342,7 +427,8 @@ ${p.note ? `<p class="note">${esc(p.note)}</p>` : ''}
 <h2>SePay (Vietnamese bank QR, VND)</h2>${sepaySection(p.sepay)}
 <h2>Orders</h2><p><a href="/billing/">All</a> · <a href="/billing/?status=pending">Pending</a> · <a href="/billing/?status=paid">Paid</a> · <a href="/billing/?status=cancelled">Cancelled</a></p>
 <div class="wrap"><table class="stack"><thead><tr><th>Created (UTC)</th><th>Reference</th><th>Buyer</th><th>Method</th><th class="n">Credit / total</th><th>Status</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="7">No orders.</td></tr>'}</tbody></table></div>
-<h2>Vietnamese VAT e-invoices (Viettel S-Invoice)</h2><p>Requested invoices wait as pending until S-Invoice is configured in their payment's mode. Exchange rate: <strong>${p.fx ? `${esc(p.fx.vndPerUsd)} VND/USD, set ${esc(p.fx.date)}` : 'not set'}</strong>.</p>
+<h2 id="vat-requests">VAT invoice requests (issued by hand)${p.requests.length ? ` (${p.requests.length})` : ''}</h2>${requestsSection(p)}
+<h2>Vietnamese VAT e-invoices (Viettel S-Invoice)</h2><p>Issued automatically through S-Invoice in their payment's mode (sandbox: waiting as pending until it is configured); in live mode without its secrets they are requests, above. Exchange rate: <strong>${p.fx ? `${esc(p.fx.vndPerUsd)} VND/USD, set ${esc(p.fx.date)}` : 'not set'}</strong>.</p>
 <form class="settings" method="post" action="/billing/settings/exchange-rate">${field('vndPerUsd', 'VND per 1 USD (for invoices issued from now)', p.fx?.vndPerUsd ?? '', 'required')}<div><button>Save rate and issue pending</button></div></form>
 <form method="post" action="/billing/einvoices/process" style="margin:8px 0"><button>Run the retry job now</button></form>
 <div class="wrap"><table class="stack"><thead><tr><th>Paid</th><th>Buyer</th><th class="n">Total</th><th>Status</th><th></th></tr></thead><tbody>${erows || '<tr><td colspan="5">No VAT invoices requested.</td></tr>'}</tbody></table></div>

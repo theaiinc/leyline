@@ -93,6 +93,7 @@ function einvoiceFrom(r: Row): EInvoice {
     totalCents: Number(r.total_cents), currency: 'USD', paidAt: Number(r.paid_at), attempts: Number(r.attempts), lastError: str(r.last_error),
     record: r.record ? (JSON.parse(String(r.record)) as EInvoiceRecord) : null, issuedAt: num(r.issued_at),
     emailStatus: (str(r.email_status) as EInvoice['emailStatus']) ?? null, createdAt: Number(r.created_at),
+    manual: Number(r.manual ?? 0) === 1, rejectReason: str(r.reject_reason), resolvedBy: str(r.resolved_by), resolvedAt: num(r.resolved_at),
   };
 }
 
@@ -403,7 +404,8 @@ export class D1BillingStore {
    * `transitioned` is false and no second credit, receipt or e-invoice is made. Receipt numbers are the next of the
    * year with no gaps.
    */
-  async markPaid(orderId: string, input: { at: number; by: string; captureId?: string | null; seller: LegalSettings }): Promise<{ transitioned: boolean }> {
+  async markPaid(orderId: string, input: { at: number; by: string; captureId?: string | null; seller: LegalSettings; /** The VAT invoice asked for at checkout: issued automatically (default) or a manual request. */ einvoice?: 'automatic' | 'manual' }): Promise<{ transitioned: boolean }> {
+    const manual = input.einvoice === 'manual';
     const { year } = vietnamDate(input.at);
     // Real and sandbox receipts are numbered apart: a test payment never takes a real number.
     const nextReceipt = '(SELECT COALESCE(MAX(seq), 0) + 1 FROM receipts WHERE mode = o.mode AND year = ?)';
@@ -416,10 +418,10 @@ export class D1BillingStore {
         SELECT ?, o.id, o.workspace_id, o.mode, ?, ${nextReceipt}, printf(CASE WHEN o.mode = 'sandbox' THEN 'VF-RCT-SANDBOX-%d-%06d' ELSE 'VF-RCT-%d-%06d' END, ?, ${nextReceipt}), ?, ?, o.buyer, o.amount_cents, o.vat_rate_bp, o.vat_cents, o.total_cents, o.currency, o.method, o.reference, o.provider_capture_id
         FROM billing_orders o WHERE o.id = ? AND o.status = 'paid' AND NOT EXISTS (SELECT 1 FROM receipts WHERE order_id = ?)`)
         .bind(`rct_${randomUUID()}`, year, year, year, year, input.at, JSON.stringify(input.seller), orderId, orderId),
-      this.db.prepare(`INSERT OR IGNORE INTO einvoices (id, order_id, receipt_id, workspace_id, mode, status, details, amount_cents, vat_rate_bp, vat_cents, total_cents, currency, paid_at, created_at)
-        SELECT ?, o.id, r.id, o.workspace_id, o.mode, 'pending', o.einvoice_request, o.amount_cents, o.vat_rate_bp, o.vat_cents, o.total_cents, o.currency, o.paid_at, ?
+      this.db.prepare(`INSERT OR IGNORE INTO einvoices (id, order_id, receipt_id, workspace_id, mode, status, manual, details, amount_cents, vat_rate_bp, vat_cents, total_cents, currency, paid_at, created_at)
+        SELECT ?, o.id, r.id, o.workspace_id, o.mode, ?, ?, o.einvoice_request, o.amount_cents, o.vat_rate_bp, o.vat_cents, o.total_cents, o.currency, o.paid_at, ?
         FROM billing_orders o JOIN receipts r ON r.order_id = o.id WHERE o.id = ? AND o.status = 'paid' AND o.einvoice_request IS NOT NULL`)
-        .bind(randomUUID(), input.at, orderId),
+        .bind(randomUUID(), manual ? 'requested' : 'pending', manual ? 1 : 0, input.at, orderId),
     ]);
     return { transitioned: Boolean(results[0]?.meta.changes) };
   }
@@ -567,6 +569,62 @@ export class D1BillingStore {
     await this.db.prepare("UPDATE einvoices SET details = ?, record = ?, issued_at = ?, email_status = NULL, status = 'issued' WHERE id = ?")
       .bind(JSON.stringify(details), JSON.stringify(record), record.issuedAt, id).run();
     await this.db.prepare('DELETE FROM billing_documents WHERE id = ?').bind(id).run();
+  }
+
+  // ── VAT invoices on request (issued by an admin) ──────────────────────────────────────────────────────
+
+  /**
+   * A VAT invoice asked for after payment, for a paid order that has none: one per order (order_id is UNIQUE, so a
+   * second request changes nothing), 'requested' (manual) or 'pending' (issued automatically). The order remembers
+   * the details too, as if they had been given at checkout.
+   */
+  async createEinvoiceRequest(order: BillingOrder, receiptId: string, details: VatInvoiceDetails, manual: boolean): Promise<{ einvoice: EInvoice; created: boolean }> {
+    const at = this.now();
+    const results = await this.db.batch([
+      this.db.prepare(`INSERT OR IGNORE INTO einvoices (id, order_id, receipt_id, workspace_id, mode, status, manual, details, amount_cents, vat_rate_bp, vat_cents, total_cents, currency, paid_at, created_at)
+        SELECT ?, o.id, ?, o.workspace_id, o.mode, ?, ?, ?, o.amount_cents, o.vat_rate_bp, o.vat_cents, o.total_cents, o.currency, o.paid_at, ? FROM billing_orders o WHERE o.id = ? AND o.status = 'paid'`)
+        .bind(randomUUID(), receiptId, manual ? 'requested' : 'pending', manual ? 1 : 0, JSON.stringify(details), at, order.id),
+      this.db.prepare('UPDATE billing_orders SET einvoice_request = ? WHERE id = ? AND einvoice_request IS NULL').bind(JSON.stringify(details), order.id),
+    ]);
+    const einvoice = await this.einvoiceForOrder(order.id);
+    if (!einvoice) throw new Error('e-invoice request not saved');
+    return { einvoice, created: Boolean(results[0]?.meta.changes) };
+  }
+
+  /** A rejected request asked for again (with the buyer's details as they are now). */
+  async reopenEinvoiceRequest(id: string, details: VatInvoiceDetails, manual: boolean): Promise<boolean> {
+    const r = await this.db.prepare("UPDATE einvoices SET status = ?, manual = ?, details = ?, reject_reason = NULL, resolved_by = NULL, resolved_at = NULL WHERE id = ? AND status = 'rejected'")
+      .bind(manual ? 'requested' : 'pending', manual ? 1 : 0, JSON.stringify(details), id).run();
+    return Boolean(r.meta.changes);
+  }
+
+  /** A pending automatic one that can't be issued (S-Invoice live without its secrets) becomes a manual request. */
+  async einvoiceToManual(id: string, why: string): Promise<boolean> {
+    const r = await this.db.prepare("UPDATE einvoices SET status = 'requested', manual = 1, last_error = ? WHERE id = ? AND status = 'pending'").bind(why.slice(0, 500), id).run();
+    return Boolean(r.meta.changes);
+  }
+
+  /** Manual requests waiting for an admin, oldest first. */
+  async einvoiceRequests(limit = 200): Promise<EInvoice[]> {
+    return (await this.all<Row>("SELECT * FROM einvoices WHERE status = 'requested' ORDER BY created_at LIMIT ?", limit)).map(einvoiceFrom);
+  }
+
+  /** An admin issued it by hand: requested -> issued, once. */
+  async einvoiceManualIssued(id: string, record: EInvoiceRecord, by: string): Promise<boolean> {
+    const r = await this.db.prepare("UPDATE einvoices SET status = 'issued', record = ?, issued_at = ?, last_error = NULL, resolved_by = ?, resolved_at = ? WHERE id = ? AND status = 'requested'")
+      .bind(JSON.stringify(record), record.issuedAt, by, this.now(), id).run();
+    return Boolean(r.meta.changes);
+  }
+
+  /** An admin turned it down, with why (shown to the buyer): requested -> rejected, once. */
+  async einvoiceRejected(id: string, reason: string, by: string): Promise<boolean> {
+    const r = await this.db.prepare("UPDATE einvoices SET status = 'rejected', reject_reason = ?, resolved_by = ?, resolved_at = ? WHERE id = ? AND status = 'requested'")
+      .bind(reason.slice(0, 500), by, this.now(), id).run();
+    return Boolean(r.meta.changes);
+  }
+
+  async hasDocument(id: string): Promise<boolean> {
+    return Boolean(await this.first('SELECT 1 AS x FROM billing_documents WHERE id = ?', id));
   }
 
   async einvoiceSetStatus(id: string, status: EInvoiceStatus): Promise<void> {

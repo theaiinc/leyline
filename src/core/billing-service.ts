@@ -18,6 +18,7 @@ import {
   type BuyerProfile,
   type EInvoice,
   type EInvoiceProvider,
+  type EInvoiceRecord,
   type LegalSettings,
   type PaymentMethod,
   type Receipt,
@@ -106,6 +107,21 @@ const vnd = (n: number) => `${n.toLocaleString('en-US')} VND`;
 
 export const ADD_CREDIT_URL = 'https://dash.valefront.com/billing';
 
+/** A VAT invoice can be asked for after payment within this many days of paying (the receipt's date). */
+export const VAT_REQUEST_WINDOW_DAYS = 30;
+const VAT_REQUEST_WINDOW_MS = VAT_REQUEST_WINDOW_DAYS * 86_400_000;
+/** A PDF an admin uploads for a manual invoice (stored base64 in D1, whose rows are at most 2 MB). */
+export const MANUAL_EINVOICE_PDF_MAX_BYTES = 1_000_000;
+
+/**
+ * Whether VAT invoices are issued automatically through Viettel S-Invoice: in sandbox mode, always (as before: an
+ * invoice waits as pending until sandbox is configured); in live mode only with every required live secret set.
+ * Otherwise (live, not set up) nothing is sent to Viettel: a buyer's VAT invoice is a request an admin issues by hand.
+ */
+export function einvoiceAutomatic(mode: ProviderMode, liveConfigured: boolean): boolean {
+  return mode === 'sandbox' || liveConfigured;
+}
+
 /** "Name <a@b>" -> { name, email }. */
 export function parseFrom(value: string | undefined): { email: string; name?: string } | null {
   const v = (value ?? '').trim();
@@ -143,6 +159,12 @@ export class BillingService {
   /** The VND rate set on the admin host (the one VAT invoices use), if any. */
   async exchangeRate(): Promise<ExchangeRateSetting | null> {
     return (await this.store.setting<ExchangeRateSetting>(SETTINGS.exchangeRate))?.value ?? null;
+  }
+
+  /** Is S-Invoice usable now (einvoiceAutomatic)? Live is configured when its provider exists (all live secrets set). */
+  async einvoiceIsAutomatic(): Promise<boolean> {
+    const mode = await getMode(this.store, 'sinvoice');
+    return einvoiceAutomatic(mode, mode === 'live' && Boolean(this.opts.einvoice?.('live')));
   }
 
   /** PayPal as it is now: its mode (admin setting) and, for that mode, a client (null: secrets missing). */
@@ -518,10 +540,13 @@ export class BillingService {
     const order = await this.store.order(orderId);
     if (!order) throw new BillingError('order_not_found', 'Order not found.', 404);
     if (order.status === 'cancelled') throw new BillingError('order_cancelled', 'This order was cancelled.', 409);
-    const { transitioned } = await this.store.markPaid(orderId, { at: this.now(), by: input.by, captureId: input.captureId ?? null, seller: await this.seller() });
+    // A VAT invoice asked for at checkout: issued automatically while S-Invoice is usable, else recorded as a request.
+    const einvoice = order.einvoiceRequest && !(await this.einvoiceIsAutomatic()) ? 'manual' : 'automatic';
+    const { transitioned } = await this.store.markPaid(orderId, { at: this.now(), by: input.by, captureId: input.captureId ?? null, seller: await this.seller(), einvoice });
     if (transitioned) {
       console.log(JSON.stringify({ event: 'billing_paid', orderId, method: order.method, amountCents: order.amountCents, by: input.by }));
       await this.store.audit({ type: 'billing.paid', workspaceId: order.workspaceId, meta: { orderId, by: input.by } });
+      if (order.einvoiceRequest && einvoice === 'manual') await this.store.audit({ type: 'billing.einvoice_requested', workspaceId: order.workspaceId, meta: { orderId, via: 'checkout', manual: true } });
       // The first top-up unlocks the rest of the free tokens (Steve, 2026-11-05).
       const f = this.opts.free;
       const unlocked = await this.store.unlockFreeBonus(order.workspaceId, { baseTokens: f.tokens, bonusTokens: f.bonusTokens ?? 0, now: this.now(), days: f.expiresAfterDays })
@@ -547,6 +572,8 @@ export class BillingService {
       return pdf;
     }
     const e = await this.store.einvoice(id);
+    // Issued by hand: only the PDF the admin uploaded (if any), never asked of S-Invoice.
+    if (e?.record?.provider === 'manual') return null;
     const provider = e?.record ? this.opts.einvoice?.(e.mode) : null;
     if (!e?.record || !provider) return null;
     const pdf = await provider.pdf(e.record);
@@ -632,6 +659,13 @@ export class BillingService {
       return this.store.einvoice(id);
     }
     const provider = this.opts.einvoice?.(e.mode) ?? null;
+    if (!provider && current === 'live') {
+      // Live without its secrets (an invoice from before requests existed): not retried forever, an admin issues it.
+      if (await this.store.einvoiceToManual(id, 'Viettel S-Invoice (live) is not set up: issue this one by hand')) {
+        await this.store.audit({ type: 'billing.einvoice_requested', workspaceId: e.workspaceId, meta: { orderId: e.orderId, via: 'not_configured', manual: true } });
+      }
+      return this.store.einvoice(id);
+    }
     if (!provider) {
       await this.store.einvoiceWaiting(id, `Viettel S-Invoice (${e.mode}) is not configured yet`);
       return this.store.einvoice(id);
@@ -674,14 +708,17 @@ export class BillingService {
   private async emailEinvoice(e: EInvoice): Promise<void> {
     const from = this.fromAddress();
     if (!from || !e.record || !(await this.store.claimEinvoiceEmail(e.id))) return;
+    const manual = e.record.provider === 'manual';
     try {
       const pdf = await this.pdf('einvoice', e.id);
-      if (!pdf) throw new Error('no e-invoice PDF');
+      if (!pdf && !manual) throw new Error('no e-invoice PDF');
+      const lookupUrl = e.record.lookupUrl || INVOICE_LOOKUP_URL;
+      const note = pdf ? (manual ? 'The e-invoice (PDF) is attached.' : 'The e-invoice (PDF from Viettel S-Invoice) is attached.') : 'Look the e-invoice up with the code above.';
       const base = this.opts.dashboardUrl.replace(/\/+$/, '');
       const rows: Array<[string, string]> = [
         ['Số hóa đơn / Invoice no.', e.record.invoiceNo],
         ...(e.record.codeOfTax ? [['Mã cơ quan thuế / Tax authority code', e.record.codeOfTax] as [string, string]] : []),
-        ...(e.record.reservationCode ? [['Mã tra cứu / Lookup code', e.record.reservationCode] as [string, string], ['Tra cứu tại / Look it up at', INVOICE_LOOKUP_URL] as [string, string]] : []),
+        ...(e.record.reservationCode ? [['Mã tra cứu / Lookup code', e.record.reservationCode] as [string, string], ['Tra cứu tại / Look it up at', lookupUrl] as [string, string]] : []),
         ['Đơn vị mua / Buyer', `${e.details.companyName} (MST ${e.details.taxCode})`],
         ['Tổng tiền / Total', `${formatUsd(e.totalCents)} ${e.currency} (VAT ${formatUsd(e.vatCents)})`],
       ];
@@ -692,9 +729,9 @@ export class BillingService {
         to: e.details.email,
         subject: `${e.mode === 'sandbox' ? '[SANDBOX] ' : ''}Hóa đơn GTGT / Your Vietnamese VAT invoice ${e.record.invoiceNo}`,
         text: ['Hóa đơn GTGT điện tử của bạn đã được phát hành. Your Vietnamese VAT e-invoice has been issued.', '', ...rows.map(([k, v]) => `${k}: ${v}`), '',
-          `Billing: ${base}/billing`, '', 'The e-invoice (PDF from Viettel S-Invoice) is attached.', '', footer].join('\n'),
-        html: emailHtml('Hóa đơn GTGT điện tử của bạn đã được phát hành. Your Vietnamese VAT e-invoice has been issued.', rows, `${base}/billing`, 'Billing', 'The e-invoice (PDF from Viettel S-Invoice) is attached.', footer),
-        attachments: [{ filename: `${e.record.invoiceNo.replace(/[^A-Za-z0-9_-]/g, '_')}.pdf`, content: toArrayBuffer(pdf), type: 'application/pdf', disposition: 'attachment' }],
+          `Billing: ${base}/billing`, '', note, '', footer].join('\n'),
+        html: emailHtml('Hóa đơn GTGT điện tử của bạn đã được phát hành. Your Vietnamese VAT e-invoice has been issued.', rows, `${base}/billing`, 'Billing', note, footer),
+        attachments: pdf ? [{ filename: `${e.record.invoiceNo.replace(/[^A-Za-z0-9_-]/g, '_')}.pdf`, content: toArrayBuffer(pdf), type: 'application/pdf', disposition: 'attachment' }] : [],
       });
       await this.store.setEinvoiceEmailStatus(e.id, 'sent');
     } catch (err) {
@@ -702,6 +739,93 @@ export class BillingService {
       await this.store.setEinvoiceEmailStatus(e.id, null);
       console.error('[billing] e-invoice email failed', e.id, err instanceof Error ? err.message : err);
     }
+  }
+
+  // ── VAT invoices on request ───────────────────────────────────────────────────────────────────────────
+
+  /** Can this paid order still get a VAT invoice asked for (buyer in Vietnam, within the window, none or a rejected one)? */
+  private requestable(order: BillingOrder, existing: EInvoice | null): boolean {
+    return order.status === 'paid' && order.buyer.country === 'VN' && Boolean(order.paidAt) && this.now() - order.paidAt! <= VAT_REQUEST_WINDOW_MS
+      && (!existing || existing.status === 'rejected');
+  }
+
+  /**
+   * A buyer asks for a VAT invoice for one of their own paid orders, with their saved VAT invoice details: within
+   * VAT_REQUEST_WINDOW_DAYS of paying, one per order (asking again returns the one there is; a rejected one may be
+   * asked for again). While S-Invoice is usable it is issued automatically; otherwise it waits for an admin.
+   */
+  async requestVatInvoice(ws: WorkspaceRecord, orderId: string): Promise<EInvoice> {
+    const order = await this.store.order(orderId);
+    if (!order || order.workspaceId !== ws.id) throw new BillingError('order_not_found', 'Order not found.', 404);
+    if (order.status !== 'paid' || !order.paidAt) throw new BillingError('order_not_paid', 'A VAT invoice can be asked for once the order is paid.', 409);
+    const existing = await this.store.einvoiceForOrder(order.id);
+    if (existing && existing.status !== 'rejected') return existing;
+    if (order.buyer.country !== 'VN') throw new BillingError('vat_invoice_vietnam_only', 'Vietnamese VAT invoices are for customers in Vietnam.');
+    if (!this.requestable(order, existing)) throw new BillingError('vat_invoice_window_closed', `A VAT invoice can be asked for up to ${VAT_REQUEST_WINDOW_DAYS} days after payment; for this order, write to support@valefront.com.`, 409);
+    const details = (await this.store.profile(ws.id))?.vatInvoice;
+    if (!details) throw new BillingError('vat_invoice_details_required', 'Enter the company details for your VAT invoice first.');
+    const receipt = await this.store.receiptForOrder(order.id);
+    if (!receipt) throw new BillingError('order_not_paid', 'The receipt for this order is still being made; try again in a minute.', 409);
+    const manual = !(await this.einvoiceIsAutomatic());
+    let e: EInvoice;
+    let changed: boolean;
+    if (existing) {
+      changed = await this.store.reopenEinvoiceRequest(existing.id, details, manual);
+      e = (await this.store.einvoice(existing.id))!;
+    } else {
+      const made = await this.store.createEinvoiceRequest(order, receipt.id, details, manual);
+      changed = made.created;
+      e = made.einvoice;
+    }
+    if (changed) {
+      await this.store.audit({ type: 'billing.einvoice_requested', workspaceId: ws.id, meta: { orderId: order.id, via: 'customer', manual, ...(existing ? { again: true } : {}) } });
+      if (!manual) e = (await this.processEinvoice(e.id)) ?? e;
+    }
+    return e;
+  }
+
+  /**
+   * Admin: a requested VAT invoice was issued by hand (e.g. on S-Invoice's own portal). Its number, optionally the
+   * lookup code (+ where to look it up), the tax authority code and the PDF. Requested -> issued once; then emailed.
+   */
+  async issueEinvoiceManually(id: string, input: { by: string; invoiceNo: unknown; lookupCode?: unknown; lookupUrl?: unknown; codeOfTax?: unknown; pdf?: Uint8Array | null }): Promise<{ einvoice: EInvoice; issued: boolean }> {
+    const e = await this.store.einvoice(id);
+    if (!e) throw new BillingError('einvoice_not_found', 'VAT invoice request not found.', 404);
+    if (e.status === 'issued' && e.record?.provider === 'manual') return { einvoice: e, issued: false };
+    if (e.status !== 'requested') throw new BillingError('not_requested', `This VAT invoice is ${e.status}, not waiting to be issued by hand.`, 409);
+    const text = (v: unknown, max: number) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, max) : '');
+    const invoiceNo = text(input.invoiceNo, 60);
+    if (!/^[A-Za-z0-9][A-Za-z0-9/_.-]*$/.test(invoiceNo)) throw new BillingError('invoice_no_required', 'Enter the invoice number (letters, digits, / _ . -).');
+    const lookupUrl = text(input.lookupUrl, 300);
+    if (lookupUrl && !/^https:\/\/[^\s]+$/.test(lookupUrl)) throw new BillingError('lookup_url_invalid', 'The lookup address must start with https://.');
+    const pdf = input.pdf && input.pdf.byteLength ? input.pdf : null;
+    if (pdf && (pdf.byteLength > MANUAL_EINVOICE_PDF_MAX_BYTES || Buffer.from(pdf.subarray(0, 5)).toString('latin1') !== '%PDF-')) {
+      throw new BillingError('pdf_invalid', `The file must be a PDF of at most ${MANUAL_EINVOICE_PDF_MAX_BYTES / 1_000_000} MB.`);
+    }
+    const seller = await this.seller();
+    const record: EInvoiceRecord = {
+      provider: 'manual', invoiceNo, transactionUuid: e.id, transactionId: null, reservationCode: text(input.lookupCode, 100) || null, codeOfTax: text(input.codeOfTax, 100) || null,
+      templateCode: '', series: '', supplierTaxCode: seller.taxCode, issuedAt: this.now(), lookupUrl: lookupUrl || null,
+    };
+    if (pdf) await this.store.saveDocument(e.id, 'einvoice', pdf);
+    const issued = await this.store.einvoiceManualIssued(e.id, record, input.by);
+    if (issued) {
+      console.log(JSON.stringify({ event: 'einvoice_issued_manually', id: e.id, invoiceNo, pdf: Boolean(pdf) }));
+      await this.store.audit({ type: 'billing.einvoice_issued', workspaceId: e.workspaceId, meta: { orderId: e.orderId, invoiceNo, manual: true, pdf: Boolean(pdf), by: input.by } });
+      await this.emailEinvoice((await this.store.einvoice(e.id))!);
+    }
+    return { einvoice: (await this.store.einvoice(e.id))!, issued };
+  }
+
+  /** Admin: a requested VAT invoice won't be issued; the buyer sees why (and may ask again within the window). */
+  async rejectEinvoiceRequest(id: string, input: { by: string; reason: unknown }): Promise<EInvoice> {
+    const e = await this.store.einvoice(id);
+    if (!e) throw new BillingError('einvoice_not_found', 'VAT invoice request not found.', 404);
+    const reason = typeof input.reason === 'string' ? input.reason.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 500) : '';
+    if (!reason) throw new BillingError('reason_required', 'Give the reason (the customer sees it).');
+    if (!(await this.store.einvoiceRejected(id, reason, input.by))) throw new BillingError('not_requested', `This VAT invoice is ${e.status}, not waiting to be issued by hand.`, 409);
+    await this.store.audit({ type: 'billing.einvoice_rejected', workspaceId: e.workspaceId, meta: { orderId: e.orderId, by: input.by, reason } });
+    return (await this.store.einvoice(id))!;
   }
 
   // ── credit gate ───────────────────────────────────────────────────────────────────────────────────────
@@ -859,10 +983,13 @@ export class BillingService {
 
   /** What the Billing page shows. */
   async overview(ws: WorkspaceRecord) {
-    const [balance, ledger, orders, receipts, einvoices, profile, grant, methods, vat] = await Promise.all([
+    const [balance, ledger, orders, receipts, einvoices, profile, grant, methods, vat, automatic] = await Promise.all([
       this.store.balance(ws.id), this.store.ledger(ws.id, 200), this.store.orders(ws.id), this.store.receipts(ws.id), this.store.einvoices(ws.id),
-      this.store.profile(ws.id), this.store.grant(ws.id), this.methods(ws), this.vat(),
+      this.store.profile(ws.id), this.store.grant(ws.id), this.methods(ws), this.vat(), this.einvoiceIsAutomatic(),
     ]);
+    const einvoiceOf = new Map(einvoices.map((e) => [e.orderId, e]));
+    const manualFiles = new Set((await Promise.all(einvoices.filter((e) => e.status === 'issued' && e.record?.provider === 'manual')
+      .map(async (e) => ((await this.store.hasDocument(e.id)) ? e.id : null)))).filter(Boolean));
     return {
       balanceCents: balance.cents,
       pendingUsageCents: balance.pendingMicros / MICROS_PER_CENT,
@@ -870,12 +997,18 @@ export class BillingService {
       currency: CURRENCY,
       minimumCents: 1000,
       ledger,
-      orders: orders.map(({ buyer: _b, account: _a, ...o }) => ({ ...o, vatInvoice: Boolean(o.einvoiceRequest), einvoiceRequest: undefined })),
+      orders: orders.map(({ buyer: _b, account: _a, ...o }) => ({ ...o, vatInvoice: Boolean(o.einvoiceRequest), einvoiceRequest: undefined,
+        vatInvoiceRequestable: this.requestable({ ...o, buyer: _b, account: _a }, einvoiceOf.get(o.id) ?? null) })),
       receipts: receipts.map((r) => ({ id: r.id, orderId: r.orderId, mode: r.mode, number: r.number, issuedAt: r.issuedAt, totalCents: r.totalCents, amountCents: r.amountCents, emailStatus: r.emailStatus ?? null })),
       einvoices: einvoices.map((e) => ({
         id: e.id, orderId: e.orderId, mode: e.mode, status: e.status === 'issuing' || e.status === 'failed' ? 'pending' : e.status, invoiceNo: e.record?.invoiceNo ?? null,
         codeOfTax: e.record?.codeOfTax ?? null, reservationCode: e.record?.reservationCode ?? null, issuedAt: e.issuedAt ?? null, totalCents: e.totalCents, email: e.details.email,
+        manual: Boolean(e.manual), rejectReason: e.status === 'rejected' ? e.rejectReason ?? null : null,
+        lookupUrl: e.record ? e.record.lookupUrl || (e.record.reservationCode ? INVOICE_LOOKUP_URL : null) : null,
+        file: e.status === 'issued' && Boolean(e.record) && (e.record!.provider !== 'manual' || manualFiles.has(e.id)),
       })),
+      /** VAT invoices: issued automatically now, or on request (an admin issues them); asked for after payment within requestWindowDays. */
+      vatInvoices: { automatic, requestWindowDays: VAT_REQUEST_WINDOW_DAYS },
       profile,
       free: grant ? { tokens: grant.tokens, usedTokens: grant.usedTokens, expiresAt: grant.expiresAt, models: this.opts.free.models,
         bonusTokens: this.opts.free.bonusTokens ?? 0, bonusUnlocked: grant.tokens >= this.opts.free.tokens + (this.opts.free.bonusTokens ?? 0) } : null,

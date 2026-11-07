@@ -174,7 +174,11 @@ export type VatInvoiceDetails = {
   email: string;
 };
 
-export type EInvoiceStatus = 'pending' | 'issuing' | 'issued' | 'failed' | 'cancelled' | 'replaced';
+/**
+ * pending/issuing/failed: automatic issuance through S-Invoice (retried). requested: a manual request an admin issues
+ * by hand (S-Invoice not usable, see BillingService.einvoiceAutomatic), then issued or rejected.
+ */
+export type EInvoiceStatus = 'pending' | 'issuing' | 'issued' | 'failed' | 'cancelled' | 'replaced' | 'requested' | 'rejected';
 
 /** What the e-invoice provider returned (Viettel S-Invoice: invoiceNo, transactionID, reservationCode, codeOfTax). */
 export type EInvoiceRecord = {
@@ -192,6 +196,8 @@ export type EInvoiceRecord = {
   series: string;
   supplierTaxCode: string;
   issuedAt: number;
+  /** Where the buyer looks it up with reservationCode (manual invoices; S-Invoice's is INVOICE_LOOKUP_URL). */
+  lookupUrl?: string | null;
 };
 
 /** A Vietnamese VAT e-invoice for one payment, issued through the provider (pending until it is). */
@@ -215,6 +221,11 @@ export type EInvoice = {
   issuedAt?: number | null;
   emailStatus?: 'sending' | 'sent' | 'failed' | null;
   createdAt: number;
+  /** A manual request (issued by an admin, never sent to S-Invoice automatically, even once it is usable). */
+  manual?: boolean;
+  rejectReason?: string | null;
+  resolvedBy?: string | null;
+  resolvedAt?: number | null;
 };
 
 /**

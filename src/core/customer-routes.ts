@@ -390,6 +390,18 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
     if (!ok) return res.status(409).json({ error: { code: 'not_cancellable', message: 'Only a pending order of yours can be cancelled.' } });
     res.json({ ok: true });
   });
+  /**
+   * Ask for a VAT invoice for a paid order of yours (within 30 days of paying), with your saved VAT invoice details:
+   * issued automatically while S-Invoice is set up, else recorded as a request we issue by hand. Asking again returns it.
+   */
+  app.post('/dashboard/me/billing/orders/:id/vat-invoice', ...mine, async (req, res) => {
+    try {
+      const e = await opts.billing!.requestVatInvoice(ws(req), String(req.params.id));
+      res.json({ einvoice: { id: e.id, orderId: e.orderId, status: e.status === 'issuing' || e.status === 'failed' ? 'pending' : e.status, manual: Boolean(e.manual), invoiceNo: e.record?.invoiceNo ?? null } });
+    } catch (err) {
+      errorOut(res, err);
+    }
+  });
   app.post('/dashboard/me/billing/orders/:id/paypal-capture', ...mine, async (req, res) => {
     try {
       const order = await opts.billing!.capturePayPal(ws(req), String(req.params.id));
@@ -416,7 +428,7 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
       errorOut(res, err);
     }
   });
-  /** The VAT e-invoice's PDF, as Viettel S-Invoice rendered it. */
+  /** The VAT e-invoice's PDF, as Viettel S-Invoice rendered it (or as an admin uploaded it for one issued by hand). */
   app.get('/dashboard/me/billing/einvoices/:id', ...mine, async (req, res) => {
     try {
       const id = String(req.params.id).replace(/\.pdf$/, '');
@@ -424,6 +436,7 @@ export function mountCustomerRoutes(app: Express, opts: HostedOptions): void {
       if (!e || e.workspaceId !== ws(req).id) return res.status(404).json({ error: { code: 'not_found', message: 'Not found.' } });
       if (e.status !== 'issued' || !e.record) return res.status(409).json({ error: { code: 'einvoice_pending', message: 'Your VAT invoice is being issued.' } });
       const bytes = await opts.billing!.pdf('einvoice', id);
+      if (!bytes && e.record.provider === 'manual') return res.status(404).json({ error: { code: 'einvoice_no_file', message: `This invoice has no file here: look it up with its code${e.record.reservationCode ? ` ${e.record.reservationCode}` : ''}${e.record.lookupUrl ? ` at ${e.record.lookupUrl}` : ''}, or see the email we sent.` } });
       if (!bytes) return res.status(503).json({ error: { code: 'einvoice_unavailable', message: 'The invoice file is not available right now; try again later.' } });
       res.setHeader('Cache-Control', 'private, no-store');
       res.setHeader('Content-Type', 'application/pdf');
