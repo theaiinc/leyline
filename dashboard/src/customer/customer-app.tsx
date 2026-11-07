@@ -153,7 +153,7 @@ export function CustomerApp({ dark, toggleTheme }: { dark: boolean; toggleTheme:
             : !me ? <div className="grid gap-4"><Skeleton className="h-8 w-48" /><Skeleton className="h-40" /></div>
               : current === 'keys' ? <KeysPage me={me} />
                 : current === 'providers' ? <YourProvidersPage />
-                : current === 'playground' ? <CustomerPlaygroundPage />
+                : current === 'playground' ? <CustomerPlaygroundPage balanceCents={me.balanceCents} go={go} />
                 : current === 'spending' ? <UsagePage me={me} />
                 : current === 'calculator' ? <CalculatorPage />
                   : current === 'billing' ? <BillingPage me={me} reload={load} />
