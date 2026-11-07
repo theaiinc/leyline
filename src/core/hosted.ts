@@ -121,6 +121,8 @@ type WithKey = Request & {
   byok?: WorkspaceByok | null; byokModel?: string | null;
   /** Admitted for the workspace's own providers only (no credit): a routing strategy may pick only BYOK models. */
   byokOnly?: boolean;
+  /** Why the pool would have refused it (a video poll admitted for the workspace's own provider's jobs only). */
+  byokOnlyRefusal?: { status: number; code: string; message: string };
 };
 
 /** The dash Playground's chat: /v1/chat/completions, run as one of the signed-in customer's keys (requirePlaygroundKey). */
@@ -132,6 +134,8 @@ export const PLAYGROUND_CHAT_PATH = '/dashboard/me/playground/chat';
 const BYOK_PATHS = new Set(['/v1/chat/completions', '/v1/messages', '/v1/responses', PLAYGROUND_CHAT_PATH]);
 /** The endpoints a workspace's own media providers (WaveSpeed) serve: images and videos, the dash Playground's too. */
 const BYOK_MEDIA_PATHS = new Set(['/v1/images/generations', '/v1/videos', '/dashboard/me/playground/images', '/dashboard/me/playground/videos']);
+/** Reading a video job (no model in the request): a job of the workspace's own provider needs no credit. */
+const VIDEO_POLL = /^\/(v1\/videos|dashboard\/me\/playground\/videos)\/[^/]+$/;
 /** Where a customer adds their own providers. */
 export const DASH_PROVIDERS_URL = 'https://dash.valefront.com/#/providers';
 
@@ -163,6 +167,14 @@ export function routerFor<R extends Router>(router: R, req: Request): Pick<Route
 export async function byokMediaProviders(req: Request, model: string): Promise<Provider[]> {
   const r = req as WithKey;
   return r.byok && r.byokModel === model && r.byok.mediaMatch(model) ? r.byok.mediaProvidersFor(model) : [];
+}
+
+/**
+ * A video poll admitted without credit, for the workspace's own provider's jobs only: the pool's refusal to answer
+ * for any other job (null: admitted as usual).
+ */
+export function poolRefusal(req: Request): { status: number; code: string; message: string } | null {
+  return (req as WithKey).byokOnlyRefusal ?? null;
 }
 
 /** The workspace's own media provider that started a video job (its name is `BYOK:<label>`), for reading the job. */
@@ -345,9 +357,12 @@ async function admitKey(opts: HostedOptions, req: Request, key: IssuedKey, fail:
         if ('refusal' in admission) {
           // No credit, but a routing strategy can still pick one of the workspace's own models (billed by them).
           const strategy = routerPicks && byok?.size && BYOK_PATHS.has(req.path) ? (() => { try { return strategyFor(requested, key.caps.routingStrategy); } catch { return null; } })() : null;
-          const own = strategy && admission.refusal.status !== 403 ? await opts.billing.admitByok(ws, { piiProtection: piiProtectionOn(key) }).catch(() => null) : null;
+          // Reading a video job of the workspace's own WaveSpeed: billed by WaveSpeed, so no credit is needed for it.
+          const ownPoll = req.method === 'GET' && VIDEO_POLL.test(req.path) && !!byok?.hasMedia();
+          const own = (strategy || ownPoll) && admission.refusal.status !== 403 ? await opts.billing.admitByok(ws, { piiProtection: piiProtectionOn(key) }).catch(() => null) : null;
           if (!own || own.refusal) return fail(admission.refusal.status, admission.refusal.code, admission.refusal.message);
           (req as WithKey).byokOnly = true;
+          if (ownPoll) (req as WithKey).byokOnlyRefusal = admission.refusal;
         } else if (routerPicks && admission.mode === 'free' && !admission.paid) {
           // Admitted on free tokens alone (no balance): a routing strategy may pick only free-tier models.
           (req as WithKey).freeTokensOnly = true;

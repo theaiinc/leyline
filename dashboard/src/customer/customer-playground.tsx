@@ -12,6 +12,30 @@ import { Skeleton } from '@/components/ui/skeleton';
 
 type Kind = 'chat' | 'image' | 'video';
 type KeyOption = { id: string; name: string; prefix: string; revokedAt: number | null; routingStrategy?: RoutingStrategy | null };
+type WsModel = { id: string; name: string; type?: string; kind: 'image' | 'video' | 'audio' | 'other'; provider: string };
+type WsProvider = { id: string; label: string; allModels: boolean; live: boolean; count: number | null };
+type ProviderRow = { kind: string; label: string; enabled: boolean; models: string[]; allModels?: boolean };
+
+/**
+ * The workspace's own WaveSpeed models for the Playground: WaveSpeed's live list (any model the key can use), by
+ * kind (audio and unknown kinds on both tabs); a listed model WaveSpeed's list lacks is still offered, and with no
+ * list at all, FLUX dev as a start (the picker takes any WaveSpeed id typed in).
+ */
+function wavespeedChoices(models: WsModel[], providers: WsProvider[], rows: ProviderRow[]): MediaModel[] {
+  const out: MediaModel[] = models.map((m) => ({
+    id: m.id, name: m.name, provider: m.provider, type: m.type, byok: true, wavespeed: true,
+    kind: m.kind === 'video' ? 'video' : 'image', anyKind: m.kind === 'audio' || m.kind === 'other',
+  }));
+  for (const r of rows) {
+    if (r.kind !== 'wavespeed' || !r.enabled) continue;
+    const ids = r.models.length ? r.models : providers.some((p) => p.label === r.label && p.count === null) ? ['wavespeed-ai/flux-dev'] : [];
+    for (const id of ids) {
+      if (!out.some((m) => m.id === id)) out.push({ id, name: id, provider: `BYOK:${r.label}`, kind: 'image', anyKind: true, byok: true, wavespeed: true });
+    }
+  }
+  return out;
+}
+
 const MODES = [['chat', 'Chat', MessageSquare], ['image', 'Image', ImageIcon], ['video', 'Video', Video]] as const;
 
 /**
@@ -25,12 +49,17 @@ export function CustomerPlaygroundPage({ balanceCents, go }: { balanceCents: num
   const [keyId, setKeyId] = useState('');
   const [kind, setKind] = useState<Kind>('chat');
   // Models of the workspace's own providers (Your providers), billed by that provider: chat, and images and video
-  // (WaveSpeed).
+  // (WaveSpeed: every model its key can use).
   const [ownModels, setOwnModels] = useState<MediaModel[]>([]);
   const [ownChat, setOwnChat] = useState<OwnChatModel[]>([]);
   useEffect(() => {
-    api<{ mediaModels?: MediaModel[]; chatModels?: OwnChatModel[] }>('/dashboard/me/providers')
-      .then((out) => { setOwnModels(out.mediaModels ?? []); setOwnChat(out.chatModels ?? []); })
+    api<{ chatModels?: OwnChatModel[]; providers?: ProviderRow[] }>('/dashboard/me/providers')
+      .then(async (out) => {
+        setOwnChat(out.chatModels ?? []);
+        if (!(out.providers ?? []).some((p) => p.kind === 'wavespeed' && p.enabled)) return;
+        const ws = await api<{ models: WsModel[]; providers: WsProvider[] }>('/dashboard/me/providers/wavespeed-models').catch(() => ({ models: [], providers: [] }));
+        setOwnModels(wavespeedChoices(ws.models, ws.providers, out.providers ?? []));
+      })
       .catch(() => undefined);
   }, []);
   useEffect(() => {

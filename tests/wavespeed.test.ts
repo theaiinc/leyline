@@ -6,7 +6,7 @@ describe('WaveSpeed image provider', () => {
   it('submits to the model path (size w*h, num_images, sync mode) and returns the outputs', async () => {
     const fetchImpl = jest.fn().mockResolvedValueOnce(json({ code: 200, data: { id: 'p1', status: 'completed', outputs: ['https://cdn.example/a.jpeg'] } }));
     const p = new WaveSpeedProvider('k', 'https://wavespeed.test/api/v3', { fetchImpl, sleep: async () => {} });
-    await expect(p.generateImage({ model: 'wavespeed-ai/flux-dev', prompt: 'a leaf', size: '1024x768' })).resolves.toEqual({ model: 'wavespeed-ai/flux-dev', data: [{ url: 'https://cdn.example/a.jpeg' }] });
+    await expect(p.generateImage({ model: 'wavespeed-ai/flux-dev', prompt: 'a leaf', size: '1024x768' })).resolves.toEqual({ model: 'wavespeed-ai/flux-dev', data: [{ url: 'https://cdn.example/a.jpeg' }], taskId: 'p1' });
     expect(fetchImpl).toHaveBeenCalledWith('https://wavespeed.test/api/v3/wavespeed-ai/flux-dev', expect.objectContaining({ method: 'POST' }));
     expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({ prompt: 'a leaf', size: '1024*768', num_images: 1, enable_sync_mode: true, enable_base64_output: false });
   });

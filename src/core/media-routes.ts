@@ -5,7 +5,9 @@ import type { AudioFile, EmbeddingResult, ImageGenerationResult, Provider, Speec
 import { randomBytes } from 'crypto';
 import type { DocStore } from './issued-keys';
 import { imageCostUsd, mediaModel, videoCostUsd, type MediaKind } from './media-catalog';
-import { byokMediaProviderNamed, byokMediaProviders, resolveModel, servedBy, servedByByok, type HostedOptions, type MediaChargeBasis } from './hosted';
+import { byokMediaProviderNamed, byokMediaProviders, poolRefusal, resolveModel, servedBy, servedByByok, type HostedOptions, type MediaChargeBasis } from './hosted';
+import type { WorkspaceByok } from './workspace-providers';
+import { wavespeedInput, type WaveSpeedModelInfo } from './wavespeed-models';
 import { chatCompletionErrorResponse, formatProviderError } from './api-errors';
 import {
   CapabilityError, TRANSCRIPTION_FORMATS, embeddingToBase64, estimateAudioSeconds, estimateTextTokens, formatTranscription,
@@ -29,7 +31,11 @@ import {
  *
  * A workspace key's image or video request for a model one of its own media providers serves (WaveSpeed, "Your
  * providers"; hosted.ts admitKey) runs on that provider, built from the workspace's key, never on the pool: counted on
- * a $0 spend line BYOK:<label>, billed by the customer's WaveSpeed account.
+ * a $0 spend line BYOK:<label>, billed by the customer's WaveSpeed account. Any WaveSpeed model the key can use, not
+ * only the ones Valefront sells, with the model's own fields passed through unchanged (image, images, seed,
+ * negative_prompt, aspect_ratio, …; src/core/wavespeed-models.ts): images (and anything else) on
+ * /v1/images/generations, which waits for the result; videos (and anything else) on /v1/videos, an async job. A model
+ * WaveSpeed lists as a video model is refused on the images endpoint and vice versa; one it doesn't list goes either way.
  *
  * Same auth as chat (hosted: an issued key, its caps, the offered/turned-off models, the monthly budget), the
  * same model aliases, `auto` for the first configured provider's default, and `x-leyline-force-provider`.
@@ -225,13 +231,52 @@ export function mountMediaRoutes(app: Express, router: Router, opts: MediaRouteO
   const keyIdOf = (req: Request) => (req as Request & { issuedKey?: { id: string } }).issuedKey?.id ?? '';
   const asRequested = (req: Request, id: string) => { (req as Request & { requestedModel?: string }).requestedModel = id; };
 
+  /** The model the client named, as sent (BYOK media is matched on it exactly; hosted.ts admitKey). */
+  const askedModel = (req: Request) => (typeof req.body?.model === 'string' ? req.body.model.trim() : '');
+  const byokOf = (req: Request) => (req as Request & { byok?: WorkspaceByok | null }).byok ?? null;
+  /** What WaveSpeed lists about a BYOK model (kind, fields); null when not known (any endpoint, fields as sent). */
+  const ownModelInfo = async (req: Request, id: string): Promise<WaveSpeedModelInfo | null> => {
+    try {
+      return (await byokOf(req)?.mediaModelInfo(id)) ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  /** A workspace's own WaveSpeed: any model its key can use, the client's fields sent through, $0 to Valefront. */
+  const ownImage = async (req: Request, res: Response, own: Provider, id: string) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const info = await ownModelInfo(req, id);
+    if (info?.kind === 'video') return fail(res, 400, 'wrong_endpoint', `"${id}" is a video model (${info.type}); use POST /v1/videos.`);
+    const n = body.n === undefined ? undefined : Number(body.n);
+    if (n !== undefined && (!Number.isInteger(n) || n < 1 || n > 10)) return fail(res, 400, 'invalid_n', 'n must be 1 to 10.');
+    const result = await own.generateImage!({
+      model: id, prompt: typeof body.prompt === 'string' ? body.prompt : '', input: wavespeedInput(body, info?.schema),
+      ...(body.response_format ? { response_format: String(body.response_format) } : {}),
+    });
+    servedBy(req)(own.name, id);
+    asRequested(req, id);
+    const catalog = mediaModel(id, 'image');
+    const size = typeof body.size === 'string' ? body.size : undefined;
+    opts.record(req, id, { prompt_tokens: 0, completion_tokens: 0 }, 0, catalog ? { kind: 'image', model: catalog, count: result.data.length, ...(size ? { size } : {}) } : undefined);
+    return res.json({
+      created: Math.floor(Date.now() / 1000), model: id, provider: own.name, data: result.data, cost: 0, usage: { images: result.data.length },
+      ...(result.outputs ? { outputs: result.outputs } : {}), ...(result.taskId ? { task_id: result.taskId } : {}),
+    });
+  };
+
   const generateImage: RequestHandler = async (req, res) => {
     try {
       const body = req.body ?? {};
-      if (typeof body.prompt !== 'string' || !body.prompt.trim()) return fail(res, 400, 'invalid_prompt', 'prompt is required.');
       if (body.response_format !== undefined && body.response_format !== 'url' && body.response_format !== 'b64_json') {
         return fail(res, 400, 'invalid_response_format', 'response_format must be url or b64_json.');
       }
+      // The workspace's own provider for this model (BYOK): the first one only (a submit is a billed task). Its
+      // models have their own fields (an upscaler or background remover takes no prompt), so none is required here.
+      const asked = askedModel(req);
+      const [own] = asked ? await byokMediaProviders(req, asked) : [];
+      if (own) return await ownImage(req, res, own, asked);
+      if (typeof body.prompt !== 'string' || !body.prompt.trim()) return fail(res, 400, 'invalid_prompt', 'prompt is required.');
       const m = mediaTarget(req, 'image');
       if (!m) return fail(res, 404, 'model_not_found', `"${body.model}" is not an image model offered here; see /v1/models.`);
       const n = body.n === undefined ? 1 : Number(body.n);
@@ -241,17 +286,7 @@ export function mountMediaRoutes(app: Express, router: Router, opts: MediaRouteO
       const calls = m.provider === 'BytePlus' ? n : 1;
       const data: ImageGenerationResult['data'] = [];
       let provider = '';
-      // The workspace's own provider for this model (BYOK): the first one only (a submit is a billed task).
-      const [own] = await byokMediaProviders(req, m.id);
-      for (let i = 0; i < calls && own; i++) {
-        const result = await own.generateImage!({
-          model: m.id, prompt: body.prompt, n: m.provider === 'BytePlus' ? 1 : n, ...(size ? { size } : {}), ...(body.response_format ? { response_format: body.response_format } : {}),
-        });
-        provider = own.name;
-        servedBy(req)(own.name, m.id);
-        data.push(...result.data);
-      }
-      for (let i = 0; i < calls && !own; i++) {
+      for (let i = 0; i < calls; i++) {
         const { result, provider: p } = await router.routeCapability<ImageGenerationResult>('image', m.id, (prov, selected) => prov.generateImage!({
           model: selected, prompt: body.prompt, n: m.provider === 'BytePlus' ? 1 : n, ...(size ? { size } : {}), ...(body.response_format ? { response_format: body.response_format } : {}),
         }), { forceProvider: m.provider, onServed: servedBy(req) });
@@ -259,7 +294,6 @@ export function mountMediaRoutes(app: Express, router: Router, opts: MediaRouteO
         data.push(...result.data);
       }
       if (data.length === 0) return fail(res, 502, 'no_image', 'The provider returned no image; nothing was charged.');
-      // Billed by the customer's own provider: nothing charged here (recordUsage counts it at $0 too).
       const cost = servedByByok(provider) ? 0 : imageCostUsd(m, data.length, size);
       asRequested(req, m.id);
       opts.record(req, m.id, { prompt_tokens: 0, completion_tokens: 0 }, cost, { kind: 'image', model: m, count: data.length, ...(size ? { size } : {}) });
@@ -290,23 +324,32 @@ export function mountMediaRoutes(app: Express, router: Router, opts: MediaRouteO
   const startVideo: RequestHandler = async (req, res) => {
     try {
       const body = req.body ?? {};
-      if (typeof body.prompt !== 'string' || !body.prompt.trim()) return fail(res, 400, 'invalid_prompt', 'prompt is required.');
-      const m = mediaTarget(req, 'video');
-      if (!m) return fail(res, 404, 'model_not_found', `"${body.model}" is not a video model offered here; see /v1/models.`);
-      const run = (prov: Provider, selected: string) => prov.generateVideo!({
-        model: selected, prompt: body.prompt,
-        ...(body.duration !== undefined ? { duration: Number(body.duration) } : {}),
-        ...(typeof body.resolution === 'string' ? { resolution: body.resolution } : {}),
-        ...(typeof body.ratio === 'string' ? { ratio: body.ratio } : {}),
-      });
-      const [own] = await byokMediaProviders(req, m.id);
+      const asked = askedModel(req);
+      const [own] = asked ? await byokMediaProviders(req, asked) : [];
+      if (!own && (typeof body.prompt !== 'string' || !body.prompt.trim())) return fail(res, 400, 'invalid_prompt', 'prompt is required.');
+      const m = own ? null : mediaTarget(req, 'video');
+      if (!own && !m) return fail(res, 404, 'model_not_found', `"${body.model}" is not a video model offered here; see /v1/models.`);
       if (own && !own.generateVideo) return fail(res, 400, 'unsupported_model', `Your provider "${own.label ?? own.name}" does not make videos.`);
-      const { result, provider } = own
-        ? { result: await run(own, m.id), provider: own.name }
-        : await router.routeCapability<VideoGenerationResult>('video', m.id, run, { forceProvider: m.provider, onServed: servedBy(req) });
-      if (own) servedBy(req)(own.name, m.id);
+      const id = own ? asked : m!.id;
+      let result: VideoGenerationResult;
+      let provider: string;
+      if (own) {
+        // The workspace's own WaveSpeed: the model's own fields as sent (input images as URLs or data: URIs).
+        const info = await ownModelInfo(req, id);
+        if (info?.kind === 'image') return fail(res, 400, 'wrong_endpoint', `"${id}" is an image model (${info.type}); use POST /v1/images/generations.`);
+        result = await own.generateVideo!({ model: id, prompt: typeof body.prompt === 'string' ? body.prompt : '', input: wavespeedInput(body as Record<string, unknown>, info?.schema) });
+        provider = own.name;
+        servedBy(req)(own.name, id);
+      } else {
+        ({ result, provider } = await router.routeCapability<VideoGenerationResult>('video', id, (prov: Provider, selected: string) => prov.generateVideo!({
+          model: selected, prompt: body.prompt,
+          ...(body.duration !== undefined ? { duration: Number(body.duration) } : {}),
+          ...(typeof body.resolution === 'string' ? { resolution: body.resolution } : {}),
+          ...(typeof body.ratio === 'string' ? { ratio: body.ratio } : {}),
+        }), { forceProvider: m!.provider, onServed: servedBy(req) }));
+      }
       const job: VideoJob = {
-        id: `video_${randomBytes(12).toString('hex')}`, provider, task: result.id, model: m.id, keyId: keyIdOf(req), createdAt: Date.now(),
+        id: `video_${randomBytes(12).toString('hex')}`, provider, task: result.id, model: id, keyId: keyIdOf(req), createdAt: Date.now(),
         ...(result.duration ? { duration: result.duration } : {}), ...(result.resolution ? { resolution: result.resolution } : {}),
       };
       await jobs.put(`media-jobs/${job.id}`, job, '0');
@@ -323,16 +366,34 @@ export function mountMediaRoutes(app: Express, router: Router, opts: MediaRouteO
       // Only the key that started it may read it (the owner's dashboard session, without a key, reads its own; the dash
       // Playground, as the customer's chosen key, only that key's).
       if (!job || job.keyId !== keyIdOf(req)) return fail(res, 404, 'video_not_found', 'Video not found.');
+      // Admitted without credit for the workspace's own provider's jobs only (hosted.ts admitKey): a pool job needs it.
+      const refusal = poolRefusal(req);
+      if (refusal && !servedByByok(job.provider)) return fail(res, refusal.status, refusal.code, refusal.message);
       const prov = (await byokMediaProviderNamed(req, job.provider, job.model)) ?? router.getProviders().find((p: Provider) => p.name === job.provider);
       if (!prov?.getVideo) return fail(res, 503, 'provider_unavailable', `${job.provider} is not available to read this video right now.`);
       const v = await prov.getVideo(job.task);
       if (v.status !== 'succeeded') return res.json(videoView(job, v));
+      if (servedByByok(job.provider)) {
+        // The customer's own WaveSpeed bills it: counted once on its $0 spend line, never charged.
+        let first = true;
+        try {
+          await jobs.put(`media-charges/${job.id}`, { cost: 0, at: Date.now() }, '0');
+        } catch {
+          first = false;
+        }
+        if (first) {
+          servedBy(req)(job.provider, job.model);
+          asRequested(req, job.model);
+          opts.record(req, job.model, { prompt_tokens: 0, completion_tokens: v.tokens ?? 0 }, 0);
+        }
+        return res.json({ ...videoView(job, v, 0), ...(v.outputs ? { outputs: v.outputs } : {}) });
+      }
       const m = mediaModel(job.model, 'video');
       if (!m || !v.tokens) {
         console.error(JSON.stringify({ event: 'video_unpriced', id: job.id, model: job.model, tokens: v.tokens ?? null }));
         return res.json(videoView(job, v));
       }
-      const cost = servedByByok(job.provider) ? 0 : videoCostUsd(m, v.tokens, v.resolution ?? job.resolution);
+      const cost = videoCostUsd(m, v.tokens, v.resolution ?? job.resolution);
       let first = true;
       try {
         await jobs.put(`media-charges/${job.id}`, { cost, tokens: v.tokens, at: Date.now() }, '0');

@@ -2,7 +2,8 @@ import { AzureOpenAIProvider } from '../providers/azure-openai';
 import { OpenAIProvider } from '../providers/openai';
 import { AnthropicProvider } from '../providers/anthropic';
 import { WaveSpeedProvider } from '../providers/wavespeed';
-import { mediaModel, mediaModelsOf } from './media-catalog';
+import { mediaModelsOf } from './media-catalog';
+import { fetchWaveSpeedModels, isWaveSpeedModelId, wavespeedModelCache, type WaveSpeedModelCache, type WaveSpeedModelInfo, type WaveSpeedModelList } from './wavespeed-models';
 import type { D1Database } from './d1-stores';
 import type { CompletionRequest, CompletionResponse, Provider, RouteOptions, StreamChunk } from './types';
 
@@ -17,9 +18,11 @@ import type { CompletionRequest, CompletionResponse, Provider, RouteOptions, Str
  * workspace id and provider id as additional data, so a value can't be moved to another workspace or provider. It is
  * write-only: no view or API returns it, and a provider is built from it per request.
  *
- * WaveSpeed (images and video) is a media kind: its models are WaveSpeed's ids in the media catalog
- * (src/core/media-catalog.ts), served on /v1/images/generations and /v1/videos only, never on chat. The shared pool
- * has no WaveSpeed key: a WaveSpeed model works for a workspace only through its own WaveSpeed provider.
+ * WaveSpeed (images, video, audio) is a media kind, served on /v1/images/generations and /v1/videos only, never on
+ * chat. By default it serves every model the customer's WaveSpeed account can use (WaveSpeed's own list, read with
+ * their key: src/core/wavespeed-models.ts), not only what Valefront sells: it is their key and costs Valefront
+ * nothing. Stored as models ["*"] ("all"); a list restricts it. "All" means WaveSpeed ids only (owner/name), never an
+ * id Valefront sells from the pool (BytePlus Seedream/Seedance). The shared pool has no WaveSpeed key.
  */
 
 export const BYOK_KINDS = ['azure-openai', 'openai-compatible', 'anthropic', 'wavespeed'] as const;
@@ -28,8 +31,12 @@ export type ByokKind = (typeof BYOK_KINDS)[number];
 export const MEDIA_BYOK_KINDS: readonly ByokKind[] = ['wavespeed'];
 export const isMediaKind = (kind: ByokKind) => MEDIA_BYOK_KINDS.includes(kind);
 const WAVESPEED_API = 'https://api.wavespeed.ai/api/v3';
-/** The WaveSpeed models a workspace's WaveSpeed provider can serve: WaveSpeed's ids in the media catalog. */
+/** WaveSpeed models in Valefront's media catalog (examples on dash; a WaveSpeed provider is not limited to them). */
 export const wavespeedModelIds = () => mediaModelsOf('WaveSpeed').map((m) => m.id);
+/** Stored models of a WaveSpeed provider that serves every model its key can use. */
+export const ALL_MODELS = '*';
+/** What PR #128 stored as a WaveSpeed provider's default ("all the WaveSpeed models Valefront supports"): read as all. */
+const LEGACY_WAVESPEED_DEFAULT = JSON.stringify(['wavespeed-ai/flux-dev']);
 /** Spend lines and the request log name a workspace's own provider `BYOK:<label>`. */
 export const BYOK_PREFIX = 'BYOK:';
 export const MAX_PROVIDERS_PER_WORKSPACE = 20;
@@ -46,7 +53,10 @@ export type WorkspaceProvider = {
   baseUrl: string;
   deployment: string | null;
   apiVersion: string | null;
+  /** The models it serves; empty when allModels. */
   models: string[];
+  /** WaveSpeed: every model the key can use (WaveSpeed's own list), not a fixed list. */
+  allModels: boolean;
   enabled: boolean;
   createdAt: number;
   createdBy: string;
@@ -115,9 +125,11 @@ function rowToProvider(r: Row): SealedProvider {
   } catch {
     // a bad row lists nothing
   }
+  const kind = String(r.kind) as ByokKind;
+  const allModels = kind === 'wavespeed' && (models.includes(ALL_MODELS) || JSON.stringify(models) === LEGACY_WAVESPEED_DEFAULT);
   return {
-    id: String(r.id), workspaceId: String(r.workspace_id), kind: String(r.kind) as ByokKind, label: String(r.label), baseUrl: String(r.base_url),
-    deployment: strOrNull(r.deployment), apiVersion: strOrNull(r.api_version), models, enabled: Number(r.enabled) === 1,
+    id: String(r.id), workspaceId: String(r.workspace_id), kind, label: String(r.label), baseUrl: String(r.base_url),
+    deployment: strOrNull(r.deployment), apiVersion: strOrNull(r.api_version), models: allModels ? [] : models, allModels, enabled: Number(r.enabled) === 1,
     createdAt: Number(r.created_at), createdBy: String(r.created_by), updatedAt: Number(r.updated_at),
     keyIv: String(r.key_iv), keyData: String(r.key_data),
   };
@@ -127,7 +139,7 @@ function rowToProvider(r: Row): SealedProvider {
 export function publicView(p: WorkspaceProvider | SealedProvider): WorkspaceProvider {
   return {
     id: p.id, workspaceId: p.workspaceId, kind: p.kind, label: p.label, baseUrl: p.baseUrl, deployment: p.deployment, apiVersion: p.apiVersion,
-    models: [...p.models], enabled: p.enabled, createdAt: p.createdAt, createdBy: p.createdBy, updatedAt: p.updatedAt,
+    models: [...p.models], allModels: p.allModels, enabled: p.enabled, createdAt: p.createdAt, createdBy: p.createdBy, updatedAt: p.updatedAt,
   };
 }
 
@@ -209,17 +221,31 @@ function cleanInput(input: WorkspaceProviderInput, current?: WorkspaceProvider):
   const deployment = kind === 'azure-openai' ? (input.deployment !== undefined ? cleanOptional(input.deployment) : current?.deployment ?? null) : null;
   const apiVersion = kind === 'azure-openai' ? (input.apiVersion !== undefined ? cleanOptional(input.apiVersion, 40) : current?.apiVersion ?? null) : null;
   // Azure: each model is a deployment name; without a list, the deployment is the one model.
-  // WaveSpeed: only its catalog models (each one is priced and has a known request shape); without a list, all of them.
-  const models = input.models !== undefined ? cleanModels(input.models)
-    : current ? current.models
-      : kind === 'azure-openai' && deployment ? [deployment] : kind === 'wavespeed' ? wavespeedModelIds() : cleanModels(undefined);
+  // WaveSpeed: every model the customer's WaveSpeed key can use, unless they list some (then only those). Any
+  // WaveSpeed id (owner/name): its price list is the customer's WaveSpeed account, not Valefront's.
+  let allModels = false;
+  let models: string[];
   if (kind === 'wavespeed') {
-    const other = models.find((m) => mediaModel(m)?.provider !== 'WaveSpeed');
-    if (other) throw new WorkspaceProviderError('invalid_model', `"${other.slice(0, 60)}" is not a WaveSpeed model Valefront supports (${wavespeedModelIds().join(', ')}).`);
+    const all = (v: unknown) => v === undefined || v === null || v === '' || v === ALL_MODELS || v === 'all' || (Array.isArray(v) && (v.length === 0 || (v.length === 1 && (v[0] === ALL_MODELS || v[0] === 'all'))));
+    if (input.models === undefined && current) {
+      allModels = current.allModels;
+      models = current.models;
+    } else if (all(input.models)) {
+      allModels = true;
+      models = [];
+    } else {
+      models = cleanModels(input.models);
+      const other = models.find((m): boolean => !isWaveSpeedModelId(m));
+      if (other) throw new WorkspaceProviderError('invalid_model', `"${other.slice(0, 60)}" is not a WaveSpeed model id (owner/name, e.g. wavespeed-ai/flux-dev).`);
+    }
+  } else {
+    models = input.models !== undefined ? cleanModels(input.models)
+      : current ? current.models
+        : kind === 'azure-openai' && deployment ? [deployment] : cleanModels(undefined);
   }
   const enabled = input.enabled === undefined ? (current?.enabled ?? true) : input.enabled === true;
   const apiKey = input.apiKey !== undefined || !current ? cleanApiKey(input.apiKey) : undefined;
-  return { kind, label, baseUrl, deployment, apiVersion, models, enabled, ...(apiKey !== undefined ? { apiKey } : {}) };
+  return { kind, label, baseUrl, deployment, apiVersion, models, allModels, enabled, ...(apiKey !== undefined ? { apiKey } : {}) };
 }
 
 // ── the store ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -258,7 +284,7 @@ export class D1WorkspaceProviderStore {
     const now = this.now();
     const sealed = await this.box.seal(workspaceId, id, clean.apiKey!);
     await this.db.prepare('INSERT INTO workspace_providers (id, workspace_id, kind, label, base_url, deployment, api_version, models, key_iv, key_data, enabled, created_at, created_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .bind(id, workspaceId, clean.kind, clean.label, clean.baseUrl, clean.deployment, clean.apiVersion, JSON.stringify(clean.models), sealed.keyIv, sealed.keyData, clean.enabled ? 1 : 0, now, by, now).run();
+      .bind(id, workspaceId, clean.kind, clean.label, clean.baseUrl, clean.deployment, clean.apiVersion, (clean.allModels ? JSON.stringify([ALL_MODELS]) : JSON.stringify(clean.models)), sealed.keyIv, sealed.keyData, clean.enabled ? 1 : 0, now, by, now).run();
     return (await this.get(workspaceId, id))!;
   }
 
@@ -272,7 +298,7 @@ export class D1WorkspaceProviderStore {
     }
     const sealed = clean.apiKey !== undefined ? await this.box.seal(workspaceId, id, clean.apiKey) : { keyIv: current.keyIv, keyData: current.keyData };
     await this.db.prepare('UPDATE workspace_providers SET label = ?, base_url = ?, deployment = ?, api_version = ?, models = ?, key_iv = ?, key_data = ?, enabled = ?, updated_at = ? WHERE id = ? AND workspace_id = ?')
-      .bind(clean.label, clean.baseUrl, clean.deployment, clean.apiVersion, JSON.stringify(clean.models), sealed.keyIv, sealed.keyData, clean.enabled ? 1 : 0, this.now(), id, workspaceId).run();
+      .bind(clean.label, clean.baseUrl, clean.deployment, clean.apiVersion, (clean.allModels ? JSON.stringify([ALL_MODELS]) : JSON.stringify(clean.models)), sealed.keyIv, sealed.keyData, clean.enabled ? 1 : 0, this.now(), id, workspaceId).run();
     return (await this.get(workspaceId, id))!;
   }
 
@@ -296,7 +322,7 @@ export class D1WorkspaceProviderStore {
 // ── building a provider for a request ──────────────────────────────────────────────────────────────────────
 
 /** The provider for one request to `model` (for Azure, the model is the deployment name; for WaveSpeed, its media model). */
-export function buildByokProvider(p: WorkspaceProvider, apiKey: string, model: string): Provider {
+export function buildByokProvider(p: Omit<WorkspaceProvider, 'allModels'> & { allModels?: boolean }, apiKey: string, model: string): Provider {
   const name = `${BYOK_PREFIX}${p.label}`;
   let provider: Provider;
   if (p.kind === 'azure-openai') {
@@ -334,19 +360,39 @@ type RouterLike = {
 export class WorkspaceByok {
   /** Chat models (Azure OpenAI, OpenAI-compatible, Anthropic). */
   private readonly byModel = new Map<string, SealedProvider[]>();
-  /** Image and video models (WaveSpeed). */
+  /** Image and video models a media provider (WaveSpeed) lists explicitly. */
   private readonly byMediaModel = new Map<string, SealedProvider[]>();
+  /** Media providers serving every model their key can use (WaveSpeed "all"), oldest first. */
+  private readonly allMedia: SealedProvider[] = [];
+  /** Every enabled media provider, oldest first. */
+  private readonly media: SealedProvider[] = [];
 
-  constructor(readonly workspaceId: string, providers: SealedProvider[], private readonly keyOf: (p: SealedProvider) => Promise<string>) {
+  constructor(
+    readonly workspaceId: string,
+    providers: SealedProvider[],
+    private readonly keyOf: (p: SealedProvider) => Promise<string>,
+    private readonly modelCache: WaveSpeedModelCache = wavespeedModelCache,
+  ) {
     for (const p of providers) {
       if (!p.enabled) continue;
+      if (isMediaKind(p.kind)) this.media.push(p);
+      if (p.allModels) {
+        this.allMedia.push(p);
+        continue;
+      }
       const map = isMediaKind(p.kind) ? this.byMediaModel : this.byModel;
       for (const m of p.models) (map.get(m) ?? map.set(m, []).get(m)!).push(p);
     }
   }
 
+  /** Models listed by its providers, plus one for each "all models" provider (0: no own provider in use). */
   get size(): number {
-    return new Set([...this.byModel.keys(), ...this.byMediaModel.keys()]).size;
+    return new Set([...this.byModel.keys(), ...this.byMediaModel.keys()]).size + this.allMedia.length;
+  }
+
+  /** It has an enabled media provider (WaveSpeed). */
+  hasMedia(): boolean {
+    return this.media.length > 0;
   }
 
   /** Every model this workspace's own providers serve (chat and media). */
@@ -361,7 +407,7 @@ export class WorkspaceByok {
 
   /** Served by one of the workspace's own providers (chat or media). */
   has(model: string | undefined | null): boolean {
-    return !!model && (this.byModel.has(model) || this.byMediaModel.has(model));
+    return !!model && (this.byModel.has(model) || this.mediaMatch(model) !== null);
   }
 
   /** Served by one of the workspace's own chat providers. */
@@ -369,14 +415,26 @@ export class WorkspaceByok {
     return !!model && this.byModel.has(model);
   }
 
-  /** The image or video model, if one of the workspace's own media providers (WaveSpeed) serves it; else null. */
+  /**
+   * The image or video model, if one of the workspace's own media providers (WaveSpeed) serves it; else null. Listed
+   * explicitly, or any WaveSpeed id (owner/name) when a provider serves all its key's models; a model Valefront sells
+   * from the pool (BytePlus) is never taken by "all" (isWaveSpeedModelId), so it keeps pool routing.
+   */
   mediaMatch(model: string | undefined | null): string | null {
-    return model && this.byMediaModel.has(model) ? model : null;
+    if (!model) return null;
+    if (this.byMediaModel.has(model)) return model;
+    return this.allMedia.length && isWaveSpeedModelId(model) ? model : null;
+  }
+
+  private mediaFor(model: string): SealedProvider[] {
+    const listed = this.byMediaModel.get(model) ?? [];
+    const all = isWaveSpeedModelId(model) ? this.allMedia : [];
+    return this.media.filter((p) => listed.includes(p) || all.includes(p));
   }
 
   /** The label of the first provider serving the model. */
   labelFor(model: string): string | undefined {
-    return (this.byModel.get(model) ?? this.byMediaModel.get(model))?.[0]?.label;
+    return (this.byModel.get(model) ?? this.mediaFor(model))?.[0]?.label;
   }
 
   /**
@@ -395,13 +453,34 @@ export class WorkspaceByok {
 
   /** The workspace's own media providers for an image or video model, in order (built from their keys, per request). */
   async mediaProvidersFor(model: string): Promise<Provider[]> {
-    return Promise.all((this.byMediaModel.get(model) ?? []).map(async (p) => buildByokProvider(p, await this.keyOf(p), model)));
+    return Promise.all(this.mediaFor(model).map(async (p) => buildByokProvider(p, await this.keyOf(p), model)));
   }
 
   /** The media provider named `BYOK:<label>` (reading a video job it started), or null when it's gone or off. */
   async mediaProviderNamed(name: string, model: string): Promise<Provider | null> {
-    const p = (this.byMediaModel.get(model) ?? []).find((x) => `${BYOK_PREFIX}${x.label}` === name);
+    const p = this.mediaFor(model).find((x) => `${BYOK_PREFIX}${x.label}` === name);
     return p ? buildByokProvider(p, await this.keyOf(p), model) : null;
+  }
+
+  /** WaveSpeed's model list as one media provider's key sees it (cached a few minutes), cut to its list if it has one. */
+  async wavespeedModelsOf(p: SealedProvider): Promise<WaveSpeedModelList> {
+    const list = await this.modelCache.get(`${p.id}:${p.updatedAt}`, async () => fetchWaveSpeedModels(p.baseUrl, await this.keyOf(p)));
+    if (p.allModels || !list.models) return list;
+    const allowed = new Set(p.models);
+    return { ...list, models: list.models.filter((m) => allowed.has(m.id)) };
+  }
+
+  /** What WaveSpeed says about a model (its kind and fields), from the first provider serving it; null: not known. */
+  async mediaModelInfo(model: string): Promise<WaveSpeedModelInfo | null> {
+    const p = this.mediaFor(model)[0];
+    if (!p) return null;
+    const list = await this.wavespeedModelsOf(p);
+    return list.models?.find((m) => m.id === model) ?? null;
+  }
+
+  /** Every enabled media provider with its live model list (dash: Your providers, the Playground). */
+  async mediaCatalog(): Promise<Array<{ provider: WorkspaceProvider; list: WaveSpeedModelList }>> {
+    return Promise.all(this.media.map(async (p) => ({ provider: publicView(p), list: await this.wavespeedModelsOf(p) })));
   }
 
   /** The router for this request: a BYOK model goes to the workspace's provider, never to the pool; the rest as usual. */
@@ -455,13 +534,18 @@ export class WorkspaceByok {
 export class WorkspaceProviders {
   private readonly cache = new Map<string, { at: number; byok: WorkspaceByok }>();
 
-  constructor(readonly store: D1WorkspaceProviderStore, private readonly ttlMs = 30_000, private readonly now: () => number = Date.now) {}
+  constructor(
+    readonly store: D1WorkspaceProviderStore,
+    private readonly ttlMs = 30_000,
+    private readonly now: () => number = Date.now,
+    readonly modelCache: WaveSpeedModelCache = wavespeedModelCache,
+  ) {}
 
   async forWorkspace(workspaceId: string): Promise<WorkspaceByok> {
     const cached = this.cache.get(workspaceId);
     if (cached && this.now() - cached.at < this.ttlMs) return cached.byok;
     try {
-      const byok = new WorkspaceByok(workspaceId, await this.store.listSealed(workspaceId), (p) => this.store.apiKey(p));
+      const byok = new WorkspaceByok(workspaceId, await this.store.listSealed(workspaceId), (p) => this.store.apiKey(p), this.modelCache);
       this.cache.set(workspaceId, { at: this.now(), byok });
       return byok;
     } catch (err) {
@@ -518,7 +602,8 @@ export class WorkspaceProviders {
   async test(workspaceId: string, id: string, model?: string): Promise<{ ok: boolean; model: string; status: number | null; ms: number }> {
     const sealed = (await this.store.listSealed(workspaceId)).find((p) => p.id === id);
     if (!sealed) throw new WorkspaceProviderError('not_found', 'Provider not found.', 404);
-    const target = model && sealed.models.includes(model) ? model : sealed.models[0] ?? sealed.deployment ?? '';
+    const target = model && (sealed.models.includes(model) || (sealed.allModels && isWaveSpeedModelId(model))) ? model
+      : sealed.models[0] ?? sealed.deployment ?? (sealed.kind === 'wavespeed' ? wavespeedModelIds()[0] ?? '' : '');
     const provider = buildByokProvider(sealed, await this.store.apiKey(sealed), target);
     const started = Date.now();
     try {

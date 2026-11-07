@@ -6,14 +6,18 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import { apiUrl } from '@/api';
+import { api, apiUrl } from '@/api';
 import { cn } from '@/lib/utils';
+import { ModelPicker, WaveSpeedFields, outputKind, wavespeedBody, type WsSchema } from './wavespeed-form';
 
 /**
  * Image and video playground, laid out like a model page on WaveSpeed (Steve, 2026-11-06): the model with its price
  * and task, Input on the left (prompt + the model's parameters, Clear / Generate $price), Output on the right
  * (status, Preview / JSON), and this session's runs below. Models and prices come from /v1/pricing `media` (the
  * models Valefront sells, at the provider's official price).
+ *
+ * A workspace's own WaveSpeed (Your providers) adds every model its key can use (`wavespeed`): a searchable picker
+ * grouped by task, and the model's own fields (its WaveSpeed schema; else Advanced JSON) instead of size/duration.
  *
  * `keyId` (the customer dash): requests go to the session-authenticated /dashboard/me/playground/… routes as that key
  * of the signed-in workspace; the key's secret never reaches the browser. Otherwise /v1 with `authHeaders`.
@@ -23,6 +27,12 @@ export type MediaModel = {
   id: string; name: string; provider: string; kind: MediaKind; source?: string;
   /** Served by one of the workspace's own providers (Your providers): billed by that provider, not by Valefront. */
   byok?: boolean;
+  /** A model of the workspace's own WaveSpeed (any model its key can use): its own fields, from its schema. */
+  wavespeed?: boolean;
+  /** WaveSpeed's task type (text-to-image, image-to-video, …). */
+  type?: string;
+  /** Offered on both the Image and Video tabs (a WaveSpeed model of another or unknown kind). */
+  anyKind?: boolean;
   per_image?: number; per_image_above_pixels?: { pixels: number; per_image: number };
   per_1m_video_tokens?: number; per_1m_video_tokens_1080p?: number; max_resolution?: '720p' | '1080p';
   durations?: { min: number; max: number; default: number };
@@ -78,10 +88,29 @@ export function MediaPlayground({ kind, authHeaders = {}, keyId, extraModels = [
   useEffect(() => {
     fetch(apiUrl('/v1/pricing'), { credentials: 'same-origin' }).then((r) => r.json()).then((d: { media?: MediaModel[] }) => setModels(d.media ?? [])).catch(() => undefined);
   }, []);
-  const list = [...models, ...extraModels.filter((x) => !models.some((m) => m.id === x.id))].filter((m) => m.kind === kind);
+  const list = [...models, ...extraModels.filter((x) => !models.some((m) => m.id === x.id))].filter((m) => m.kind === kind || m.anyKind);
+  const ownWaveSpeed = list.find((m) => m.wavespeed);
   // Start on the cheapest everyday model, not the priciest (a playground run is a real, charged request).
   const DEFAULT: Record<MediaKind, string> = { image: 'seedream-4-0-250828', video: 'seedance-1-0-pro-fast-251015' };
-  const model = list.find((m) => m.id === modelId) ?? list.find((m) => m.id === DEFAULT[kind]) ?? list[0];
+  // A WaveSpeed id typed in the picker that WaveSpeed's list doesn't have (or couldn't be read): still sent.
+  const typed: MediaModel | undefined = ownWaveSpeed && modelId && !list.some((m) => m.id === modelId) && modelId.includes('/')
+    ? { id: modelId, name: modelId, provider: ownWaveSpeed.provider, kind, byok: true, wavespeed: true } : undefined;
+  const model = typed ?? list.find((m) => m.id === modelId) ?? list.find((m) => m.id === DEFAULT[kind]) ?? list[0];
+  const ws = !!model?.wavespeed;
+  const [schema, setSchema] = useState<WsSchema | null>(null);
+  const [wsType, setWsType] = useState<string | undefined>(undefined);
+  const [values, setValues] = useState<Record<string, unknown>>({});
+  const [advanced, setAdvanced] = useState('');
+  useEffect(() => {
+    setSchema(null); setValues({}); setAdvanced(''); setWsType(model?.type);
+    if (!model?.wavespeed || !keyId) return;
+    let live = true;
+    api<{ model: { schema?: WsSchema; type?: string } }>(`/dashboard/me/providers/wavespeed-models?model=${encodeURIComponent(model.id)}`)
+      .then((out) => { if (live) { setSchema(out.model.schema ?? null); setWsType(out.model.type ?? model.type); } })
+      .catch(() => undefined);
+    return () => { live = false; };
+  }, [model?.id, keyId]);
+  const promptRequired = ws ? !!schema?.required.includes('prompt') : true;
   useEffect(() => {
     if (!model) return;
     if (model.id !== modelId) setModelId(model.id);
@@ -111,9 +140,10 @@ export function MediaPlayground({ kind, authHeaders = {}, keyId, extraModels = [
     return null;
   }, [model, kind, size, n, resolution, duration]);
 
-  const body = kind === 'image'
-    ? { model: model?.id, prompt, size, n }
-    : { model: model?.id, prompt, duration, resolution, ratio };
+  const body = ws && model ? wavespeedBody(model.id, prompt, values, advanced)
+    : kind === 'image'
+      ? { model: model?.id, prompt, size, n }
+      : { model: model?.id, prompt, duration, resolution, ratio };
   const endpoint = kind === 'image' ? '/v1/images/generations' : '/v1/videos';
   const target = keyId
     ? { create: `/dashboard/me/playground/${kind === 'image' ? 'images' : 'videos'}`, poll: (id: string) => `/dashboard/me/playground/videos/${encodeURIComponent(id)}?keyId=${encodeURIComponent(keyId)}`, body: { ...body, keyId } }
@@ -121,7 +151,7 @@ export function MediaPlayground({ kind, authHeaders = {}, keyId, extraModels = [
   const curl = `curl ${apiUrl(endpoint)} \\\n  -H "Authorization: Bearer $VALEFRONT_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(body)}'${kind === 'video' ? `\n\n# then poll until "status" is "succeeded":\ncurl ${apiUrl('/v1/videos/<id>')} -H "Authorization: Bearer $VALEFRONT_API_KEY"` : ''}`;
 
   async function generate() {
-    if (!model || !prompt.trim()) return;
+    if (!model || (promptRequired && !prompt.trim())) return;
     setError(''); setErrorCode(''); setView('preview'); setStatus('queued'); started.current = Date.now(); setElapsed(0);
     const headers = { 'Content-Type': 'application/json', ...authHeaders };
     try {
@@ -159,13 +189,15 @@ export function MediaPlayground({ kind, authHeaders = {}, keyId, extraModels = [
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground"><span>{model?.provider ?? '…'}</span><span>/</span>
-            <Select value={model?.id ?? ''} onValueChange={setModelId}>
-              <SelectTrigger className="h-8 w-auto min-w-56 font-semibold text-foreground" aria-label="Model"><SelectValue placeholder="Model" /></SelectTrigger>
-              <SelectContent>{list.map((m) => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}</SelectContent>
-            </Select>
+            {ownWaveSpeed ? <ModelPicker models={list} value={model?.id} onChange={setModelId} allowCustom /> : (
+              <Select value={model?.id ?? ''} onValueChange={setModelId}>
+                <SelectTrigger className="h-8 w-auto min-w-56 font-semibold text-foreground" aria-label="Model"><SelectValue placeholder="Model" /></SelectTrigger>
+                <SelectContent>{list.map((m) => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}</SelectContent>
+              </Select>
+            )}
           </div>
           <div className="mt-2 flex flex-wrap gap-1.5">
-            <Badge variant="secondary"><Icon className="size-3" />{kind === 'image' ? 'Text to image' : 'Text to video'}</Badge>
+            <Badge variant="secondary"><Icon className="size-3" />{ws ? (wsType ? wsType.replace(/-/g, ' ').replace(/^\w/, (c) => c.toUpperCase()) : 'WaveSpeed model') : kind === 'image' ? 'Text to image' : 'Text to video'}</Badge>
             {price ? <Badge variant="outline">{price.note}</Badge> : null}
             {model?.source ? <a className="text-xs text-muted-foreground underline" href={model.source} target="_blank" rel="noreferrer">Official price</a> : null}
           </div>
@@ -189,7 +221,9 @@ export function MediaPlayground({ kind, authHeaders = {}, keyId, extraModels = [
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
               {runs.map((r) => (
                 <button key={r.id} onClick={() => { setCurrent(r); setTab('playground'); setStatus('succeeded'); }} className="overflow-hidden rounded-lg border text-left">
-                  {r.kind === 'image' ? <img src={r.urls[0]} alt="" className="aspect-square w-full object-cover" /> : <video src={r.urls[0]} className="aspect-video w-full object-cover" muted />}
+                  {outputKind(r.urls[0] ?? '') === 'image' ? <img src={r.urls[0]} alt="" className="aspect-square w-full object-cover" />
+                    : outputKind(r.urls[0] ?? '') === 'audio' ? <div className="flex aspect-square w-full items-center justify-center bg-muted text-xs">Audio</div>
+                      : <video src={r.urls[0]} className="aspect-video w-full object-cover" muted />}
                   <div className="p-2 text-xs"><div className="truncate font-medium">{r.model}</div><div className="text-muted-foreground">{r.cost !== undefined ? usd(r.cost) : '—'} · {(r.ms / 1000).toFixed(1)}s</div></div>
                 </button>
               ))}
@@ -202,9 +236,13 @@ export function MediaPlayground({ kind, authHeaders = {}, keyId, extraModels = [
           <Card className="gap-4">
             <CardHeader><CardTitle>Input</CardTitle></CardHeader>
             <CardContent className="grid gap-4">
-              <div className="grid gap-1.5"><Label htmlFor="mp-prompt">Prompt *</Label>
-                <Textarea id="mp-prompt" rows={5} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Describe what you want" /></div>
-              {kind === 'image' ? (
+              {!ws || !schema || 'prompt' in schema.properties ? (
+                <div className="grid gap-1.5"><Label htmlFor="mp-prompt">Prompt{promptRequired ? ' *' : ''}</Label>
+                  <Textarea id="mp-prompt" rows={5} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Describe what you want" /></div>
+              ) : null}
+              {ws ? (
+                <WaveSpeedFields schema={schema} type={wsType} values={values} setValues={setValues} advanced={advanced} setAdvanced={setAdvanced} onError={setError} />
+              ) : kind === 'image' ? (
                 <>
                   <div className="grid gap-1.5"><Label>Size</Label>
                     <Select value={size} onValueChange={setSize}><SelectTrigger><SelectValue /></SelectTrigger>
@@ -228,11 +266,12 @@ export function MediaPlayground({ kind, authHeaders = {}, keyId, extraModels = [
               )}
               <div className="flex gap-2 pt-1">
                 <Button variant="outline" onClick={() => { setPrompt(''); setCurrent(null); setStatus('idle'); setError(''); setErrorCode(''); }}><Eraser />Clear</Button>
-                <Button className="flex-1" disabled={busy || !model || !prompt.trim()} onClick={() => void generate()}>
+                <Button className="flex-1" disabled={busy || !model || (promptRequired && !prompt.trim())} onClick={() => void generate()}>
                   {busy ? <Loader2 className="animate-spin" /> : <Sparkles />}{busy ? 'Generating…' : `Generate${price && !price.own ? ` ${price.estimate ? '≈ ' : ''}${usd(price.total)}` : ''}`}
                 </Button>
               </div>
-              {kind === 'video' ? <p className="text-xs text-muted-foreground">Videos usually take 30 seconds to a few minutes. You're charged only when one is finished, by its actual tokens.</p> : null}
+              {kind === 'video' && !ws ? <p className="text-xs text-muted-foreground">Videos usually take 30 seconds to a few minutes. You're charged only when one is finished, by its actual tokens.</p> : null}
+              {ws ? <p className="text-xs text-muted-foreground">Runs on your WaveSpeed account, billed by WaveSpeed; Valefront charges nothing. {kind === 'video' ? 'Runs as a job: usually 30 seconds to a few minutes.' : ''}</p> : null}
             </CardContent>
           </Card>
 
@@ -261,7 +300,9 @@ export function MediaPlayground({ kind, authHeaders = {}, keyId, extraModels = [
                   <div className={cn('grid gap-3', current.urls.length > 1 && 'sm:grid-cols-2')}>
                     {current.urls.map((u) => (
                       <div key={u} className="group relative overflow-hidden rounded-lg border bg-muted/30">
-                        {current.kind === 'image' ? <img src={u} alt="Generated" className="w-full object-contain" /> : <video src={u} controls autoPlay loop className="w-full" />}
+                        {outputKind(u) === 'image' ? <img src={u} alt="Generated" className="w-full object-contain" />
+                          : outputKind(u) === 'audio' ? <audio src={u} controls className="w-full p-3" />
+                            : <video src={u} controls autoPlay loop className="w-full" />}
                         <a href={u} target="_blank" rel="noreferrer" download className="absolute top-2 right-2 rounded-md bg-background/80 p-1.5 opacity-0 transition group-hover:opacity-100" aria-label="Open or download"><Download className="size-4" /></a>
                       </div>
                     ))}
