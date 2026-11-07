@@ -186,12 +186,12 @@ describe('partner inquiries: admin on adm.valefront.com', () => {
     expect(page.status).toBe(200);
     expect(page.text).toContain('Partner inquiries');
     expect(page.text.indexOf('Second Co')).toBeLessThan(page.text.indexOf('First Co'));
-    expect(page.text).toContain('<a href="/billing/">Billing</a>');
+    expect(page.text).toMatch(/<a href="\/billing\/">(<svg[^]*?<\/svg>)?Customer billing<\/a>/);
     expect((await request(h.app).get('/partners/?status=contacted').set('Host', ADM).set('Cf-Access-Jwt-Assertion', jwt)).text).toContain('No inquiries.');
     // Not on other hosts.
     expect((await request(h.app).get('/partners/').set('Host', API).set('Cf-Access-Jwt-Assertion', jwt)).status).toBe(404);
     // The billing page links here.
-    expect((await request(h.app).get('/billing/').set('Host', ADM).set('Cf-Access-Jwt-Assertion', jwt)).text).toContain('<a href="/partners/">Partners</a>');
+    expect((await request(h.app).get('/billing/').set('Host', ADM).set('Cf-Access-Jwt-Assertion', jwt)).text).toMatch(/<a href="\/partners\/">(<svg[^]*?<\/svg>)?Partner inquiries<\/a>/);
   });
 
   it('changes status and note (same-origin form posts only)', async () => {

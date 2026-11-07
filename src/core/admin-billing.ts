@@ -1,4 +1,4 @@
-import { ADMIN_PAGE_CSS, adminHeader } from './admin-page-style';
+import { adminDocument, filterTabs, modeBadge, yesNo } from './admin-page-style';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import { randomUUID } from 'crypto';
 import { BillingError, METHOD_LABELS, cleanAccount, cleanLegal, cleanVat, cleanVatInvoiceDetails, decimalToCents, formatUsd, vatLabel, type BillingOrder, type EInvoice } from './billing';
@@ -340,7 +340,7 @@ export function mountAdminBilling(app: Express, opts: HostedOptions): void {
 }
 
 function sepaySection(s: Parameters<typeof adminPage>[0]['sepay']): string {
-  const yes = (b: boolean) => (b ? '<strong style="color:#147a3d">yes</strong>' : '<strong style="color:#b42318">no</strong>');
+  const yes = yesNo;
   if (!s) return '<p>Not configured (set SEPAY_API_TOKEN and/or SEPAY_BANK_ACCOUNT + SEPAY_BANK_BIN, SEPAY_ACCOUNT_NAME, SEPAY_WEBHOOK_KEY). Live only: SePay has no sandbox for bank accounts.</p>';
   const a = s.account;
   return `<p>Offered to customers: ${yes(s.method.enabled)}. Account: <strong>${a ? `${esc(a.bankName)} ${esc(a.accountNumber)} (${esc(a.accountName || 'no name')}, bank id ${esc(a.bankId)})` : 'unknown'}</strong>${a ? (s.accountFromEnv ? ' from env' : ' from the SePay API') : ''}.
@@ -374,7 +374,7 @@ ${field('invoiceNo', 'Invoice number', '', 'required size="16"')}${field('lookup
 <button>Mark issued</button></form>
 <form method="post" action="/billing/einvoices/${esc(e.id)}/reject" onsubmit="return confirm('Reject this request? The customer sees the reason.')"><input name="reason" placeholder="Reason (the customer sees it)" required size="28"><button>Reject</button></form>`;
     return `<tr><td data-label="Paid">${esc(new Date(e.paidAt).toISOString().slice(0, 10))}<br><small>asked ${esc(new Date(e.createdAt).toISOString().slice(0, 10))}</small></td>
-<td data-label="Order">${o ? `<code>${esc(o.reference)}</code><br><small>${esc(METHOD_LABELS[o.method])}</small>` : esc(e.orderId)}${e.mode === 'sandbox' ? ' <strong>SANDBOX</strong>' : ''}</td>
+<td data-label="Order">${o ? `<code>${esc(o.reference)}</code><br><small>${esc(METHOD_LABELS[o.method])}</small>` : esc(e.orderId)}${e.mode === 'sandbox' ? ` ${modeBadge('sandbox')}` : ''}</td>
 <td data-label="Buyer (VAT invoice details)"><strong>${esc(d.companyName)}</strong><br><small>MST ${esc(d.taxCode)}<br>${esc(d.address)}<br>${esc(d.email)}</small></td>
 <td data-label="Amount" class="n">${money}</td><td data-label="">${issue}</td></tr>`;
   }).join('');
@@ -392,13 +392,13 @@ function adminPage(p: {
   sepay: { apiToken: boolean; webhookKey: boolean; accountFromEnv: boolean; account: import('./billing').VndBankAccount | null; method: { enabled: boolean; vndPerUsd: number | null; rateDate: string | null }; lastWebhookAt: number | null } | null;
   requests: EInvoice[]; requestOrders: Map<string, BillingOrder | null>; automatic: boolean;
 }): string {
-  const yes = (b: boolean) => (b ? '<strong style="color:#147a3d">yes</strong>' : '<strong style="color:#b42318">no</strong>');
+  const yes = yesNo;
   const prows = p.providers.map((pr) => {
     const creds = (m: 'sandbox' | 'live') => `${yes(pr[m].ready)}<br><small>${pr[m].secrets.map((x) => `${esc(x.name)}${x.optional ? ' (optional)' : ''}: ${x.set ? 'set' : 'missing'}`).join('<br>')}</small>`;
     const to = pr.mode === 'live' ? 'sandbox' : 'live';
     const form = `<form method="post" action="/billing/providers/${esc(pr.id)}/mode"${to === 'live' ? ` onsubmit="return this.confirm.value==='LIVE' || (alert('Type LIVE to switch to live.'), false)"` : ''}><input type="hidden" name="mode" value="${to}">${to === 'live' ? '<input name="confirm" placeholder="Type LIVE" size="9" autocomplete="off">' : ''}<button>Switch to ${to}</button></form>`;
     const check = pr.id === 'sinvoice' ? (['sandbox', 'live'] as const).map((m) => `<form method="post" action="/billing/providers/sinvoice/check"><input type="hidden" name="mode" value="${m}"><button>Check ${m} template/series</button></form>`).join('') : '';
-    return `<tr><td data-label="Provider"><strong>${esc(pr.label)}</strong></td><td data-label="Mode"><strong>${pr.mode === 'live' ? 'LIVE' : 'SANDBOX'}</strong></td><td data-label="Sandbox credentials">${creds('sandbox')}</td><td data-label="Live credentials">${creds('live')}</td><td data-label="Switch">${form}${check}</td></tr>`;
+    return `<tr><td data-label="Provider"><strong>${esc(pr.label)}</strong></td><td data-label="Mode">${modeBadge(pr.mode)}</td><td data-label="Sandbox credentials">${creds('sandbox')}</td><td data-label="Live credentials">${creds('live')}</td><td data-label="Switch">${form}${check}</td></tr>`;
   }).join('');
   const erows = p.einvoices.map((e) => {
     const actions = e.status === 'failed' ? `<form method="post" action="/billing/einvoices/${esc(e.id)}/retry"><button>Retry</button></form>`
@@ -406,7 +406,7 @@ function adminPage(p: {
 <form method="post" action="/billing/einvoices/${esc(e.id)}/cancel" onsubmit="return confirm('Cancel this e-invoice at Viettel?')"><input name="description" placeholder="Cancellation agreement" required><button>Cancel at Viettel</button></form>
 <form method="post" action="/billing/einvoices/${esc(e.id)}/replace">${field('companyName', 'Company', e.details.companyName, 'required')}${field('taxCode', 'MST', e.details.taxCode, 'required')}${field('address', 'Address', e.details.address, 'required')}${field('email', 'Email', e.details.email, 'required')}${field('reason', 'Reason', '', 'required')}<button>Issue replacement</button></form></details>` : '';
     return `<tr><td>${esc(new Date(e.createdAt).toISOString().slice(0, 10))}</td><td>${esc(e.details.companyName)}<br><small>MST ${esc(e.details.taxCode)} · ${esc(e.details.email)}</small></td><td class="n">${esc(formatUsd(e.totalCents))}</td>
-<td>${e.mode === 'sandbox' ? '<strong>SANDBOX</strong> ' : ''}${esc(e.status)}${e.manual ? ' (by hand)' : ''}${e.rejectReason && e.status === 'rejected' ? `<br><small>${esc(e.rejectReason)}</small>` : ''}${e.record ? `<br><small>${esc(e.record.invoiceNo)}${e.record.codeOfTax ? ` · CQT ${esc(e.record.codeOfTax)}` : ''} · email ${esc(e.emailStatus ?? 'not sent')}</small>` : ''}${e.lastError ? `<br><small>${esc(e.lastError)} (${e.attempts} attempts)</small>` : ''}</td><td>${actions}</td></tr>`;
+<td>${e.mode === 'sandbox' ? `${modeBadge('sandbox')} ` : ''}${esc(e.status)}${e.manual ? ' (by hand)' : ''}${e.rejectReason && e.status === 'rejected' ? `<br><small>${esc(e.rejectReason)}</small>` : ''}${e.record ? `<br><small>${esc(e.record.invoiceNo)}${e.record.codeOfTax ? ` · CQT ${esc(e.record.codeOfTax)}` : ''} · email ${esc(e.emailStatus ?? 'not sent')}</small>` : ''}${e.lastError ? `<br><small>${esc(e.lastError)} (${e.attempts} attempts)</small>` : ''}</td><td>${actions}</td></tr>`;
   }).join('');
   const rows = p.orders.map((o) => {
     const r = p.receiptOf.get(o.id);
@@ -415,17 +415,15 @@ function adminPage(p: {
 <input name="receivedUsd" placeholder="Received USD" value="${esc((o.totalCents / 100).toFixed(2))}" size="8"><input name="bankReference" placeholder="Bank transaction ref" size="14"><button>Mark paid</button></form>`
       : r ? `${esc(r.number)} · email ${esc(r.emailStatus ?? 'not sent')} <form method="post" action="/billing/orders/${esc(o.id)}/resend-email" style="display:inline"><button>Resend email</button></form>` : '';
     return `<tr><td>${esc(new Date(o.createdAt).toISOString().slice(0, 16).replace('T', ' '))}</td><td><code>${esc(o.reference)}</code></td><td>${esc(o.buyer.company || o.buyer.name)}<br><small>${esc(o.buyer.email)} · ${esc(o.buyer.country)}</small></td>
-<td>${esc(METHOD_LABELS[o.method])}${o.mode === 'sandbox' ? ' <strong>SANDBOX</strong>' : ''}${o.einvoiceRequest ? '<br><small>VAT invoice requested</small>' : ''}${o.quote ? `<br><small>${esc(o.quote.vndAmount.toLocaleString('en-US'))} VND at ${esc(o.quote.vndPerUsd)} (${esc(o.quote.rateDate)}), content ${esc(o.quote.transferContent)}</small>` : ''}${o.paymentNote ? `<br><small style="white-space:pre-wrap;color:#8a4b00">${esc(o.paymentNote)}</small>` : ''}</td><td class="n">${esc(formatUsd(o.amountCents))}<br><small>+VAT ${esc(vatLabel(o.vatRateBp))} = ${esc(formatUsd(o.totalCents))}</small></td><td>${esc(o.status)}${o.paidBy ? `<br><small>${esc(o.paidBy)}</small>` : ''}</td><td>${action}</td></tr>`;
+<td>${esc(METHOD_LABELS[o.method])}${o.mode === 'sandbox' ? ` ${modeBadge('sandbox')}` : ''}${o.einvoiceRequest ? '<br><small>VAT invoice requested</small>' : ''}${o.quote ? `<br><small>${esc(o.quote.vndAmount.toLocaleString('en-US'))} VND at ${esc(o.quote.vndPerUsd)} (${esc(o.quote.rateDate)}), content ${esc(o.quote.transferContent)}</small>` : ''}${o.paymentNote ? `<br><small class="warn-text">${esc(o.paymentNote)}</small>` : ''}</td><td class="n">${esc(formatUsd(o.amountCents))}<br><small>+VAT ${esc(vatLabel(o.vatRateBp))} = ${esc(formatUsd(o.totalCents))}</small></td><td>${esc(o.status)}${o.paidBy ? `<br><small>${esc(o.paidBy)}</small>` : ''}</td><td>${action}</td></tr>`;
   }).join('');
   const a = p.account;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Valefront billing admin</title>
-<style>${ADMIN_PAGE_CSS}</style></head><body>${adminHeader('billing')}<main>
-<h1>Valefront billing admin</h1><p>Signed in through Cloudflare Access as <strong>${esc(p.who)}</strong>. WorldFirst bank transfer: <strong>${a ? 'configured' : 'not configured'}</strong> (no sandbox). Every payment gets a receipt; VAT e-invoices only for buyers in Vietnam who ask.</p>
+  return adminDocument({ current: 'customer-billing', title: 'Customer billing', who: p.who, body: `<h1>Valefront billing admin</h1><p>Signed in through Cloudflare Access as <strong>${esc(p.who)}</strong>. WorldFirst bank transfer: <strong>${a ? 'configured' : 'not configured'}</strong> (no sandbox). Every payment gets a receipt; VAT e-invoices only for buyers in Vietnam who ask.</p>
 ${p.note ? `<p class="note">${esc(p.note)}</p>` : ''}
 <h2>Providers: sandbox or live</h2><p><small>Secrets are Worker secrets (wrangler secret put); this page shows only whether they're set. In sandbox, PayPal is offered to admin workspaces only, and its receipts are marked SANDBOX and numbered apart. A VAT invoice is issued only through S-Invoice in its payment's mode. Every switch is audit-logged with who made it.</small></p>
 <div class="wrap"><table class="stack"><thead><tr><th>Provider</th><th>Mode</th><th>Sandbox credentials</th><th>Live credentials</th><th></th></tr></thead><tbody>${prows}</tbody></table></div>
 <h2>SePay (Vietnamese bank QR, VND)</h2>${sepaySection(p.sepay)}
-<h2>Orders</h2><p><a href="/billing/">All</a> · <a href="/billing/?status=pending">Pending</a> · <a href="/billing/?status=paid">Paid</a> · <a href="/billing/?status=cancelled">Cancelled</a></p>
+<h2>Orders</h2>${filterTabs([['', 'All'], ['pending', 'Pending'], ['paid', 'Paid'], ['cancelled', 'Cancelled']].map(([s, label]) => ({ href: s ? `/billing/?status=${s}` : '/billing/', label, current: (p.status ?? '') === s })))}
 <div class="wrap"><table class="stack"><thead><tr><th>Created (UTC)</th><th>Reference</th><th>Buyer</th><th>Method</th><th class="n">Credit / total</th><th>Status</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="7">No orders.</td></tr>'}</tbody></table></div>
 <h2 id="vat-requests">VAT invoice requests (issued by hand)${p.requests.length ? ` (${p.requests.length})` : ''}</h2>${requestsSection(p)}
 <h2>Vietnamese VAT e-invoices (Viettel S-Invoice)</h2><p>Issued automatically through S-Invoice in their payment's mode (sandbox: waiting as pending until it is configured); in live mode without its secrets they are requests, above. Exchange rate: <strong>${p.fx ? (p.fx.source === 'admin' ? `${esc(p.fx.vndPerUsd)} VND/USD, set ${esc(p.fx.date)}` : `${esc(p.fx.vndPerUsd)} VND/USD, the day's ${p.fx.source === 'vietcombank' ? 'Vietcombank selling' : 'reference'} rate (${esc(p.fx.date)}), as on dash; set one below to fix it instead`) : 'not available'}</strong>.</p>
@@ -441,6 +439,5 @@ ${field('companyName', 'Company name', p.seller.companyName, 'required')}${field
 ${field('address', 'Address', p.seller.address, 'required')}${field('email', 'Email', p.seller.email, 'required')}<div><button>Save legal details</button></div></form>
 <h2>VAT by buyer country</h2><form class="settings" method="post" action="/billing/settings/vat">
 ${field('defaultBp', 'Default rate, basis points (0 = export of services)', p.vat.defaultBp, 'required')}
-<label>Per country (CC=basis points, one per line; 1000 = 10%)<textarea name="byCountry">${esc(Object.entries(p.vat.byCountry).map(([c, r]) => `${c}=${r}`).join('\n'))}</textarea></label><div><button>Save VAT rates</button></div></form>
-</main></body></html>`;
+<label>Per country (CC=basis points, one per line; 1000 = 10%)<textarea name="byCountry">${esc(Object.entries(p.vat.byCountry).map(([c, r]) => `${c}=${r}`).join('\n'))}</textarea></label><div><button>Save VAT rates</button></div></form>` });
 }
